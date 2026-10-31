@@ -1,0 +1,11 @@
+.git
+.scratch
+.env
+.env.*
+!.env.example
+var
+backups
+staticfiles
+**/__pycache__
+**/*.pyc
+.pytest_cache

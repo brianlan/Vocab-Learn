@@ -1,0 +1,10 @@
+{% load static %}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}Vocab Learn{% endblock %}</title><link rel="icon" href="{% static 'icon.svg' %}" type="image/svg+xml"><link rel="stylesheet" href="{% static 'app.css' %}">{% block head %}{% endblock %}</head>
+<body><a class="skip-link" href="#main">Skip to content</a><div class="app-shell">
+<aside class="sidebar"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-icon">▦</span>vocab <span>learn</span></a>
+{% if user.is_authenticated %}<nav aria-label="Main navigation"><a class="nav-link {% if nav == 'study' %}active{% endif %}" href="{% url 'dashboard' %}"><span>▤</span> Study</a><a class="nav-link {% if nav == 'decks' %}active{% endif %}" href="{% url 'library' %}"><span>▱</span> My decks</a><a class="nav-link {% if nav == 'progress' %}active{% endif %}" href="{% url 'statistics' %}"><span>▥</span> Progress</a></nav>
+<div class="sidebar-note"><span class="eyebrow">YOUR SPACE</span><p>One small step.<br>A little more to remember.</p></div>
+<footer class="account"><span class="avatar">{{ user.username|first|upper }}</span><div><strong>{{ user.username }}</strong><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="text-button">Log out</button></form></div></footer>{% else %}<div class="sidebar-note"><p>Say it.<br>Remember it.<br>Make it yours.</p></div>{% endif %}</aside>
+<main id="main" class="main"><div class="topline"><span>YOUR DAILY PRACTICE</span><span>{% now "l, F j" %}</span></div>
+{% for message in messages %}<div class="notice {{ message.tags }}" role="status">{{ message }}</div>{% endfor %}
+{% block content %}{% endblock %}<footer class="page-footer">Small steps. Lasting knowledge.</footer></main></div>{% block scripts %}{% endblock %}</body></html>

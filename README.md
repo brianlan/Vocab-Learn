@@ -2,9 +2,47 @@
 
 A browser application for learning through flash cards, spoken answers and spaced repetition. V1 supports authored Generic Cards and Vocabulary Cards with AI-generated Recognition/Production examples.
 
-The V1 planning baseline has passed review. Application implementation has not started.
+V1 is implemented and available for user acceptance. The application uses Django 5.2, SQLite, FSRS and a bounded background worker, with independent ASR/Judge/Generator profiles and MiniMax defaults.
 
-Start development with the [V1 Development Specification](docs/specs/v1.md), which contains the agreed rules, architecture, implementation sequence and 45 acceptance cases.
+![The Fieldnotes study interface](docs/implementation/previews/review-front.png)
+
+Start with the [running and maintenance guide](docs/operations.md). The [V1 Development Specification](docs/specs/v1.md) contains the agreed rules and 45 acceptance cases; the [implementation acceptance record](docs/implementation/v1-acceptance.md) distinguishes automated, real-provider and browser evidence from remaining device-specific checks.
+
+## Local start
+
+Use Python 3.11 with FFmpeg/FFprobe on PATH. The requested development environment is `/home/rlan/anaconda3/envs/mykik_py311`. Export `MINIMAX_API_KEY` or the three task-specific credentials in each application/worker environment.
+
+```sh
+python -m pip install -r requirements.txt
+python manage.py migrate
+python manage.py createlearner your_username
+python manage.py runserver 127.0.0.1:8766
+```
+
+Run `python manage.py runworker` in a second terminal. Open `http://127.0.0.1:8766`. Local commands read process environment variables; Compose reads `.env`.
+
+## Compose deployment
+
+For a new deployment, configure `.env` using `.env.example`: set a random Django secret, provider credentials, private LAN binding and hostname/origin. Then run:
+
+```sh
+docker compose build
+docker compose up -d
+docker compose exec web python manage.py createlearner your_username
+```
+
+The dedicated migration service completes before web/worker start. LAN microphone access requires the configured private HTTPS hostname and client trust in Caddy's public root certificate. The [operations guide](docs/operations.md) explains certificate export, per-client trust, account resets, independent model replacement, audio expiry, upgrades, and the delivered cold-backup/restore command.
+
+## Development and verification
+
+```sh
+python -m pip install -r requirements-dev.txt
+python manage.py test learning.tests --noinput
+```
+
+The tests include file-backed SQLite races, provider contracts, scheduling and worker resource recovery. Browser and live-provider probes are explicit opt-in checks; see the acceptance record and operations guide. New accounts start empty; a dedicated preview account may contain sample decks and synthetic acceptance history.
+
+## Reference
 
 - [Domain glossary](CONTEXT.md)
 - [CSV examples and authoring notes](docs/examples/README.md)

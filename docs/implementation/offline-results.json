@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "tests": 41,
+  "seconds": 14.739,
+  "worker_capacity_seconds": {
+    "conversion": 6.441,
+    "provider": 6.439
+  },
+  "worker_slots": 1,
+  "fault_deadline_seconds": 5,
+  "healthy_enqueue_seconds": 4,
+  "healthy_provider_work_seconds": 1,
+  "completion_assertion_seconds": 7,
+  "files_sha256": {
+    "learning/tests/test_learning.py": "39b9ab5060ee58cbcadc09809bfff968f331d30a88bb9410cdacfcb599f36477",
+    "learning/tests/test_providers.py": "0bdd8ee447e96e9b428f6a92d2ee5b7af67e1beab70c70f35e96c04f6063b5f9",
+    "learning/tests/test_concurrency.py": "56bbbc67b857e20fe568b124b8d17f4ea929a523aaf8f9d1d719522fa3e13855"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "missing_audio": "failed then closed without score",
+  "cached_transcript": "submitted Judge-only Retry",
+  "committed_result": "original E/due replayed once",
+  "original_timestamps_and_expiry": "unchanged",
+  "scored_reviews_before_worker": 1,
+  "procedure": "vocab-cold-backup-v1",
+  "procedure_sha256": "0bf424a6c674104ba020555a6d869c8248843b6e97fb5e6fcb95dab632e0ca4f",
+  "image": "sha256:0b449a84eb3b1f25c4ff75f8d3d35b37b039653379a60d571741c1903fcfb444",
+  "audio_excluded": true,
+  "judge_only_retry_with_unreachable_asr": "passed",
+  "committed_replay_no_duplicate": "passed",
+  "root_ca_identity": "byte-identical",
+  "root_ca_sha256": "2bb484236da2ad93fbb627f79440d65d98a2561a74a07454b5b550f25ecab430",
+  "fresh_volume_integrity": "ok",
+  "status": "passed"
+}

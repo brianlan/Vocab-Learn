@@ -1,6 +1,6 @@
 # Flashcard CSV examples
 
-The [V1 Development Specification](../specs/v1.md) defines the current import, identity, rendering and learning rules. These files illustrate its source schemas; a production importer has not yet been implemented.
+The [V1 Development Specification](../specs/v1.md) defines the current import, identity, rendering and learning rules. Both schemas are implemented in the application's private-deck CSV importer; these files provide ready-to-import sources.
 
 ## Generic Cards
 
@@ -26,4 +26,4 @@ All three fields must be nonblank. Preserve meaningful Markdown indentation and 
 - Language values use the English names shown in the creation form. They describe learning content; the application interface remains English.
 - Both review directions share one card's progress. Changing a generated example does not create a second learning card.
 
-These examples illustrate English-to-Chinese, English-to-Spanish, and Spanish-to-Chinese vocabulary sources. The approved generation and import requirements are in the development specification; their runtime behavior remains to be implemented and verified.
+These examples illustrate English-to-Chinese, English-to-Spanish, and Spanish-to-Chinese vocabulary sources. Valid sources persist before asynchronous preparation of their example pairs. The [acceptance record](../implementation/v1-acceptance.md) documents the tested import, generation and language paths.

@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "checks": [
+    "Fieldnotes login and dashboard",
+    "Manual entry, deck-scoped run, front has no hidden reference",
+    "Actual MediaRecorder upload reveals reference before model completion",
+    "Real ASR/Judge result, readonly response, persisted Next review",
+    "Formatted multi-blanks, neutral Skip, Cancel/refresh clock retention, explicit lost-clock restart",
+    "Ignored permissions remain cancellable; obsolete streams stop all tracks and late rejections cannot replace newer UI",
+    "Forgot and persisted one-minute due; exhausted run does not automatically restart",
+    "Distinct-card/scored-review/accuracy metrics exclude Skip",
+    "Vocabulary manual creation and actual durable Generator preparation",
+    "Private deck archive, no horizontal overflow and no browser runtime errors"
+  ],
+  "errors": [],
+  "browser": "Headless Chromium, synthetic microphone; physical device and Edge remain manual checks"
+}

@@ -1,0 +1,90 @@
+name: vocab-learn
+x-app: &app
+  image: vocab-learn:v1
+  build: .
+  init: true
+  env_file: .env
+  environment: &environment
+    DJANGO_DEBUG: "0"
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+    DJANGO_ALLOWED_HOSTS: ${APP_HOSTNAME:-vocab.home.arpa},localhost,127.0.0.1
+    DJANGO_CSRF_TRUSTED_ORIGINS: ${APP_ORIGIN:-https://vocab.home.arpa}
+    TRUST_PROXY: "1"
+    APP_DATA_DIR: /data
+    AUDIO_DIR: /audio
+    NO_PROXY: localhost,127.0.0.1,web,caddy
+    no_proxy: localhost,127.0.0.1,web,caddy
+    MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+    ASR_PROTOCOL: ${ASR_PROTOCOL:-minimax}
+    ASR_ENDPOINT: ${ASR_ENDPOINT:-https://api.minimax.cn/v1/speech_to_text}
+    ASR_MODEL: ${ASR_MODEL:-asr-1.0}
+    ASR_API_KEY: ${ASR_API_KEY:-}
+    ASR_TIMEOUT_SECONDS: ${ASR_TIMEOUT_SECONDS:-60}
+    JUDGE_ENDPOINT: ${JUDGE_ENDPOINT:-https://api.minimax.cn/v1/chat/completions}
+    JUDGE_MODEL: ${JUDGE_MODEL:-MiniMax-M3.1-Flash}
+    JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+    JUDGE_TIMEOUT_SECONDS: ${JUDGE_TIMEOUT_SECONDS:-120}
+    JUDGE_MAX_COMPLETION_TOKENS: ${JUDGE_MAX_COMPLETION_TOKENS:-8192}
+    GENERATOR_ENDPOINT: ${GENERATOR_ENDPOINT:-https://api.minimax.cn/v1/chat/completions}
+    GENERATOR_MODEL: ${GENERATOR_MODEL:-MiniMax-M3.1-Flash}
+    GENERATOR_API_KEY: ${GENERATOR_API_KEY:-}
+    GENERATOR_TIMEOUT_SECONDS: ${GENERATOR_TIMEOUT_SECONDS:-120}
+    GENERATOR_MAX_COMPLETION_TOKENS: ${GENERATOR_MAX_COMPLETION_TOKENS:-8192}
+  volumes:
+    - app_data:/data
+    - audio_tmp:/audio
+  stop_grace_period: 15s
+
+services:
+  migrate:
+    <<: *app
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    restart: "no"
+  web:
+    <<: *app
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import http.client; c=http.client.HTTPConnection('127.0.0.1',8000,timeout=5); c.request('GET','/health/'); assert c.getresponse().status==200"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+    mem_limit: 768m
+  worker:
+    <<: *app
+    command: ["python", "manage.py", "runworker"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 1g
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      APP_HOSTNAME: ${APP_HOSTNAME:-vocab.home.arpa}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
+    ports:
+      - "${LAN_BIND_IP:?Set LAN_BIND_IP}:${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  app_data:
+  audio_tmp:
+  caddy_data:
+  caddy_config:

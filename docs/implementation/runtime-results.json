@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "checked_at": "2026-10-31T17:51:45.871009+00:00",
+  "image": "sha256:399d262c5fbf006cc02a325496656bf83535818d5a4764229151004873cfda8d",
+  "services_running": [
+    "caddy",
+    "web",
+    "worker"
+  ],
+  "migrations": "0001_initial, 0002_presentation_clock_claimed, 0003_attempt_error_category_attempt_retryable_and_more",
+  "tls_hostname_and_ca_verified": true,
+  "https_login_and_private_pages": true,
+  "secure_httponly_session": true,
+  "csrf_missing_token_rejected": true,
+  "packaged_static_assets": true,
+  "local_preview_health": true,
+  "private_https_origin": "https://vocab.home.arpa",
+  "final_runtime_source_matches_repository": {
+    "learning/models.py": "07cf30dff8378a5fbd98bd2b9e054accd787c021c22c67c38fefd1bf2f9283f3",
+    "learning/providers.py": "1c503cc1d267bac6b2239a4eef1e0cb8c7405f595b12efc4243546203e992261",
+    "learning/review.py": "01d48b8c970f7bc611c81a46848ef72c156660a3a145fb436868c06e75bf3319",
+    "learning/views.py": "454937fa1618619023334614e414e1c1ccdab279a614828343fbe1d7747039f5",
+    "learning/work.py": "cc34fa12eecb6177826a13229f7bc8ff4c54b42bd2ae43a2120c3eee5e9e7c88",
+    "learning/worker.py": "519d92a578dbca77a99f883a2a661c917cbc6cc90300574b38876fcfcf07086f",
+    "static/review.js": "931cdfd80bf40e987eb7887a1a0120f57ce67e10abf7f5553eeb04d157500932",
+    "static/app.css": "d6e2d6183117ab27c9a2b2fedf0c9ccfca9235f9542a7b2367616b9e826b386a",
+    "ops/backup.py": "0bf424a6c674104ba020555a6d869c8248843b6e97fb5e6fcb95dab632e0ca4f"
+  },
+  "deployment_checks": "No issues; only private-host HSTS preload/subdomain checks intentionally silenced."
+}

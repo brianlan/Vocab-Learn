@@ -221,3 +221,7 @@ __marimo__/
 
 # Local planning workspace; approved records are archived under docs/planning/.
 /.scratch/
+/staticfiles/
+.env.*
+!.env.example
+/backups/

@@ -1,0 +1,433 @@
+{
+  "status": "passed",
+  "checks": 19,
+  "results": [
+    {
+      "name": "GENERIC-MULTI",
+      "status": "passed",
+      "seconds": 3.39,
+      "expected": [
+        "complete",
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "Correctly says “call off.”"
+        },
+        {
+          "id": 2,
+          "outcome": "complete",
+          "reason": "Correctly says “feeling unwell.”"
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "GENERIC-TARGET-LIVE",
+      "status": "passed",
+      "seconds": 3.09,
+      "expected": [
+        "partial",
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "“Cancel” conveys a similar meaning but does not exactly match the target “call off.”"
+        },
+        {
+          "id": 2,
+          "outcome": "complete",
+          "reason": "The learner correctly says “feeling unwell.”"
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "GENERIC-SENTENCE",
+      "status": "passed",
+      "seconds": 2.84,
+      "expected": [
+        "complete",
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The learner correctly used the target phrase \"call off\" in the appropriate context."
+        },
+        {
+          "id": 2,
+          "outcome": "complete",
+          "reason": "The learner correctly expressed the target state \"feeling unwell\"."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "RECOGNITION-CHINESE",
+      "status": "passed",
+      "seconds": 4.93,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“彼此理解错了” accurately expresses that they misunderstood each other."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "RECOGNITION-SPANISH",
+      "status": "passed",
+      "seconds": 3.02,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "\"entenderse mal\" naturally means to misunderstand each other, matching the intended meaning."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "RECOGNITION-SPANISH-CHINESE",
+      "status": "passed",
+      "seconds": 2.4,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The learner correctly identifies “malentendido” as “误会,” matching the reference exactly."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "PARTIAL-MEANING",
+      "status": "passed",
+      "seconds": 3.08,
+      "expected": [
+        "partial"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "“改时间” means change the time but does not specifically express postponement to a later time."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "WRONG-MEANING",
+      "status": "passed",
+      "seconds": 6.6,
+      "expected": [
+        "incorrect"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "incorrect",
+          "reason": "“取消” means “cancel,” whereas “postpone” means to move the meeting to a later time without cancelling it."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "PRODUCTION-TARGET",
+      "status": "passed",
+      "seconds": 2.62,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The learner correctly produced the target word “misunderstanding.”"
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "PRODUCTION-SUBSTITUTE",
+      "status": "passed",
+      "seconds": 3.46,
+      "expected": [
+        "partial"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "\"Shore\" conveys the same idea of land beside water and fits naturally, but it is a substitute for the target word \"bank\" (specifically the side of a river)."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "PRODUCTION-WRONG-SENSE",
+      "status": "passed",
+      "seconds": 3.1,
+      "expected": [
+        "incorrect"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "incorrect",
+          "reason": "“Financial institution” refers to a bank in the money sense, not land beside a river."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "PRODUCTION-SPANISH",
+      "status": "passed",
+      "seconds": 2.47,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The learner correctly produced the target Spanish word “malentendido”."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "ASR-English",
+      "status": "passed",
+      "seconds": 2.48,
+      "expected": null,
+      "result": "Four.",
+      "profile": {
+        "task": "ASR",
+        "endpoint": "https://api.minimax.cn/v1/speech_to_text",
+        "model": "asr-1.0",
+        "timeout": 60.0,
+        "max_completion_tokens": 8192,
+        "protocol": "minimax"
+      }
+    },
+    {
+      "name": "ASR-Spanish",
+      "status": "passed",
+      "seconds": 2.26,
+      "expected": null,
+      "result": "Un malentendido.",
+      "profile": {
+        "task": "ASR",
+        "endpoint": "https://api.minimax.cn/v1/speech_to_text",
+        "model": "asr-1.0",
+        "timeout": 60.0,
+        "max_completion_tokens": 8192,
+        "protocol": "minimax"
+      }
+    },
+    {
+      "name": "ASR-Chinese",
+      "status": "passed",
+      "seconds": 2.5,
+      "expected": null,
+      "result": "这是一个误会",
+      "profile": {
+        "task": "ASR",
+        "endpoint": "https://api.minimax.cn/v1/speech_to_text",
+        "model": "asr-1.0",
+        "timeout": 60.0,
+        "max_completion_tokens": 8192,
+        "protocol": "minimax"
+      }
+    },
+    {
+      "name": "GENERATOR-English-Chinese",
+      "status": "passed",
+      "seconds": 4.87,
+      "expected": null,
+      "result": {
+        "target_sentence": "We had a misunderstanding because we did not understand each other.",
+        "target_highlight": "misunderstanding",
+        "native_sentence": "因为我们没有正确理解彼此，所以彼此之间产生了误会。",
+        "native_highlight": "误会",
+        "gloss": "因双方没有正确理解对方而产生的分歧或问题。"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "GENERATOR-English-Spanish",
+      "status": "passed",
+      "seconds": 10.66,
+      "expected": null,
+      "result": {
+        "target_sentence": "The two friends had a misunderstanding because they did not understand each other.",
+        "target_highlight": "a misunderstanding",
+        "native_sentence": "Los dos amigos no se entendieron al hablar y por eso se produjo una confusión.",
+        "native_highlight": "no se entendieron al hablar y por eso se produjo una confusión",
+        "gloss": "Una confusión causada porque dos personas no se comprenden correctamente."
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "GENERATOR-Spanish-Chinese",
+      "status": "passed",
+      "seconds": 4.7,
+      "expected": null,
+      "result": {
+        "target_sentence": "Los dos amigos tuvieron un malentendido porque no se entendieron bien.",
+        "target_highlight": "malentendido",
+        "native_sentence": "两个朋友之间产生了误会，因为他们没有把彼此的意思理解清楚。",
+        "native_highlight": "产生了误会",
+        "gloss": "因彼此没有理解清楚而发生的误会或分歧。"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    },
+    {
+      "name": "GENERATOR-ROTATION",
+      "status": "passed",
+      "seconds": 8.2,
+      "expected": null,
+      "result": {
+        "target_sentence": "We had a misunderstanding about the meeting time because I thought it was at three.",
+        "target_highlight": "misunderstanding",
+        "native_sentence": "我以为会议三点开始，我们因此对时间产生了分歧。",
+        "native_highlight": "产生了分歧",
+        "gloss": "因我误以为会议三点开始而产生的分歧。"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai"
+      }
+    }
+  ],
+  "quality_review": "Final generation fixtures reviewed for simple context, sense alignment, native gloss and highlights. Initial generation probes prompted stronger fact-alignment/language instructions. A Judge rerun exposed non-English feedback and an over-generous partial-meaning result; the delivered prompt now explicitly requires English feedback and preserves missing defining distinctions. All 12 final Judge fixtures were rerun successfully, with English surrounding prose; final rotation changes both sentences.",
+  "limits": "Representative public fixtures only. ASR used synthetic speech; no physical microphone, Edge or learning-retention guarantee.",
+  "judge_prompt_sha256": "567ca1d14d6d492029addaa2ffc7a72339ca17125755ae1bb8edeafe6b83312b",
+  "generator_prompt_sha256": "4fe2db94288a7d963a997b59de4860e797d50d04746d9cbca0487c509fb78372"
+}
