@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local planning workspace; approved records are archived under docs/planning/.
+/.scratch/
