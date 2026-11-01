@@ -29,15 +29,16 @@ def run(options):
         page.locator("#id_name").fill("Browser QA "+str(int(time.time())))
         page.locator("#id_description").fill("Isolated acceptance fixtures; archived after the browser check.")
         page.get_by_role("button",name="Create deck").click()
-        deck_url=page.url; card_urls=[]
+        deck_url=page.url
         fixtures=[("What is two plus two?","four","Two pairs make **four**. <u>A little arithmetic.</u>"),
                   ("I had to **{{blank}}** the meeting because I was <u>{{blank}}</u>.","call off; feeling unwell","Recall both target expressions."),
                   ("Why did you postpone the meeting?","To give everyone more time to prepare.","Move an event to a later time.")]
-        for question,answer,explanation in fixtures:
+        def add_generic(fixture):
+            question,answer,explanation=fixture
             page.goto(deck_url+"new/"); page.locator("#id_question").fill(question)
             page.locator("#id_answer").fill(answer); page.locator("#id_explanation").fill(explanation)
             page.get_by_role("button",name="Save",exact=False).click(); page.wait_for_url(re.compile(r"/cards/\d+/$"))
-            card_urls.append(page.url)
+        add_generic(fixtures[0])
         page.goto(deck_url); page.get_by_role("button",name="Study this deck").click()
         page.wait_for_selector("#review-card"); assert page.locator(".prompt").inner_text()=="What is two plus two?"
         assert "four" not in page.content().lower()
@@ -58,12 +59,16 @@ def run(options):
         assert page.locator("textarea:not([readonly]),[contenteditable=true]").count()==0
         page.screenshot(path=str(output/"feedback.png"),full_page=True)
         checked("Real ASR/Judge result, readonly response, persisted Next review")
+        review_url=page.url
+        add_generic(fixtures[1]); page.goto(review_url)
         page.locator("#next-card").click(); page.wait_for_selector(".cloze-blank")
         assert page.locator(".cloze-blank").count()==2
         assert page.locator(".prompt strong .cloze-blank").count()==1
         assert page.locator(".prompt u .cloze-blank").count()==1
         page.get_by_role("button",name=re.compile("Skip")).click()
         page.wait_for_selector("#next-card"); assert page.locator(".recall-result h3").inner_text()=="Skipped"
+        review_url=page.url
+        add_generic(fixtures[2]); page.goto(review_url)
         page.locator("#next-card").click(); page.wait_for_selector("#front:not([hidden])")
         page.get_by_role("button",name=re.compile("Speak")).click()
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()

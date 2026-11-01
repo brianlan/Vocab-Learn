@@ -104,6 +104,8 @@ Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Sa
 
 Start a run explicitly. Skip/closed-unassessed defer only within that run. Resume retains those deferrals; a finished run does not automatically repeat them. Explicitly starting a new run permits due deferred cards again. Current Due now counts can remain positive after a run is finished.
 
+Due Forgot cards come first, followed by due reviewed Normal cards, then Ready unseen cards. Reviewed cards keep earliest-due/card-ID order; unseen cards use a shuffle derived from the run's UUID and their card IDs. A new run independently reshuffles unseen cards, while refresh/Resume retains the same ordering rule. Eligibility is evaluated before each new question, so newly Ready cards can join an active run without replacing a displayed question. Shuffling does not change stored review times, memory or balanced Vocabulary directions. This applies to both Generic and Vocabulary Cards and requires no database migration.
+
 Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal. Read the back while processing; a service error permits the same-input Retry or a server-confirmed unassessed exit. Typed transcript changes and replacement recordings after reveal cannot affect the score.
 
 ## Persistence, audio expiry, and upgrade

@@ -16,7 +16,7 @@ from django.db import OperationalError
 from django.urls import reverse
 from django.utils import timezone
 from learning import authoring, review, work
-from learning.models import Deck, Card, StudyRun, Presentation, Attempt, ExamplePair, GenerationJob, ScoredReview
+from learning.models import Deck, Card, StudyRun, Presentation, Attempt, ExamplePair, GenerationJob, ScoredReview, Deferral
 from learning.providers import StageError
 from learning.rendering import render, recall_budget
 
@@ -63,6 +63,11 @@ class LearningTests(TestCase):
         if card:
             Card.objects.filter(pk=card.pk).update(due=timezone.now()-timedelta(seconds=1))
         run = StudyRun.objects.create(user=self.user, deck=self.deck)
+        if card:
+            # Focus scheduling fixtures without relying on unseen-card order.
+            Deferral.objects.bulk_create([
+                Deferral(run=run, card_id=pk)
+                for pk in self.deck.cards.exclude(pk=card.pk).values_list("pk", flat=True)])
         return review.next_presentation(run)
 
     def spoken(self, p, duration=2):
@@ -404,6 +409,92 @@ class LearningTests(TestCase):
         self.assertIsNone(review.next_presentation(run)); self.assertIsNone(review.next_presentation(run))
         self.assertEqual(review.available(self.user).filter(due__lte=timezone.now()).count(),3)
         self.assertEqual(self.present().card_id,a.pk)
+
+    def test_new_card_shuffle_is_stable_per_run_and_ignores_import_due_order(self):
+        cards=[self.generic(question=f"Imported card {index}") for index in range(12)]
+        imported=[card.pk for card in cards]
+        before=list(self.deck.cards.values("pk","due","fsrs","review_count","progress_version"))
+        run=StudyRun.objects.create(id=uuid.UUID(int=1),user=self.user,deck=self.deck)
+        first=list(review.queue(run).values_list("pk",flat=True))
+        self.assertCountEqual(first,imported)
+        self.assertNotEqual(first,imported)
+        resumed=StudyRun.objects.get(pk=run.pk)
+        self.assertEqual(list(review.queue(resumed).values_list("pk",flat=True)),first)
+        other=StudyRun.objects.create(id=uuid.UUID(int=2),user=self.user,deck=self.deck)
+        self.assertNotEqual(list(review.queue(other).values_list("pk",flat=True)),first)
+        self.assertEqual(list(self.deck.cards.values("pk","due","fsrs","review_count","progress_version")),before)
+        now=timezone.now()
+        for index,card in enumerate(cards):
+            Card.objects.filter(pk=card.pk).update(due=now-timedelta(days=index+1))
+        self.assertEqual(list(review.queue(run).values_list("pk",flat=True)),first)
+
+    def test_shuffle_preserves_review_due_order_and_candidate_scope(self):
+        now=timezone.now()
+        forgot=[self.generic(question=f"Forgot {index}") for index in range(3)]
+        reviewed=[self.generic(question=f"Reviewed {index}") for index in range(3)]
+        for cards,collection in [(forgot,"Forgot"),(reviewed,"Normal")]:
+            for card,minutes in zip(cards,[1,2,2]):
+                Card.objects.filter(pk=card.pk).update(collection=collection,review_count=1,due=now-timedelta(minutes=minutes))
+        unseen=[self.generic(question=f"New {index}") for index in range(5)]
+        future=self.generic(question="Future Normal")
+        future_forgot=self.generic(question="Future Forgot")
+        Card.objects.filter(pk__in=[future.pk,future_forgot.pk]).update(due=now+timedelta(days=1))
+        Card.objects.filter(pk=future_forgot.pk).update(collection="Forgot",review_count=1)
+        self.vocabulary()
+        archived=self.generic(question="Archived card")
+        authoring.archive_card(archived,True)
+        other_deck=Deck.objects.create(owner=self.user,name="Another active deck")
+        other_card=authoring.save_card(other_deck,"generic",GENERIC)
+        private_deck=Deck.objects.create(owner=self.other,name="Private")
+        private_card=authoring.save_card(private_deck,"generic",GENERIC)
+        archived_deck=Deck.objects.create(owner=self.user,name="Archived deck",archived=True)
+        Card.objects.create(deck=archived_deck,kind="generic",identity="archived-deck-fixture",ready=True,**GENERIC)
+        run=StudyRun.objects.create(user=self.user,deck=self.deck)
+        ids=list(review.queue(run).values_list("pk",flat=True))
+        expected=[cards[index].pk for cards in [forgot,reviewed] for index in [1,2,0]]
+        self.assertEqual(ids[:6],expected)
+        self.assertCountEqual(ids[6:],[card.pk for card in unseen])
+        all_decks=StudyRun.objects.create(user=self.user)
+        all_ids=list(review.queue(all_decks).values_list("pk",flat=True))
+        self.assertCountEqual(all_ids,ids+[other_card.pk])
+        self.assertNotIn(private_card.pk,all_ids)
+
+    def test_new_ready_cards_join_shuffle_without_changing_displayed_question(self):
+        for index in range(6): self.generic(question=f"Ready card {index}")
+        waiting=self.vocabulary()
+        run=StudyRun.objects.create(user=self.user,deck=self.deck)
+        before=list(review.queue(run).values_list("pk",flat=True))
+        self.assertNotIn(waiting.pk,before)
+        p=review.next_presentation(run)
+        frozen=(p.pk,p.snapshot,p.budget,p.created_at)
+        self.client.get(reverse("presentation",args=[p.pk]))
+        self.ready(waiting)
+        after=list(review.queue(run).values_list("pk",flat=True))
+        self.assertCountEqual(after,before+[waiting.pk])
+        self.assertEqual([pk for pk in after if pk!=waiting.pk],before)
+        resumed=review.next_presentation(StudyRun.objects.get(pk=run.pk))
+        self.assertEqual((resumed.pk,resumed.snapshot,resumed.budget,resumed.created_at),frozen)
+        self.assertTrue(resumed.clock_claimed)
+        self.assertEqual(Presentation.objects.filter(run=run).count(),1)
+
+    def test_shuffle_respects_deferrals_and_saved_review_schedule(self):
+        for index in range(8): self.generic(question=f"Practice card {index}")
+        run=StudyRun.objects.create(user=self.user,deck=self.deck)
+        skipped=review.next_presentation(run)
+        review.submit(skipped,"skip")
+        closed=review.next_presentation(run)
+        review.exit_attempt(self.spoken(closed))
+        assessed=review.next_presentation(run)
+        a=self.spoken(assessed)
+        result=review.commit_grade(a.pk,a.claim,"E",[],"Complete fixture")
+        self.assertGreater(result.next_due,timezone.now())
+        remaining=list(review.queue(run).values_list("pk",flat=True))
+        self.assertEqual(len(remaining),5)
+        for p in [skipped,closed,assessed]: self.assertNotIn(p.card_id,remaining)
+        new_run=StudyRun.objects.create(user=self.user,deck=self.deck)
+        fresh=list(review.queue(new_run).values_list("pk",flat=True))
+        self.assertCountEqual(fresh,remaining+[skipped.card_id,closed.card_id])
+        self.assertEqual(ScoredReview.objects.count(),1)
 
     def test_direction_slots_and_pair_lock_race(self):
         """DIRECTION-BLOCK / PAIR-ROTATION / PAIR-LOCK-RACE."""

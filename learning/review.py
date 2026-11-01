@@ -5,7 +5,8 @@ import uuid
 from datetime import timedelta
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Case, When, Value, IntegerField
+from django.db.models import Case, When, Value, IntegerField, CharField
+from django.db.models.functions import Cast, Concat, MD5
 from django.utils import timezone
 from fsrs import Card as MemoryCard, Rating, Scheduler
 from .authoring import new_generation
@@ -22,10 +23,14 @@ def available(user, deck=None):
 
 
 def queue(run):
+    """Prioritize due reviews, then shuffle unseen cards reproducibly within this run."""
+    new_order = MD5(Concat(Value(f"{run.pk}:"), Cast("pk", output_field=CharField())))
     return available(run.user, run.deck).filter(due__lte=timezone.now()).exclude(
         pk__in=run.deferrals.values("card_id")).annotate(tier=Case(
             When(collection="Forgot", then=Value(0)), When(review_count__gt=0, then=Value(1)),
-            default=Value(2), output_field=IntegerField())).order_by("tier", "due", "pk")
+            default=Value(2), output_field=IntegerField())).order_by(
+                "tier", Case(When(tier__lt=2, then="due")),
+                Case(When(tier=2, then=new_order)), "pk")
 
 
 def snapshot(card):

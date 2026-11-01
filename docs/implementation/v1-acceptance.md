@@ -19,6 +19,8 @@ The application uses Django 5.2.18, Python 3.11, SQLite, fsrs 6.3.2 and markdown
 
 ## Executed verification
 
+This table records the initial V1 delivery. The [per-run shuffle follow-up](#per-run-new-card-shuffle-follow-up) records verification of the subsequent ordering change.
+
 | Layer | Executed result | Evidence and scope |
 | --- | --- | --- |
 | Offline application | 41 tests passed in 14.739 seconds | [Recorded result](offline-results.json), [learning rules](../../learning/tests/test_learning.py), [provider contracts](../../learning/tests/test_providers.py), [file-backed concurrency and worker recovery](../../learning/tests/test_concurrency.py). Uses deterministic providers where application behavior is the subject. |
@@ -117,3 +119,11 @@ The drill image precedes the final stale-work/unconfirmed-upload fixes, which do
 - Review language quality on personal learning material. All three configured default tasks worked on representative public fixtures; the compatible ASR route has contract-test coverage, not a live certification of every provider. This release makes no measured long-term retention or broad ASR/Judge accuracy claim.
 
 No public registration, additional UI languages, answer typing, sharing/marketplace, LiteLLM layer, mobile app or public-cloud deployment was added; those remain outside the agreed V1 boundary.
+
+## Per-run new-card shuffle follow-up
+
+Implemented on 2026-11-01: Ready unseen Generic and Vocabulary Cards use a stable hash of the run UUID and card ID. New runs independently reshuffle; Resume retains the ordering rule. Newly Ready cards join dynamically without replacing a displayed question. Due Forgot and reviewed Normal cards retain their existing priority and earliest-due/card-ID ordering. The change is contained in `queue(run)` and needs no schema migration.
+
+Verification: all 45 automated tests passed, including four new regressions for per-run stability/import-order independence, reviewed-card priority and candidate isolation, dynamic readiness with frozen presentations, and deferrals/saved schedules. All 10 Chromium browser groups passed with the real configured providers. The browser fixtures are now introduced as needed during the run rather than assuming CSV insertion order. Production HTTPS health and deployment checks passed; the deployed queue source matches the repository, and learner progress and generation-state fingerprints were unchanged across deployment.
+
+The initial provider-probe and cold-restore artifacts above remain records of the original delivery. Bulk-generation queue deadlines and failed-task retries were outside this follow-up and were not changed.
