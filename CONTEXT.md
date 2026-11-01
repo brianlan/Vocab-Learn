@@ -11,7 +11,7 @@ An authored learning card with a question, one reference answer, and an explanat
 A Generic Card with one or more blanks in its Markdown question. Distinct authored cards remain separate learning units, including cards that target the same vocabulary in different contexts.
 
 **Vocabulary Card**:
-A vocabulary-focused learning card containing a target expression, its meaning explanation, a Target Language, and a Native Language. Recognition and Production are alternative ways to review the same card.
+A vocabulary-focused learning card containing a target expression, its authored meaning explanation, a Target Language, and a Native Language. The authored explanation defines the intended sense and remains the teaching definition. Recognition and Production are alternative ways to review the same card.
 
 **Target Language**:
 The language of the expression being learned and of the response expected during Production.
@@ -29,7 +29,7 @@ A Vocabulary Card review that presents a native-language context and asks for th
 Aligned target-language and native-language sentences expressing the same situation, with corresponding expressions identified for review.
 
 **Example Revision**:
-A saved version of an Example Pair and its reference meaning used by a review, distinct from the vocabulary being learned.
+A saved version of an Example Pair and its generation provenance used by a review, distinct from the vocabulary being learned. It has no separately generated definition or native reference-answer paragraph.
 
 **Example Rotation**:
 Replacement of a Vocabulary Card's current Example Pair while preserving its learning progress and historical reviews.
@@ -47,7 +47,7 @@ One user's accumulated learning status for one Generic or Vocabulary Card, indep
 The assessment of one interaction with a card, distinct from the user's long-term learning progress.
 
 **Complete Recall**:
-Fulfillment of the current review goal: the intended meaning during Recognition or the required target expression/content during Production and Generic review.
+Fulfillment of the current review goal: a conventional equivalent lexical meaning during Recognition or the required target expression/content during Production and Generic review. Recognition does not require expanding a correct equivalent word into an exhaustive definition.
 
 **Partial Recall**:
 Retrieval that establishes relevant meaning but leaves the current review goal incomplete, including a suitable substitute for a required target expression.

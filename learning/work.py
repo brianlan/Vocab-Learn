@@ -13,7 +13,7 @@ from django.db import transaction, OperationalError
 from django.utils import timezone
 from . import providers
 from .models import Attempt, Card, ExamplePair, GenerationJob
-from .review import TERMINAL, commit_grade, grade_units, valid_presentation, defer
+from .review import TERMINAL, commit_grade, grade_units, valid_presentation, defer, adopt_corrected_cue
 
 
 def remaining(deadline):
@@ -166,6 +166,22 @@ def save_pair(job_id, claim, data, provenance):
         Card.objects.filter(pk=job.card_id).update(active_pair=pair, ready=True)
     job.result, job.provenance, job.state = pair, provenance, "done"
     job.save(update_fields=["result", "provenance", "state"])
+    return pair
+
+
+@transaction.atomic
+def save_corrected_pair(card_id, source_version, previous_pair_id, data, provenance):
+    card = Card.objects.select_related("deck", "active_pair").get(pk=card_id)
+    if (card.archived or card.deck.archived or not card.ready or
+            card.source_version != source_version or card.active_pair_id != previous_pair_id):
+        return None
+    pair = ExamplePair.objects.create(card=card, source_version=source_version, **data,
+        provenance={**provenance, "corrects_pair_id": previous_pair_id})
+    card.active_pair, card.rotation_token = pair, None
+    card.save(update_fields=["active_pair", "rotation_token"])
+    card.generation_jobs.filter(mode="rotation", state__in=["queued", "processing", "failed"]).update(
+        state="cancelled", claim=uuid.uuid4())
+    adopt_corrected_cue(card)
     return pair
 
 

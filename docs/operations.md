@@ -110,6 +110,21 @@ Skip and a confirmed unassessed exit set the card aside for 30 minutes across vi
 
 Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal. Read the back while processing; a service error permits the same-input Retry or a server-confirmed unassessed exit. Typed transcript changes and replacement recordings after reveal cannot affect the score.
 
+Vocabulary backs show the authored target and original explanation. Recognition accepts concise equivalent meanings such as 吸收 for absorb; a correct word does not have to expand every property in its definition. Production still requires the target expression for complete recall. Generated example pairs contain sentences and minimal highlights only, with no separate translated definition.
+
+### Correcting older Ready examples
+
+After upgrading to the lexical-pair prompt, preview and explicitly refresh a learner's existing examples:
+
+```sh
+docker compose exec web python manage.py refresh_examples alice --dry-run
+docker compose exec web python manage.py refresh_examples alice
+```
+
+The second command makes paid Generator calls with at most two concurrent requests, using the independently configured Generator profile. It saves new pair revisions and skips cards whose active pair already uses the current prompt version. Failed calls leave the old pair available; rerun explicitly to retry the remaining cards. Newer source/active-pair changes win over a stale correction result. Not-ready cards, archived sources and other users are excluded; this command does not retry bulk-import preparation failures.
+
+FSRS memory/due, collection, streak, review counts, direction position and historical grades stay intact. An unfinished question or fixed/failed submission in any scope keeps its original pair; the correction takes effect at a later safe presentation boundary. Obsolete rotation work is cancelled. Run this command separately from the cold-backup maintenance window.
+
 ## Persistence, audio expiry, and upgrade
 
 Named volumes are `app_data`, `audio_tmp`, `caddy_data` and `caddy_config`. SQLite starts in rollback-journal mode. Do not enable WAL without verifying the runtime/topology. Do not delete volumes during an ordinary restart.
@@ -130,6 +145,8 @@ docker compose up -d web worker caddy
 ```
 
 Migration `0004_continuous_practice` removes historical run metadata while preserving card progress, presentations, attempts, scored reviews, frozen inputs and deadlines. It also copies presentation scope and the remaining time of recent valid neutral deferrals. Legacy unassessed exits have no separate closure timestamp, so their remaining deferral is reconstructed from the saved submission time. Take a cold backup and retain its exact image before upgrading; this migration is not reversible with `migrate` alone. Roll back using the pre-upgrade backup and matching image. Existing question URLs remain valid; old run bookmarks redirect to the dashboard and old start forms redirect to Practice.
+
+Migration `0005_remove_examplepair_gloss` intentionally removes the generated definition column from example pairs. All other fields and historical presentation/review JSON remain unchanged; old grades are not recalculated. Retain the pre-upgrade cold backup and image to recover that removed column on rollback. Existing Ready sentences need the explicit correction command above to benefit from the new generation prompt.
 
 ## Delivered cold backup and restore
 

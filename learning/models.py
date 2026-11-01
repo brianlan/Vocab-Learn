@@ -62,7 +62,6 @@ class ExamplePair(models.Model):
     target_highlight = models.TextField()
     native_sentence = models.TextField()
     native_highlight = models.TextField()
-    gloss = models.TextField()
     provenance = models.JSONField(default=dict)
     created_at = models.DateTimeField(default=timezone.now)
 

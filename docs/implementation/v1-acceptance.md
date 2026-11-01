@@ -19,7 +19,7 @@ The application uses Django 5.2.18, Python 3.11, SQLite, fsrs 6.3.2 and markdown
 
 ## Executed verification
 
-This table records the initial V1 delivery. The [continuous-practice follow-up](#continuous-practice-follow-up) records current behavior; the per-run shuffle follow-up below is historical and superseded.
+This table records the initial V1 delivery. The continuous-practice and Vocabulary lexical-meaning follow-ups below record later changes; the per-run shuffle follow-up is historical and superseded.
 
 | Layer | Executed result | Evidence and scope |
 | --- | --- | --- |
@@ -103,6 +103,8 @@ The named specification cases are mapped below. This map identifies available im
 | ARCHIVE-RESTORE | L: `archive_restore_does_not_revive_old_execution`, `independent_same_word_cards_preserve_other_progress`, `format_only_edits_preserve_progress`; Browser: own deck archive. |
 | PROFILE-DISPATCH | L: `profile_dispatch_snapshot_retry_and_cached_asr_provenance`; P: independent settings/native versus compatible wire contracts/default-key origin restriction; actual MiniMax profiles in Live. |
 | PRACTICE-MIGRATION | `test_migrations.py`: previous-schema scored history, cached transcript, scoped/all-deck presentations, recent/expired/stale deferrals; actual versioned migration, table removal and foreign-key integrity checks. |
+| VOCAB-LEXICAL | P: `vocabulary_judge_uses_authored_meaning_and_only_visible_context`; L: `vocabulary_back_uses_authored_target_and_explanation_for_legacy_and_new_reviews`; [live lexical probes](lexical-provider-results.json); Browser: original English Vocabulary back. |
+| EXAMPLE-CORRECTION | L: `example_correction_preserves_held_question_then_replaces_retained_cue`, `example_correction_is_source_fenced_and_keeps_submissions_in_other_scopes`, `refresh_command_scopes_ready_cards_and_retries_only_remaining_failures`; migration test `removing_generated_gloss_preserves_pair_and_frozen_history`; actual cold-artifact rehearsal and production field comparisons. |
 
 ## Backup/restore evidence details
 
@@ -116,7 +118,7 @@ The drill image precedes the final stale-work/unconfirmed-upload fixes, which do
 
 - Test real microphones in desktop Chrome and Edge on the intended clients. Synthetic/headless Chromium cannot establish microphone hardware quality, device selection, real permission dialogs or Edge behavior.
 - Configure name resolution and trust the exported Caddy public root on each LAN client, then confirm warning-free HTTPS and actual recording. Server-side hostname/chain verification has passed; no other device's trust store has been installed or verified automatically.
-- Complete the product acceptance pass using the 45 specification cases and these evidence references. Some tests combine cases or exercise representative branches: exact 9+2+1-second browser refresh arithmetic, every delayed rotation winner, every crash instruction boundary and live hot replacement of all three providers have not all been individually replayed.
+- Complete the product acceptance pass using the 48 specification cases and these evidence references. Some tests combine cases or exercise representative branches: exact 9+2+1-second browser refresh arithmetic, every delayed rotation winner, every crash instruction boundary and live hot replacement of all three providers have not all been individually replayed.
 - Review language quality on personal learning material. All three configured default tasks worked on representative public fixtures; the compatible ASR route has contract-test coverage, not a live certification of every provider. This release makes no measured long-term retention or broad ASR/Judge accuracy claim.
 
 No public registration, additional UI languages, answer typing, sharing/marketplace, LiteLLM layer, mobile app or public-cloud deployment was added; those remain outside the agreed V1 boundary.
@@ -138,3 +140,19 @@ Implemented on 2026-11-01 following [ADR 0001](../adr/0001-continuous-practice.m
 Before production migration, the delivered cold-backup command produced a private snapshot and its matching old image was retained. That actual artifact was restored into an isolated volume and migrated successfully. Rehearsal and production checks compared all existing fields of users, decks, cards, example pairs, presentations, attempts, scored reviews and generation jobs, excluding the intentionally removed run foreign key. Selected presentation scopes were compared separately; all matched. SQLite integrity/foreign keys passed, obsolete tables were absent, and the deployed sources, trusted HTTPS, login and private pages were verified. The temporary rehearsal volume was removed; the private backup remains under ignored `backups/`.
 
 Bulk-generation queue timeout handling and failed-task retries remain unchanged. Physical microphone and Edge checks were not repeated. Legacy unassessed closures have no separate closure timestamp; their migration deferral uses the original saved submission time, as documented in operations.
+
+## Vocabulary lexical-meaning follow-up
+
+Implemented on 2026-11-02 following [ADR 0002](../adr/0002-authored-vocabulary-meaning.md): generate only aligned sentences and minimal lexical highlights, prefer precise conventional translations, and grade Recognition against the authored explanation/visible context. Concise equivalents such as 吸收 are complete; genuine imprecision remains partial, and Production still requires the authored target. Both backs show the original word/explanation. The removed ExamplePair.gloss is neither a new teaching definition nor a new judgment reference; old snapshot JSON and grades remain intact.
+
+The [lexical provider probes](lexical-provider-results.json) record representative semantic evidence and development failures caught by structural validation. Inspection also exposed derived target forms and Chinese highlight particles absent from their sentence. The final prompt explicitly permits inflection without derivation. The provider adapter now extracts highlights from inline focus markers in two generated sentences rather than trusting separately generated span strings; it returns the same four plaintext application fields. Missing/empty/repeated/reversed markers and repeated expressions are rejected. Field/span validation does not establish linguistic accuracy.
+
+The explicit `refresh_examples` command corrects older Ready pairs with at most two concurrent provider requests and serial, source-fenced persistence. It preserves unfinished presentations/submissions across scopes, supports repeated corrections before a held question resolves, cancels obsolete rotation work and leaves failed calls' old pairs available. Not-ready cards and initial-generation jobs are excluded; successful corrections are skipped on rerun. No automatic paid retry or learner-facing configuration was added.
+
+[Verification results](lexical-results.json) record 55 passing automated tests, 21 passing Judge cases, 11 Generator cases reaching valid reviewed output, and 12 passing Chromium workflow groups with real configured providers and a synthetic microphone. One Generator response omitted the required markers, was rejected, and passed an explicit operator rerun; the [provider evidence](lexical-provider-results.json) retains that failed attempt. The actual historical absorb/吸收 snapshot was separately reassessed as complete without rewriting its saved C grade. Browser checks verify the original English explanation and that focus markers do not reach the page.
+
+Before the schema upgrade, the delivered cold-backup command saved the original data and its matching image was retained. The actual backup was restored into an isolated volume and migrated; rehearsal and production comparisons matched every field except the intentionally removed ExamplePair.gloss, including historical JSON, scopes, accounts, source/progress, attempts and generation jobs. SQLite integrity and foreign keys passed. The rehearsal volume was removed and the private backup remains ignored under `backups/`.
+
+All 75 existing Ready cards for the selected learner received new pair revisions, followed by two word-class corrections found during inspection. Original source/progress/history and old-pair fingerprints remained unchanged, excluding authorized active/cue pointers and superseded rotation intent. The 1,126 not-ready sources and all initial-generation jobs were untouched; rerun preview reports zero remaining old Ready pairs. The final inline-marker refinement changes only the provider wire format, so these normalized plaintext pairs remain usable. Trusted HTTPS, login/CSRF/secure session, private pages/assets and deployed runtime source hashes passed. Physical microphones and Edge were not retested; linguistic quality remains model-dependent.
+
+![Vocabulary back with the authored English explanation](previews/vocabulary-back.png)

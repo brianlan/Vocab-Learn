@@ -1,0 +1,64 @@
+{
+  "status": "passed",
+  "change": "Authored Vocabulary meaning, inline-focus examples and concise-equivalent grading",
+  "schema_migration": "learning.0005_remove_examplepair_gloss",
+  "automated_tests": {
+    "count": 55,
+    "seconds": 15.215
+  },
+  "live_providers": {
+    "judge_cases": 21,
+    "generator_cases": 11,
+    "generator_initial_rejections": 1,
+    "generator_explicit_reruns": 1,
+    "actual_historical_absorb_response_reassessed_complete": true,
+    "historical_grade_unchanged": true
+  },
+  "browser": {
+    "groups": 12,
+    "type": "Headless Chromium, synthetic microphone; physical device and Edge remain manual checks",
+    "focus_markers_removed_before_display": true
+  },
+  "migration": {
+    "cold_backup_and_matching_image_retained": true,
+    "actual_backup_rehearsal_passed": true,
+    "production_preserved_all_other_fields_and_historical_json": true,
+    "integrity_and_foreign_keys_passed": true,
+    "backup_procedure_sha256": "0bf424a6c674104ba020555a6d869c8248843b6e97fb5e6fcb95dab632e0ca4f"
+  },
+  "existing_ready_examples": {
+    "cards_corrected": 75,
+    "failed": 0,
+    "word_class_follow_up_revisions": 2,
+    "progress_sources_history_and_original_pairs_preserved": true,
+    "initial_generation_jobs_unchanged": true,
+    "not_ready_cards_unchanged": 1126,
+    "remaining_old_ready_pairs_on_rerun": 0,
+    "bulk_generation_prompt_sha256": "2954a02b0a421bbb725af7517161328c16265e8d6fa62d23107d6ea1115f60af",
+    "scope": "Existing Ready corrections were generated before the final inline-marker refinement; their normalized data was reviewed, with the two word-class follow-ups explicitly corrected. The inline-marker refinement did not change the four normalized sentence/highlight fields."
+  },
+  "deployment": {
+    "image": "sha256:4aec713b2954189e16237d4aebd9d4cbf43f2306ad4a392b7039117ee362a719",
+    "trusted_https_health": true,
+    "login_csrf_secure_session": true,
+    "private_pages_and_assets": true,
+    "source_sha256": {
+      "learning/models.py": "ac67b1cc57cda1633c7148953df57f5231de387f13f60d2d1865b5769b97c70f",
+      "learning/providers.py": "d59d353d7f290eb17a9287c83565ef01420fe3de0bcc7faeb95064cf667d5c5d",
+      "learning/review.py": "cde27e4b4573189abcf8e9244a6d25f0fe44704b0c0b08ca84dfd254ac3db867",
+      "learning/work.py": "91b3e05dbfa41788b8129071260c72c610b0e6443cb6bdd087bb56a0e78022e3",
+      "learning/management/commands/refresh_examples.py": "bc4d05e7600aa95535ed91b9048470d265a4ff62b23726593f4a230b33a36797",
+      "learning/migrations/0005_remove_examplepair_gloss.py": "1c4057928539b6713ef61a30319fa6a88e991ce443e188ed51a448b7d3848c74",
+      "templates/learning/back.html": "a0de1e4699d7f1fc7888bdf899f4cd6e4515d1c2d6c2373e467e968f152996e1",
+      "templates/learning/card.html": "23640cf99e731b810dd5fc13c09174450ff5b92c647264ff8c761a7132d86ff3",
+      "templates/learning/review.html": "ea147f6823d5936198a7c8b1e6b42762a8956e531a187484fd3878388f15eedb",
+      "templates/learning/statistics.html": "089614a8228b5924093c1e039cfdb671dd94236e302cce5e2439aed09ed98f56"
+    },
+    "deployed_source_matches": true
+  },
+  "limits": [
+    "Models can still produce invalid or linguistically imperfect output; rejected calls require explicit retry.",
+    "Bulk generation queue timeout/retry handling was not changed; not-ready sources were not retried.",
+    "Physical microphones and Edge were not retested."
+  ]
+}

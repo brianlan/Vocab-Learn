@@ -79,18 +79,51 @@ class ProviderTests(TestCase):
         result=p.validate_units({"units":[good,{"id":2,"outcome":"incorrect","reason":"Learner left blank unanswered"}]},[1,2])
         self.assertEqual(result[1]["outcome"],"incorrect")
 
+    def test_vocabulary_judge_uses_authored_meaning_and_only_visible_context(self):
+        legacy = {"kind":"vocabulary", "direction":"recognition", "word":"absorb",
+            "explanation":"Soak up liquid and hold it.", "question_text":"The sponge absorbs the water.",
+            "target_highlight":"absorbs", "native_sentence":"海绵把水吸进去并留住了。",
+            "native_highlight":"把水吸进去并留住了", "reference":"海绵把水吸进去并留在里面。",
+            "gloss":"海绵把水吸进去并留在里面。", "language":"Chinese", "units":1}
+        result={"units":[{"id":1,"outcome":"complete","reason":"Equivalent lexical meaning."}]}
+        with patch("learning.providers.chat",return_value=result) as chat:
+            units,metadata=p.assess(legacy,"吸收",self.profile())
+        payload=chat.call_args.args[2]
+        self.assertEqual(payload["explanation"],legacy["explanation"])
+        self.assertEqual(payload["word"],"absorb")
+        self.assertEqual(payload["transcript"],"吸收")
+        for hidden in ["reference","gloss","native_sentence","native_highlight"]:
+            self.assertNotIn(hidden,payload)
+        self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["JUDGE"])
+        generic={"kind":"generic","reference":"call off","units":1}
+        with patch("learning.providers.chat",return_value=result) as chat:
+            p.assess(generic,"cancel",self.profile())
+        self.assertEqual(chat.call_args.args[2]["reference"],"call off")
+
     def test_invalid_pair_shape_highlights_and_answer_leak(self):
-        valid={"target_sentence":"A bank is nearby.","target_highlight":"bank","native_sentence":"银行就在附近。","native_highlight":"银行","gloss":"银行"}
-        self.assertEqual(p.validate_pair(valid,"bank"),valid)
-        with self.assertRaises(p.StageError): p.validate_pair({**valid,"gloss":"A financial institution"},"bank","Chinese")
-        for changed in [{"native_highlight":"bank","native_sentence":"bank"},{"target_sentence":"bank bank"},{"gloss":""},
-                        {"native_sentence":"bank这个词表示银行。","native_highlight":"银行"}]:
+        valid={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}
+        plain={"target_sentence":"A bank is nearby.","target_highlight":"bank","native_sentence":"银行就在附近。","native_highlight":"银行"}
+        self.assertEqual(p.validate_pair(valid,"bank"),plain)
+        with self.assertRaises(p.StageError): p.validate_pair({**valid,"gloss":"银行"},"bank","Chinese")
+        with self.assertRaises(p.StageError): p.validate_pair({**valid,"native_sentence":"A financial <focus>institution</focus>."},"bank","Chinese")
+        for changed in [{"native_sentence":"<focus>bank</focus>"},
+                        {"target_sentence":"bank <focus>bank</focus>"},
+                        {"native_sentence":"<focus></focus>就在附近。"},
+                        {"native_sentence":"银行就在附近。"},
+                        {"native_sentence":"<focus><focus>银行</focus></focus>就在附近。"},
+                        {"native_sentence":"</focus>银行<focus>就在附近。"},
+                        {"native_sentence":"bank这个词表示<focus>银行</focus>。"}]:
             with self.assertRaises(p.StageError): p.validate_pair({**valid,**changed},"bank")
+        marked={"target_sentence":"The <focus>abrupt</focus> change surprised us.",
+                "native_sentence":"这个<focus>突然的</focus>变化让我们吃惊。"}
+        result=p.validate_pair(marked,"abrupt","Chinese")
+        self.assertEqual(result["native_highlight"],"突然的")
+        self.assertNotIn("<focus>",result["native_sentence"])
 
     def test_rotation_requires_both_new_sentences_and_configuration_rejects_nan(self):
-        pair={"target_sentence":"A bank is nearby.","target_highlight":"bank","native_sentence":"银行就在附近。","native_highlight":"银行","gloss":"银行"}
+        pair={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}
         with patch("learning.providers.chat",return_value=pair):
-            with self.assertRaises(p.StageError): p.generate({"word":"bank","previous_pair":pair},self.profile("GENERATOR"))
+            with self.assertRaises(p.StageError): p.generate({"word":"bank","previous_pair":p.validate_pair(pair,"bank")},self.profile("GENERATOR"))
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only"},clear=True):
             for value in ["nan","-1","inf"]:
                 with patch.dict(os.environ,{"JUDGE_TIMEOUT_SECONDS":value}):

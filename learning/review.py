@@ -43,13 +43,27 @@ def snapshot(card):
     recognition = card.cue_direction == "recognition"
     sentence, expression = ((pair.target_sentence, pair.target_highlight) if recognition else (pair.native_sentence, pair.native_highlight))
     return {**base, "question_html": highlight(sentence, expression), "question_text": sentence,
-            "reference": pair.gloss if recognition else card.word, "word": card.word,
+            "reference": card.word, "word": card.word,
             "units": 1, "reading_count": sum(not c.isspace() for c in sentence), "direction": card.cue_direction,
             "language": card.native_language if recognition else card.target_language,
-            "goal": "Explain the complete highlighted meaning" if recognition else "Recall the authored target expression",
+            "goal": "Give a concise equivalent lexical meaning" if recognition else "Recall the authored target expression",
             "pair_id": pair.pk, "target_sentence": pair.target_sentence, "target_highlight": pair.target_highlight,
             "native_sentence": pair.native_sentence, "native_highlight": pair.native_highlight,
-            "gloss": pair.gloss, "target_language": card.target_language, "native_language": card.native_language}
+            "target_language": card.target_language, "native_language": card.native_language}
+
+
+def adopt_corrected_cue(card):
+    if not card.cue_pair_id or card.active_pair_id == card.cue_pair_id:
+        return
+    if not card.active_pair.provenance.get("corrects_pair_id"):
+        return
+    # Keep every unfinished presentation frozen, including one opened in another scope.
+    held = Presentation.objects.filter(card=card, source_version=card.source_version,
+        progress_version=card.progress_version, invalidated=False, snapshot__pair_id=card.cue_pair_id).filter(
+            Q(attempt__isnull=True) | Q(attempt__state__in=["submitted", "processing", "failed"]))
+    if not held.exists():
+        card.cue_pair = card.active_pair
+        card.save(update_fields=["cue_pair"])
 
 
 @transaction.atomic
@@ -69,6 +83,7 @@ def next_question(user, deck=None):
     if not card:
         return None
     if card.kind == "vocabulary":
+        adopt_corrected_cue(card)
         if card.cue_pair_id is None:
             candidate = card.generation_jobs.filter(mode="rotation", token=card.rotation_token, source_version=card.source_version,
                                                      state="done", result__isnull=False).first() if card.rotation_token else None
@@ -83,7 +98,8 @@ def next_question(user, deck=None):
     frozen = snapshot(card)
     return Presentation.objects.create(user=user, scope_deck=deck, card=card, source_version=card.source_version,
         progress_version=card.progress_version, snapshot=frozen,
-        budget=recall_budget(frozen["units"], frozen["reading_count"], frozen["reference"]))
+        budget=recall_budget(frozen["units"], frozen["reading_count"],
+            frozen["native_highlight"] if frozen["direction"] == "recognition" else frozen["reference"]))
 
 
 def valid_presentation(p, anchor=None):

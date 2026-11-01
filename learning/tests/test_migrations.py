@@ -11,6 +11,48 @@ from fsrs import Card as MemoryCard, Rating, Scheduler
 
 
 class ContinuousPracticeMigrationTests(TestCase):
+    def test_removing_generated_gloss_preserves_pair_and_frozen_history(self):
+        alias="lexical_migration_test"
+        with tempfile.TemporaryDirectory() as folder:
+            config=copy.deepcopy(connections["default"].settings_dict)
+            config["NAME"]=str(Path(folder)/"legacy.sqlite3")
+            connections.databases[alias]=config
+            connection=connections[alias]
+            try:
+                executor=MigrationExecutor(connection)
+                old_target=[("learning","0004_continuous_practice")]
+                executor.migrate(old_target)
+                old=executor.loader.project_state(old_target).apps
+                user=old.get_model("auth","User").objects.using(alias).create(username="learner",password="!")
+                deck=old.get_model("learning","Deck").objects.using(alias).create(owner_id=user.pk,name="Private")
+                card=old.get_model("learning","Card").objects.using(alias).create(deck_id=deck.pk,
+                    kind="vocabulary",word="absorb",explanation="Soak up liquid and hold it.",identity="absorb",
+                    target_language="English",native_language="Chinese",fsrs={"unchanged":"memory"},review_count=3)
+                pair=old.get_model("learning","ExamplePair").objects.using(alias).create(card_id=card.pk,source_version=1,
+                    target_sentence="The sponge absorbs the water.",target_highlight="absorbs",
+                    native_sentence="海绵把水吸进去并留住了。",native_highlight="把水吸进去并留住了",gloss="吸进去并留住")
+                card.active_pair_id=pair.pk;card.cue_pair_id=pair.pk;card.cue_direction="recognition";card.save(using=alias)
+                frozen={"kind":"vocabulary","word":"absorb","reference":"吸进去并留住","gloss":"吸进去并留住"}
+                presentation=old.get_model("learning","Presentation").objects.using(alias).create(user_id=user.pk,
+                    card_id=card.pk,source_version=1,progress_version=0,snapshot=frozen,budget=18)
+                attempt=old.get_model("learning","Attempt").objects.using(alias).create(presentation_id=presentation.pk,
+                    action="speak",state="assessed",transcript="吸收",grade="C",reason="Original judgment.")
+                old.get_model("learning","ScoredReview").objects.using(alias).create(attempt_id=attempt.pk,
+                    card_id=card.pk,user_id=user.pk,grade="C",reviewed_at=timezone.now(),next_due=card.due,
+                    snapshot=frozen,fsrs_log={},duration=2,budget=18)
+                names=["Card","ExamplePair","Presentation","Attempt","ScoredReview"]
+                before={name:list(old.get_model("learning",name).objects.using(alias).order_by("pk").values()) for name in names}
+                before["ExamplePair"][0].pop("gloss")
+                target=[("learning","0005_remove_examplepair_gloss")]
+                executor=MigrationExecutor(connection);executor.migrate(target)
+                new=executor.loader.project_state(target).apps
+                for name in names:
+                    self.assertEqual(list(new.get_model("learning",name).objects.using(alias).order_by("pk").values()),before[name])
+            finally:
+                connection.close()
+                del connections[alias]
+                del connections.databases[alias]
+
     def test_existing_progress_submissions_history_and_scope_survive_run_removal(self):
         alias="continuous_migration_test"
         with tempfile.TemporaryDirectory() as folder:

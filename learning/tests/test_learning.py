@@ -9,6 +9,7 @@ from html.parser import HTMLParser
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
+from django.core.management import call_command, CommandError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -18,14 +19,14 @@ from django.urls import reverse
 from django.utils import timezone
 from learning import authoring, review, work
 from learning.models import Deck, Card, Presentation, Attempt, ExamplePair, GenerationJob, ScoredReview
-from learning.providers import StageError
+from learning.providers import StageError, PROMPT_VERSIONS
 from learning.rendering import render, recall_budget
 
 GENERIC = {"question": "What is two plus two?", "answer": "four", "explanation": "Two pairs make four."}
 VOCAB = {"word": "misunderstanding", "explanation": "A problem caused by people understanding each other incorrectly.",
          "target_language": "English", "native_language": "Chinese"}
 PAIR = {"target_sentence": "A small misunderstanding stopped the conversation.", "target_highlight": "misunderstanding",
-        "native_sentence": "一个小小的误会打断了谈话。", "native_highlight": "误会", "gloss": "误会"}
+        "native_sentence": "一个小小的误会打断了谈话。", "native_highlight": "误会"}
 
 
 def audio_bytes():
@@ -184,6 +185,100 @@ class LearningTests(TestCase):
         response=self.client.get(reverse("status",args=[p.pk]))
         self.assertIn("misunderstanding",response.json()["back_html"])
         self.assertEqual(a.presentation.snapshot["language"],"English")
+
+    def test_vocabulary_back_uses_authored_target_and_explanation_for_legacy_and_new_reviews(self):
+        card=self.ready(self.vocabulary())
+        card.direction_block=["recognition","production"];card.save()
+        p=self.present(card)
+        self.assertEqual(p.snapshot["reference"],card.word)
+        self.assertNotIn("gloss",p.snapshot)
+        self.assertEqual(p.budget,recall_budget(1,p.snapshot["reading_count"],PAIR["native_highlight"]))
+        # Display old frozen reviews consistently without rewriting their historical input.
+        p.snapshot.update(reference="A legacy generated native definition",gloss="A legacy generated native definition")
+        p.save(update_fields=["snapshot"])
+        review.submit(p,"skip")
+        html=self.client.get(reverse("status",args=[p.pk])).json()["back_html"]
+        self.assertIn('<h2 class="answer">misunderstanding</h2>',html)
+        self.assertIn(card.explanation,html)
+        self.assertNotIn("A legacy generated native definition",html)
+        p.refresh_from_db();self.assertEqual(p.snapshot["gloss"],"A legacy generated native definition")
+
+    def test_example_correction_preserves_held_question_then_replaces_retained_cue(self):
+        card=self.ready(self.vocabulary());self.score(card,"E");card.refresh_from_db()
+        p=self.present(card);card.refresh_from_db()
+        frozen=p.snapshot.copy()
+        before={key:getattr(card,key) for key in ["fsrs","due","deferred_until","collection","streak",
+            "review_count","source_version","progress_version","direction_block","direction_index","cue_direction"]}
+        job=card.generation_jobs.get(mode="rotation",state="queued")
+        job.state="processing";job.save()
+        pair=work.save_corrected_pair(card.pk,card.source_version,card.active_pair_id,
+            {**PAIR,"native_sentence":"那次误会很小。"},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
+        card.refresh_from_db()
+        self.assertEqual({key:getattr(card,key) for key in before},before)
+        self.assertEqual(card.active_pair_id,pair.pk)
+        self.assertEqual(card.cue_pair_id,frozen["pair_id"])
+        self.assertTrue(review.valid_presentation(p))
+        self.assertEqual(review.next_question(self.user,self.deck).pk,p.pk)
+        self.assertIsNone(work.save_pair(job.pk,job.claim,PAIR,{}))
+        job.refresh_from_db();self.assertEqual(job.state,"cancelled")
+        self.assertIsNone(card.rotation_token)
+        self.assertEqual(ScoredReview.objects.count(),1)
+        pair=work.save_corrected_pair(card.pk,card.source_version,pair.pk,
+            {**PAIR,"native_sentence":"他们有个误会。"},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
+        review.submit(p,"skip")
+        p.refresh_from_db();self.assertEqual(p.snapshot,frozen)
+        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(minutes=31)):
+            fresh=self.present()
+        self.assertEqual(fresh.snapshot["pair_id"],pair.pk)
+        self.assertEqual(fresh.snapshot["direction"],frozen["direction"])
+        self.assertEqual(card.pairs.count(),3)
+
+    def test_example_correction_is_source_fenced_and_keeps_submissions_in_other_scopes(self):
+        card=self.ready(self.vocabulary());p=review.next_question(self.user)
+        a=self.spoken(p);frozen=p.snapshot.copy()
+        card.refresh_from_db();old_pair=card.active_pair_id
+        pair=work.save_corrected_pair(card.pk,card.source_version,old_pair,PAIR,{})
+        self.assertIsNotNone(pair)
+        self.assertIsNone(work.save_corrected_pair(card.pk,card.source_version,old_pair,PAIR,{}))
+        self.assertIsNone(work.save_corrected_pair(card.pk,card.source_version+1,pair.pk,PAIR,{}))
+        card.refresh_from_db();self.assertEqual(card.cue_pair_id,old_pair)
+        a.refresh_from_db();self.assertEqual(a.state,"processing")
+        self.assertTrue(review.valid_presentation(p))
+        result=review.commit_grade(a.pk,a.claim,"D",[],"Still assess the frozen question.")
+        self.assertEqual(result.state,"assessed")
+        self.assertEqual(ScoredReview.objects.get().snapshot,frozen)
+        next_p=self.present(card);self.assertEqual(next_p.snapshot["pair_id"],pair.pk)
+
+    def test_refresh_command_scopes_ready_cards_and_retries_only_remaining_failures(self):
+        ready=self.ready(self.vocabulary())
+        second=self.ready(self.vocabulary(word="another"))
+        self.vocabulary(word="not-ready")
+        foreign_deck=Deck.objects.create(owner=self.other,name="Private")
+        foreign=self.ready(authoring.save_card(foreign_deck,"vocabulary",VOCAB))
+        output=io.StringIO()
+        with patch("learning.providers.generate") as generate:
+            call_command("refresh_examples",self.user.username,dry_run=True,stdout=output)
+        generate.assert_not_called()
+        self.assertIn("Examples needing correction: 2",output.getvalue())
+
+        def generate(source,profile):
+            if source["word"]=="another":raise StageError("GENERATOR","Temporary provider failure")
+            return PAIR,{"prompt_version":PROMPT_VERSIONS["GENERATOR"]}
+        with patch("learning.providers.profile"),patch("learning.providers.generate",side_effect=generate):
+            with self.assertRaises(CommandError):
+                call_command("refresh_examples",self.user.username,stdout=output,stderr=io.StringIO())
+        ready.refresh_from_db();second.refresh_from_db();foreign.refresh_from_db()
+        self.assertEqual(ready.pairs.count(),2)
+        self.assertEqual(second.pairs.count(),1)
+        self.assertEqual(foreign.pairs.count(),1)
+        with patch("learning.providers.profile"),patch("learning.providers.generate",
+                return_value=(PAIR,{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})) as generate:
+            call_command("refresh_examples",self.user.username,stdout=output)
+        self.assertEqual(generate.call_count,1)
+        second.refresh_from_db();self.assertEqual(second.pairs.count(),2)
+        with patch("learning.providers.profile") as profile:
+            call_command("refresh_examples",self.user.username,stdout=output)
+        profile.assert_not_called()
 
     def test_judgment_precedence_and_time_boundary(self):
         """GENERIC-MULTI / VOCAB-GRADING / UNIT-IDENTITY / CLOCK-BOUNDARY."""
@@ -351,7 +446,7 @@ class LearningTests(TestCase):
                     job=card.generation_jobs.get();job.state="processing";job.save()
                     data={**PAIR}
                     if target=="Spanish": data.update(target_sentence="Un malentendido interrumpió la conversación.",target_highlight="malentendido")
-                    if native=="Spanish": data.update(native_sentence="Un malentendido interrumpió la conversación.",native_highlight="malentendido",gloss="malentendido")
+                    if native=="Spanish": data.update(native_sentence="Un malentendido interrumpió la conversación.",native_highlight="malentendido")
                     work.save_pair(job.pk,job.claim,data,{"fixture":"controlled pair"});card.refresh_from_db()
                     card.direction_block=[direction,"production" if direction=="recognition" else "recognition"];card.save()
                     p=review.next_question(self.user,deck)

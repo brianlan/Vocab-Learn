@@ -45,7 +45,7 @@ def run(options):
         page.wait_for_selector("#review-card"); assert page.locator(".prompt").inner_text()=="What is two plus two?"
         assert "four" not in page.content().lower()
         page.screenshot(path=str(output/"review-front.png"),full_page=True)
-        checked("Manual entry, deck-scoped run, front has no hidden reference")
+        checked("Manual entry, deck-scoped practice, front has no hidden reference")
         page.get_by_role("button",name=re.compile("Speak")).click()
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
         page.wait_for_timeout(1800); page.get_by_role("button",name="Stop & check").click()
@@ -129,7 +129,16 @@ def run(options):
         checked("Vocabulary manual creation and actual durable Generator preparation")
         page.goto(empty_url);page.wait_for_selector("#review-card")
         assert page.url!=empty_url
+        assert "<focus>" not in page.locator(".prompt").inner_text()
         checked("Newly Ready Vocabulary enters practice from the previously empty URL")
+        page.get_by_role("button",name=re.compile("Skip")).click()
+        page.wait_for_selector("#next-card")
+        assert page.locator(".answer").inner_text()=="misunderstanding"
+        assert page.locator(".explanation").inner_text()=="A problem caused when people understand one another incorrectly."
+        assert page.locator(".paired-examples p").count()==2
+        assert "<focus>" not in page.locator(".paired-examples").inner_text()
+        page.screenshot(path=str(output/"vocabulary-back.png"),full_page=True)
+        checked("Vocabulary back retains the authored expression/English explanation and paired examples")
         page.goto(deck_url); page.get_by_role("button",name="Archive deck",exact=True).click()
         page.screenshot(path=str(output/"library.png"),full_page=True)
         assert page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")

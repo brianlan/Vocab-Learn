@@ -1,0 +1,805 @@
+{
+  "status": "passed",
+  "judge_checks": 21,
+  "generator_checks": 11,
+  "generator_request_attempts": 12,
+  "prompt_sha256": {
+    "judge": "b2f4e98ea1e2019732e077658f73198587221d81209f557a1e4c72e6f606acbb",
+    "generator": "9dd87d883819bf6e426838e9dd6b0299178e3478b1ca677359bb30781c347e94"
+  },
+  "results": [
+    {
+      "name": "GENERIC-MULTI",
+      "status": "passed",
+      "seconds": 3.04,
+      "expected": [
+        "complete",
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The learner correctly said “call off.”"
+        },
+        {
+          "id": 2,
+          "outcome": "complete",
+          "reason": "The learner correctly said “feeling unwell.”"
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "GENERIC-TARGET-LIVE",
+      "status": "passed",
+      "seconds": 3.3,
+      "expected": [
+        "partial",
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "“Cancel” is a suitable synonym for “call off,” but not the authored target expression."
+        },
+        {
+          "id": 2,
+          "outcome": "complete",
+          "reason": "“Feeling unwell” exactly matches the intended meaning."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "GENERIC-SENTENCE",
+      "status": "passed",
+      "seconds": 7.78,
+      "expected": [
+        "complete",
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "Correctly used “call off” to mean cancel."
+        },
+        {
+          "id": 2,
+          "outcome": "complete",
+          "reason": "Correctly expressed the cause as “feeling unwell.”"
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "RECOGNITION-CHINESE",
+      "status": "passed",
+      "seconds": 3.47,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“彼此理解错了” correctly expresses a misunderstanding between people."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "RECOGNITION-SPANISH",
+      "status": "passed",
+      "seconds": 4.53,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“Entenderse mal” correctly conveys understanding each other incorrectly."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "RECOGNITION-SPANISH-CHINESE",
+      "status": "passed",
+      "seconds": 2.64,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“误会” correctly conveys the meaning of “malentendido” in the context."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "PARTIAL-MEANING",
+      "status": "passed",
+      "seconds": 3.64,
+      "expected": [
+        "partial"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "“改时间” means changing the time but does not specify that the meeting is rescheduled to a later time."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "WRONG-MEANING",
+      "status": "passed",
+      "seconds": 2.67,
+      "expected": [
+        "incorrect"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "incorrect",
+          "reason": "“取消” means “cancel,” which is the opposite of postponing the meeting to a later time."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "PRODUCTION-TARGET",
+      "status": "passed",
+      "seconds": 3.11,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The learner correctly produced the target word \"misunderstanding\" in the appropriate form."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "PRODUCTION-SUBSTITUTE",
+      "status": "passed",
+      "seconds": 5.04,
+      "expected": [
+        "partial"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "“Shore” conveys the intended meaning but is a substitute for the target word “bank.”"
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "PRODUCTION-WRONG-SENSE",
+      "status": "passed",
+      "seconds": 3.3,
+      "expected": [
+        "incorrect"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "incorrect",
+          "reason": "“Financial institution” gives the wrong sense; the target means land beside a river."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "PRODUCTION-SPANISH",
+      "status": "passed",
+      "seconds": 3.07,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "The response correctly gives the Spanish word “malentendido,” meaning a misunderstanding."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEXICAL-ABSORB",
+      "status": "passed",
+      "seconds": 3.09,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“吸收” correctly means to soak up and hold the water."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEXICAL-ADVENTURE",
+      "status": "passed",
+      "seconds": 2.62,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“探险” correctly conveys the intended meaning of an exciting or unusual journey or experience."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEXICAL-ABNORMAL",
+      "status": "passed",
+      "seconds": 4.81,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“异常” correctly expresses that the answer was different from what was usual or expected."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEXICAL-ADOPT",
+      "status": "passed",
+      "seconds": 3.17,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“收养” correctly means to take another person’s child into one’s family and raise them as one’s own."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEXICAL-ACCOUNT",
+      "status": "passed",
+      "seconds": 2.92,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“账户” correctly conveys the meaning of a bank account."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEGACY-ABSORB",
+      "status": "passed",
+      "seconds": 4.95,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“吸收” correctly conveys that the sponge soaks up and holds the water."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "LEXICAL-ABSORB-SPANISH",
+      "status": "passed",
+      "seconds": 4.11,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“Absorber” is the correct Spanish equivalent, meaning to soak up and hold the liquid."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "COMPLETE-MEANING",
+      "status": "passed",
+      "seconds": 3.2,
+      "expected": [
+        "complete"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "complete",
+          "reason": "“推迟” correctly means to move something to a later time without cancelling it."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "PRODUCTION-ABNORMAL-SUBSTITUTE",
+      "status": "passed",
+      "seconds": 7.65,
+      "expected": [
+        "partial"
+      ],
+      "result": [
+        {
+          "id": 1,
+          "outcome": "partial",
+          "reason": "“Weird” is a suitable synonym for “abnormal,” but it is not the target word."
+        }
+      ],
+      "profile": {
+        "task": "JUDGE",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-meaning-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-English-Chinese",
+      "status": "passed",
+      "seconds": 7.96,
+      "expected": null,
+      "result": {
+        "target_sentence": "A misunderstanding between two friends caused an argument.",
+        "target_highlight": "misunderstanding",
+        "native_sentence": "两位朋友之间的误会引发了一场争吵。",
+        "native_highlight": "误会"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-English-Spanish",
+      "status": "passed",
+      "seconds": 5.78,
+      "expected": null,
+      "result": {
+        "target_sentence": "A misunderstanding between the two friends caused an argument.",
+        "target_highlight": "misunderstanding",
+        "native_sentence": "Un malentendido entre los dos amigos causó una discusión.",
+        "native_highlight": "malentendido"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-Spanish-Chinese",
+      "status": "passed",
+      "seconds": 7.46,
+      "expected": null,
+      "result": {
+        "target_sentence": "Entre mis amigos surgió un malentendido.",
+        "target_highlight": "malentendido",
+        "native_sentence": "我的朋友们之间发生了误会。",
+        "native_highlight": "误会"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-ROTATION",
+      "status": "passed",
+      "seconds": 4.99,
+      "expected": null,
+      "result": {
+        "target_sentence": "A misunderstanding about the meeting time made the team arrive late.",
+        "target_highlight": "misunderstanding",
+        "native_sentence": "大家对会议时间的误会使团队迟到了。",
+        "native_highlight": "误会"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-LEXICAL-ABSORB",
+      "status": "passed",
+      "seconds": 4.0,
+      "expected": null,
+      "result": {
+        "target_sentence": "The sponge absorbs the water and holds it.",
+        "target_highlight": "absorbs",
+        "native_sentence": "海绵吸收了水，并把水留住。",
+        "native_highlight": "吸收"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-LEXICAL-ADVENTURE",
+      "status": "passed",
+      "seconds": 4.52,
+      "expected": null,
+      "result": {
+        "target_sentence": "We had an exciting adventure in the mountains.",
+        "target_highlight": "adventure",
+        "native_sentence": "我们在山里经历了一场刺激的冒险。",
+        "native_highlight": "冒险"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-LEXICAL-ABNORMAL",
+      "status": "passed",
+      "seconds": 7.42,
+      "expected": null,
+      "result": {
+        "target_sentence": "The animal's behavior was abnormal after the storm.",
+        "target_highlight": "abnormal",
+        "native_sentence": "暴风雨过后，这只动物的行为异常。",
+        "native_highlight": "异常"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-LEXICAL-ADOPT",
+      "status": "passed",
+      "input": {
+        "word": "adopt",
+        "target_language": "English",
+        "native_language": "Chinese",
+        "explanation": "Legally take another person's child into your family and raise them as your own."
+      },
+      "wire_result": {
+        "target_sentence": "They <focus>adopted</focus> the child.",
+        "native_sentence": "他们<focus>收养</focus>了这个孩子。"
+      },
+      "result": {
+        "target_sentence": "They adopted the child.",
+        "target_highlight": "adopted",
+        "native_sentence": "他们收养了这个孩子。",
+        "native_highlight": "收养"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      },
+      "seconds": 3.15,
+      "retry_note": "Explicit probe rerun after rejected model output; no automatic application retry.",
+      "attempts": [
+        {
+          "name": "GENERATOR-LEXICAL-ADOPT",
+          "status": "blocked",
+          "seconds": 5.3,
+          "stage": "GENERATOR",
+          "message": "Each example needs exactly one marked expression. Retry preparation."
+        },
+        {
+          "status": "passed",
+          "seconds": 3.15,
+          "retry": "Explicit operator rerun"
+        }
+      ]
+    },
+    {
+      "name": "GENERATOR-LEXICAL-ACCOUNT",
+      "status": "passed",
+      "seconds": 4.48,
+      "expected": null,
+      "result": {
+        "target_sentence": "I opened a bank account to keep money there and take it out when needed.",
+        "target_highlight": "account",
+        "native_sentence": "我在银行开了一个账户，把钱存进去，需要时再取出来。",
+        "native_highlight": "账户"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-WORD-CLASS-ABRUPT",
+      "status": "passed",
+      "seconds": 9.37,
+      "expected": null,
+      "result": {
+        "target_sentence": "The abrupt change in the plan confused everyone.",
+        "target_highlight": "abrupt",
+        "native_sentence": "计划的突然变化让每个人都很困惑。",
+        "native_highlight": "突然"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    },
+    {
+      "name": "GENERATOR-WORD-CLASS-ABSORPTIVE",
+      "status": "passed",
+      "seconds": 21.3,
+      "expected": null,
+      "result": {
+        "target_sentence": "This is an absorptive material.",
+        "target_highlight": "absorptive",
+        "native_sentence": "这是一种能吸收液体的材料。",
+        "native_highlight": "能吸收液体的"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v2"
+      }
+    }
+  ],
+  "rejected_initial_attempts": [
+    {
+      "name": "GENERATOR-LEXICAL-ADOPT",
+      "status": "blocked",
+      "seconds": 5.3,
+      "stage": "GENERATOR",
+      "message": "Each example needs exactly one marked expression. Retry preparation."
+    }
+  ],
+  "quality_review": "The eleven final generated cases were reviewed for authored sense, bilingual facts, plain language, focused lexical spans and no Production answer leak. All supported language pairs, rotation and target word classes were checked. Absorb/adventure/abnormal/adopt/account use 吸收/冒险/异常/收养/账户. Absorptive uses a contextual ability phrase. One missing-marker output was rejected, then an explicit operator rerun passed. No automatic application retry was added. All 21 Judge cases matched labels, retaining partial postpone 改时间 and Production weird for abnormal.",
+  "bulk_ready_repair_prompt_sha256": "2954a02b0a421bbb725af7517161328c16265e8d6fa62d23107d6ea1115f60af",
+  "development_findings": [
+    "Separately generated span strings sometimes added a Chinese particle absent from the sentence; the final adapter extracts inline focus markers instead.",
+    "A Ready abrupt pair used the derived adverb abruptly; the final prompt retains lexical identity and word class. The affected pair was explicitly corrected."
+  ],
+  "limits": "Representative checks, not a broad accuracy estimate. Shape validation cannot prove sense, naturalness or the shortest possible lexical span. Physical microphone and Edge checks were not repeated."
+}
