@@ -30,6 +30,7 @@ class Card(models.Model):
     archived = models.BooleanField(default=False)
     ready = models.BooleanField(default=True)
     due = models.DateTimeField(default=timezone.now, db_index=True)
+    deferred_until = models.DateTimeField(null=True, blank=True, db_index=True)
     collection = models.CharField(max_length=8, default="Normal")
     streak = models.PositiveSmallIntegerField(default=0)
     fsrs = models.JSONField(default=dict)
@@ -49,6 +50,10 @@ class Card(models.Model):
     def title(self):
         return self.word if self.kind == "vocabulary" else self.question
 
+    @property
+    def available_at(self):
+        return max(self.due, self.deferred_until or self.due)
+
 
 class ExamplePair(models.Model):
     card = models.ForeignKey(Card, on_delete=models.CASCADE, related_name="pairs")
@@ -62,26 +67,10 @@ class ExamplePair(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
 
-class StudyRun(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    deck = models.ForeignKey(Deck, null=True, blank=True, on_delete=models.CASCADE)
-    created_at = models.DateTimeField(default=timezone.now)
-    finished = models.BooleanField(default=False)
-
-
-class Deferral(models.Model):
-    run = models.ForeignKey(StudyRun, on_delete=models.CASCADE, related_name="deferrals")
-    card = models.ForeignKey(Card, on_delete=models.CASCADE)
-
-    class Meta:
-        constraints = [models.UniqueConstraint(fields=["run", "card"], name="unique_run_deferral")]
-
-
 class Presentation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    run = models.ForeignKey(StudyRun, on_delete=models.CASCADE)
+    scope_deck = models.ForeignKey(Deck, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     card = models.ForeignKey(Card, on_delete=models.CASCADE)
     source_version = models.PositiveIntegerField()
     progress_version = models.PositiveIntegerField()

@@ -72,6 +72,7 @@ def save_card(deck, kind, fields, card=None):
         card.progress_version += 1
         card.fsrs, card.review_count = {}, 0
         card.collection, card.streak, card.due = "Normal", 0, timezone.now()
+        card.deferred_until = None
         card.active_pair = card.cue_pair = None
         card.cue_direction, card.direction_block, card.direction_index = "", [], 0
         card.rotation_token, card.ready = None, kind == "generic"

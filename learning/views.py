@@ -11,14 +11,16 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q
-from django.http import JsonResponse
+from django.http import JsonResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render as page
 from django.template.loader import render_to_string
 from django.utils import timezone
+from django.urls import reverse
+from urllib.parse import urlencode
 from django.views.decorators.http import require_POST, require_GET
 from . import authoring, review, work
 from .forms import DeckForm, CardForm, ImportForm
-from .models import Deck, Card, StudyRun, Presentation, Attempt, ScoredReview, GenerationJob
+from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render
 
 
@@ -30,7 +32,7 @@ def counts(user, deck=None):
     today = reviews.filter(reviewed_at__date=timezone.localdate())
     total = today.count()
     complete = today.filter(grade__in=["D", "E"]).count()
-    return {"due_count": cards.filter(due__lte=timezone.now()).count(), "forgot_count": cards.filter(collection="Forgot").count(),
+    return {"due_count": review.queue(user, deck).count(), "forgot_count": cards.filter(collection="Forgot").count(),
             "cards_today": today.values("card").distinct().count(), "reviews_today": total,
             "accuracy": round(100*complete/total) if total else None}
 
@@ -40,8 +42,8 @@ def dashboard(request):
     work.expire_generations()
     return page(request, "learning/dashboard.html", {**counts(request.user),
         "decks": Deck.objects.filter(owner=request.user, archived=False).order_by("name"),
-        "recent_runs": StudyRun.objects.filter(user=request.user).order_by("-created_at")[:5],
-        "upcoming": review.available(request.user).order_by("due", "pk")[:5], "nav": "study"})
+        "practice_deck_id": Presentation.objects.filter(user=request.user).order_by("-created_at").values_list("scope_deck_id",flat=True).first(),
+        "upcoming": review.available(request.user).order_by("_available_at", "pk")[:5], "nav": "study"})
 
 
 @login_required
@@ -166,23 +168,34 @@ def generation_retry(request, job_id):
     return redirect("card", job.card_id)
 
 
-@login_required
-@require_POST
-def start_run(request):
-    deck = get_object_or_404(Deck, pk=request.POST["deck"], owner=request.user, archived=False) if request.POST.get("deck") else None
-    run = StudyRun.objects.create(user=request.user, deck=deck)
-    return redirect("run", run.pk)
+def practice_url(deck_id=None):
+    return reverse("practice")+("?"+urlencode({"deck": deck_id}) if deck_id else "")
 
 
 @login_required
-def run_view(request, run_id):
-    run = get_object_or_404(StudyRun, pk=run_id, user=request.user)
-    p = review.next_presentation(run)
+@require_GET
+def practice(request):
+    deck_id = request.GET.get("deck")
+    try:
+        deck = get_object_or_404(Deck, pk=int(deck_id), owner=request.user, archived=False) if deck_id else None
+    except (ValueError, OverflowError):
+        raise Http404("Choose an available private deck.") from None
+    p = review.next_question(request.user, deck)
     if p:
         return redirect("presentation", p.pk)
-    next_card = review.available(request.user, run.deck).filter(due__gt=timezone.now()).order_by("due").first()
-    return page(request, "learning/finished.html", {"run": run, "next_card": next_card,
-        "next_review": review.relative_due(next_card.due) if next_card else None, **counts(request.user, run.deck), "nav": "study"})
+    next_card = review.available(request.user, deck).order_by("_available_at", "pk").first()
+    return page(request, "learning/practice_empty.html", {"deck": deck, "practice_url": practice_url(deck_id),
+        "next_review": review.relative_due(next_card.available_at) if next_card else None,
+        **counts(request.user, deck), "nav": "study"})
+
+
+@login_required
+def legacy_practice(request, legacy_id=None):
+    # Old bookmarks/forms have no remaining run state; preserve a submitted deck choice.
+    if request.method == "POST":
+        return redirect(practice_url(request.POST.get("deck")))
+    messages.info(request, "Practice is now continuous. Choose a deck to continue learning.")
+    return redirect("dashboard")
 
 
 def payload(request, a):
@@ -191,31 +204,32 @@ def payload(request, a):
     a.presentation = p
     card = Card.objects.get(pk=p.card_id)
     return {"state": a.state, "transcript": a.transcript, "grade": a.grade, "next_due": a.next_due.isoformat() if a.next_due else None,
-        "metrics": counts(request.user, p.run.deck), "collection": card.collection,
+        "metrics": counts(request.user, p.scope_deck), "collection": card.collection,
         "back_html": render_to_string("learning/back.html", {"attempt": a, "p": p, "back": p.snapshot,
         "explanation_html": render(p.snapshot["explanation"]).html, "label": review.LABELS.get(a.grade),
-        "next_review": review.relative_due(a.next_due or card.due) if a.state != "processing" and a.state != "submitted" else "After checking",
+        "next_review": review.relative_due(a.next_due or card.available_at) if a.state != "processing" and a.state != "submitted" else "After checking",
+        "practice_url": practice_url(p.scope_deck_id),
         "terminal": a.state in review.TERMINAL,
         "can_retry": a.state == "failed" and a.duration is not None and a.error_stage != "timing"}, request=request)}
 
 
 @login_required
 def presentation_view(request, presentation_id):
-    p = get_object_or_404(Presentation.objects.select_related("card__deck", "run"), pk=presentation_id, user=request.user)
+    p = get_object_or_404(Presentation.objects.select_related("card__deck", "scope_deck"), pk=presentation_id, user=request.user)
     attempt = Attempt.objects.filter(presentation=p).first()
     if not attempt and not review.valid_presentation(p):
         messages.info(request, "This question is no longer eligible. Your progress is preserved.")
-        return redirect("run", p.run_id)
+        return redirect(practice_url(p.scope_deck_id))
     # Only front-safe fields reach the template or client before a committed action.
     front = {key: p.snapshot[key] for key in ["question_html", "direction", "language", "units", "kind"]}
     data = payload(request, attempt) if attempt else None
     first_display = Presentation.objects.filter(pk=p.pk, clock_claimed=False).update(clock_claimed=True) == 1 if not attempt else False
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",
-        "first_display": first_display, "initial_state": data["state"] if data else "question", "nav": "study", **counts(request.user, p.run.deck)})
+        "first_display": first_display, "initial_state": data["state"] if data else "question", "nav": "study", **counts(request.user, p.scope_deck)})
 
 
 def owned_presentation(request, presentation_id):
-    return get_object_or_404(Presentation.objects.select_related("card", "run"), pk=presentation_id, user=request.user)
+    return get_object_or_404(Presentation.objects.select_related("card", "scope_deck"), pk=presentation_id, user=request.user)
 
 
 @login_required
@@ -291,7 +305,7 @@ def attempt_exit(request, presentation_id):
 def restart_question(request, presentation_id):
     p = owned_presentation(request, presentation_id)
     new = review.restart(p)
-    return redirect("presentation", new.pk) if new else redirect("run", p.run_id)
+    return redirect("presentation", new.pk) if new else redirect(practice_url(p.scope_deck_id))
 
 
 @login_required

@@ -7,7 +7,7 @@ Status: implemented; user acceptance is pending. Recorded on 2026-11-01. The [de
 - Private, deployer-managed accounts; private decks; manual authoring, editing, archive/restore and atomic CSV import for both card types.
 - Generic whole-answer and multiple-blank cards, with one spoken response and safe Markdown. Vocabulary Cards prepare paired examples, share progress between balanced Recognition/Production directions, and rotate examples only at authorized recall boundaries.
 - Browser recording, fixed submissions, immediate reference reveal after acceptance, read-only ASR text, AI unit judgments, the five agreed recall labels and a persisted Next review time.
-- FSRS state plus the Forgot recovery schedule, explicit study runs, run-only deferrals, statistics and historical snapshots.
+- FSRS state plus the Forgot recovery schedule, continuous practice, 30-minute temporary deferrals, statistics and historical snapshots.
 - Independent ASR/Judge/Generator profiles with MiniMax defaults, native and compatible transcription adapters, durable work, execution fencing, bounded worker processes, explicit recovery and audio expiry.
 - The Fieldnotes interface, Docker Compose with private Caddy HTTPS and named volumes, account commands and a delivered cold-backup/restore procedure.
 
@@ -19,7 +19,7 @@ The application uses Django 5.2.18, Python 3.11, SQLite, fsrs 6.3.2 and markdown
 
 ## Executed verification
 
-This table records the initial V1 delivery. The [per-run shuffle follow-up](#per-run-new-card-shuffle-follow-up) records verification of the subsequent ordering change.
+This table records the initial V1 delivery. The [continuous-practice follow-up](#continuous-practice-follow-up) records current behavior; the per-run shuffle follow-up below is historical and superseded.
 
 | Layer | Executed result | Evidence and scope |
 | --- | --- | --- |
@@ -51,7 +51,7 @@ Tests use a separate file-backed database. The browser script needs a dedicated 
 
 ## Specification case map
 
-All 45 named cases are mapped below. This map identifies available implementation evidence; it does not declare that every fault permutation, browser and physical device in each case has been independently exercised. Remaining scope is explicit below the table.
+The named specification cases are mapped below. This map identifies available implementation evidence; it does not declare that every fault permutation, browser and physical device in each case has been independently exercised. Remaining scope is explicit below the table.
 
 `L` refers to [test_learning.py](../../learning/tests/test_learning.py), `P` to [test_providers.py](../../learning/tests/test_providers.py), and `C` to [test_concurrency.py](../../learning/tests/test_concurrency.py). Method names below omit the common `test_` prefix. `Browser`, `Live` and `Restore` refer to the corresponding executed evidence above.
 
@@ -68,7 +68,7 @@ All 45 named cases are mapped below. This map identifies available implementatio
 | LANGUAGE-DIRECTIONS | L: `language_pairs_directions_and_actions_are_separate_dimensions` covers 3 pairs × 2 directions × 3 actions; Live: 3 language ASR and all-pair generation probes. |
 | SRS-TIMELINE | L: `forgot_timeline_and_preserved_scheduler_memory`, `actual_due_clock_all_eight_graduation_routes`; controlled clock advances to the saved due. |
 | PAIR-ROTATION | L: `direction_slots_and_pair_lock_race`, `pair_activation_before_question_preserves_progress`, `forgot_rotation_third_d_vs_e`; Live: changed replacement sentences. |
-| QUEUE-RUN | L: `mixed_queue_deferral_and_explicit_run_lifecycle`; Browser: finished run survives refresh, Skip does not score. |
+| QUEUE-PRACTICE | L: `skip_defers_for_thirty_minutes_without_changing_learning_progress`, `new_cards_are_random_and_only_displayed_question_is_fixed`, `queue_preserves_review_due_order_and_candidate_scope`, `new_ready_cards_join_without_changing_displayed_question`, `empty_practice_rechecks_ready_cards_and_snoozed_availability`, `unassessed_exit_is_idempotent_and_stale_work_cannot_snooze_new_progress`; C: concurrent entry resumes one question. |
 | DIRECTION-BLOCK | L: `direction_slots_and_pair_lock_race`, `language_pairs_directions_and_actions_are_separate_dimensions`. |
 | ACCOUNT-METRICS | L: `ownership_all_surfaces_and_post_csrf`, `metrics_history_and_all_pages_render`; Browser: distinct cards/reviews/accuracy; production HTTPS login. |
 | PROVIDER-CONTRACT | P: native/form routing, safe final JSON, reasoning/refusal/errors/unit validation, redirects and bounded trickle; L: cached-transcript Retry. |
@@ -87,7 +87,7 @@ All 45 named cases are mapped below. This map identifies available implementatio
 | WORKER-CAPACITY | C: `worker_recovers_actual_capacity_after_stalled_provider`, `worker_kills_and_reaps_stalled_conversion_child`; sole slot occupied, 5-second budget, one-second healthy work queued at second 4. Conversion/provider scenarios completed at second 6.441/6.439, before the asserted second-7 target. Conversion PID is confirmed absent after cleanup. |
 | TWO-ATTEMPTS | L: `distinct_attempts_and_source_edit_fence`; C: `two_real_connections_cannot_both_score_same_progress`. Loser closes without another score. |
 | SOURCE-EDIT | L: `distinct_attempts_and_source_edit_fence`, `pipeline_closes_stale_attempt_before_more_paid_work`; old work cannot score reset progress. |
-| SAME-WORD | L: `independent_same_word_and_format_only_edits`; reviewing one sense does not update the other card. |
+| SAME-WORD | L: `independent_same_word_cards_preserve_other_progress`, `format_only_edits_preserve_progress`; reviewing one sense does not update the other card. |
 | UNIT-IDENTITY | L: exact F-MD AST fixture yields ordered visible IDs 1/2; P: missing/duplicate/provider-invalid units versus an explicitly unanswered unit. |
 | CLOCK-BOUNDARY | L: `judgment_precedence_and_time_boundary`: 11.99/12/12.01 seconds and fast/slow partial answers. |
 | CLOCK-REFRESH | Browser: Cancel plus same-presentation refresh retains elapsed time. |
@@ -100,8 +100,9 @@ All 45 named cases are mapped below. This map identifies available implementatio
 | AUDIO-COMMIT | L: `pipeline_normalizes_reuses_transcript_and_cleans_on_commit`; durable text exists after Judge failure, audio remains until scored commit, cleanup follows. |
 | AUDIO-TTL | L: `never_started_and_expired_execution_fencing`; Restore: original timestamps/expiry retained; operations documents startup/minutely physical deletion and audio exclusion. |
 | NEXT-REVIEW | L: saved due, elapsed Due now and submission-anchor checks; Browser: saved result shown after real judgment and one-minute Forgot due. |
-| ARCHIVE-RESTORE | L: `archive_restore_does_not_revive_old_execution`, `independent_same_word_and_format_only_edits`; Browser: own deck archive. |
+| ARCHIVE-RESTORE | L: `archive_restore_does_not_revive_old_execution`, `independent_same_word_cards_preserve_other_progress`, `format_only_edits_preserve_progress`; Browser: own deck archive. |
 | PROFILE-DISPATCH | L: `profile_dispatch_snapshot_retry_and_cached_asr_provenance`; P: independent settings/native versus compatible wire contracts/default-key origin restriction; actual MiniMax profiles in Live. |
+| PRACTICE-MIGRATION | `test_migrations.py`: previous-schema scored history, cached transcript, scoped/all-deck presentations, recent/expired/stale deferrals; actual versioned migration, table removal and foreign-key integrity checks. |
 
 ## Backup/restore evidence details
 
@@ -120,10 +121,20 @@ The drill image precedes the final stale-work/unconfirmed-upload fixes, which do
 
 No public registration, additional UI languages, answer typing, sharing/marketplace, LiteLLM layer, mobile app or public-cloud deployment was added; those remain outside the agreed V1 boundary.
 
-## Per-run new-card shuffle follow-up
+## Per-run new-card shuffle follow-up (superseded)
 
 Implemented on 2026-11-01: Ready unseen Generic and Vocabulary Cards use a stable hash of the run UUID and card ID. New runs independently reshuffle; Resume retains the ordering rule. Newly Ready cards join dynamically without replacing a displayed question. Due Forgot and reviewed Normal cards retain their existing priority and earliest-due/card-ID ordering. The change is contained in `queue(run)` and needs no schema migration.
 
 Verification: all 45 automated tests passed, including four new regressions for per-run stability/import-order independence, reviewed-card priority and candidate isolation, dynamic readiness with frozen presentations, and deferrals/saved schedules. All 10 Chromium browser groups passed with the real configured providers. The browser fixtures are now introduced as needed during the run rather than assuming CSV insertion order. Production HTTPS health and deployment checks passed; the deployed queue source matches the repository, and learner progress and generation-state fingerprints were unchanged across deployment.
 
 The initial provider-probe and cold-restore artifacts above remain records of the original delivery. Bulk-generation queue deadlines and failed-task retries were outside this follow-up and were not changed.
+
+## Continuous-practice follow-up
+
+Implemented on 2026-11-01 following [ADR 0001](../adr/0001-continuous-practice.md): remove StudyRun and run-local Deferral, resume the current question for the selected scope, randomly select unseen Ready cards as needed, and temporarily defer Skip/confirmed unassessed exit for 30 minutes. There is no saved future order or finished state. Existing review priorities, FSRS state, balanced directions, fixed submissions and historical assessments remain.
+
+[Verification results](continuous-practice-results.json) record 49 passing automated tests and 11 passing Chromium browser groups with a synthetic microphone and real configured providers. Coverage includes same-scope concurrent entry, exact deferral expiry/idempotency, stale-work protection, empty-queue rechecking, dynamic readiness, and the actual previous-schema migration. Browser fixtures no longer create or finish runs; a newly prepared Vocabulary Card enters through the same previously empty Practice URL.
+
+Before production migration, the delivered cold-backup command produced a private snapshot and its matching old image was retained. That actual artifact was restored into an isolated volume and migrated successfully. Rehearsal and production checks compared all existing fields of users, decks, cards, example pairs, presentations, attempts, scored reviews and generation jobs, excluding the intentionally removed run foreign key. Selected presentation scopes were compared separately; all matched. SQLite integrity/foreign keys passed, obsolete tables were absent, and the deployed sources, trusted HTTPS, login and private pages were verified. The temporary rehearsal volume was removed; the private backup remains under ignored `backups/`.
+
+Bulk-generation queue timeout handling and failed-task retries remain unchanged. Physical microphone and Edge checks were not repeated. Legacy unassessed closures have no separate closure timestamp; their migration deferral uses the original saved submission time, as documented in operations.

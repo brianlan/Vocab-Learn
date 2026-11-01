@@ -1,0 +1,11 @@
+{% extends 'learning/base.html' %}
+{% block content %}
+<section class="finished">
+  <span class="eyebrow">A LITTLE MORE REMEMBERED</span>
+  <h1>Nothing to practice right now.</h1>
+  <div class="botanical" aria-hidden="true"></div>
+  <p class="lead">{% if next_review %}Your next card is available {{ next_review }}.{% else %}Add cards or return when new examples are ready.{% endif %}<br>You can come back whenever you have a moment.</p>
+  <div class="row center wrap"><a class="button primary" href="{{ practice_url }}">Check again ↗</a><a class="button" href="{% url 'dashboard' %}">Back to your space</a></div>
+  <p class="quiet small">Skipped cards are set aside for 30 minutes. Your learning progress stays saved.</p>
+</section>
+{% endblock %}

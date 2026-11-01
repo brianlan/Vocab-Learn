@@ -5,12 +5,12 @@ import uuid
 from datetime import timedelta
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Case, When, Value, IntegerField, CharField
-from django.db.models.functions import Cast, Concat, MD5
+from django.db.models import Case, When, Value, IntegerField, Q
+from django.db.models.functions import Coalesce, Greatest, Random
 from django.utils import timezone
 from fsrs import Card as MemoryCard, Rating, Scheduler
 from .authoring import new_generation
-from .models import Card, Presentation, Attempt, ScoredReview, Deferral, GenerationJob
+from .models import Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render, recall_budget, highlight
 
 LABELS = {"A": "Needs a refresh", "B": "Needs practice", "C": "Partial recall", "D": "Correct recall", "E": "Quick recall"}
@@ -19,18 +19,17 @@ TERMINAL = {"assessed", "skipped", "closed_unassessed"}
 
 def available(user, deck=None):
     cards = Card.objects.filter(deck__owner=user, archived=False, deck__archived=False, ready=True)
-    return cards.filter(deck=deck) if deck else cards
+    cards = cards.filter(deck=deck) if deck else cards
+    return cards.annotate(_available_at=Greatest("due", Coalesce("deferred_until", "due")))
 
 
-def queue(run):
-    """Prioritize due reviews, then shuffle unseen cards reproducibly within this run."""
-    new_order = MD5(Concat(Value(f"{run.pk}:"), Cast("pk", output_field=CharField())))
-    return available(run.user, run.deck).filter(due__lte=timezone.now()).exclude(
-        pk__in=run.deferrals.values("card_id")).annotate(tier=Case(
+def queue(user, deck=None):
+    """Prioritize eligible reviews and randomly select among unseen Ready cards."""
+    return available(user, deck).filter(_available_at__lte=timezone.now()).annotate(tier=Case(
             When(collection="Forgot", then=Value(0)), When(review_count__gt=0, then=Value(1)),
             default=Value(2), output_field=IntegerField())).order_by(
                 "tier", Case(When(tier__lt=2, then="due")),
-                Case(When(tier=2, then=new_order)), "pk")
+                Case(When(tier=2, then=Random())), "pk")
 
 
 def snapshot(card):
@@ -54,23 +53,20 @@ def snapshot(card):
 
 
 @transaction.atomic
-def next_presentation(run):
-    run.refresh_from_db()
-    if run.finished:
-        return None
-    old = Presentation.objects.filter(run=run, invalidated=False).filter(attempt__isnull=True).order_by("created_at").first()
-    if old:
-        if valid_presentation(old):
+def next_question(user, deck=None):
+    current = Presentation.objects.filter(user=user, scope_deck=deck, invalidated=False).filter(
+        Q(attempt__isnull=True) | Q(attempt__state__in=["submitted", "processing", "failed"])
+    ).select_related("card__deck", "attempt").order_by("-created_at", "-pk")
+    for old in current:
+        attempt = getattr(old, "attempt", None)
+        if valid_presentation(old) and (attempt or old.card.available_at <= timezone.now()):
             return old
+        if attempt:
+            exit_attempt(attempt)
         old.invalidated = True
         old.save(update_fields=["invalidated"])
-    pending = Attempt.objects.filter(presentation__run=run, state__in=["submitted", "processing", "failed"]).first()
-    if pending:
-        return pending.presentation
-    card = queue(run).first()
+    card = queue(user, deck).first()
     if not card:
-        run.finished = True
-        run.save(update_fields=["finished"])
         return None
     if card.kind == "vocabulary":
         if card.cue_pair_id is None:
@@ -85,7 +81,7 @@ def next_presentation(run):
             card.cue_pair = card.active_pair
             card.save(update_fields=["active_pair", "rotation_token", "direction_block", "direction_index", "cue_direction", "cue_pair"])
     frozen = snapshot(card)
-    return Presentation.objects.create(user=run.user, run=run, card=card, source_version=card.source_version,
+    return Presentation.objects.create(user=user, scope_deck=deck, card=card, source_version=card.source_version,
         progress_version=card.progress_version, snapshot=frozen,
         budget=recall_budget(frozen["units"], frozen["reading_count"], frozen["reference"]))
 
@@ -99,7 +95,11 @@ def valid_presentation(p, anchor=None):
 
 
 def defer(p):
-    Deferral.objects.get_or_create(run=p.run, card=p.card)
+    if not p.invalidated:
+        # A stale tab must not postpone a newer review or a revised source.
+        Card.objects.filter(pk=p.card_id, source_version=p.source_version, progress_version=p.progress_version,
+            deck__owner_id=p.user_id, archived=False, deck__archived=False).update(
+                deferred_until=timezone.now()+timedelta(minutes=30))
 
 
 @transaction.atomic
@@ -111,7 +111,7 @@ def restart(p):
     p.save(update_fields=["invalidated"])
     if not valid_presentation_for_restart(p):
         return None
-    return Presentation.objects.create(user=p.user, run=p.run, card=p.card, source_version=p.source_version,
+    return Presentation.objects.create(user=p.user, scope_deck=p.scope_deck, card=p.card, source_version=p.source_version,
         progress_version=p.progress_version, snapshot=p.snapshot, budget=p.budget)
 
 
@@ -139,7 +139,7 @@ def submit(p, action, duration=None, audio_name=""):
     elif action == "forgot":
         return commit_grade(a.pk, a.claim, "A", [], "You chose Forgot.")
     elif duration is None or not math.isfinite(duration) or duration < 0:
-        a.state, a.error_stage, a.error = "failed", "timing", "Timing was interrupted. Continue unassessed and restart this question in a new run."
+        a.state, a.error_stage, a.error = "failed", "timing", "Timing was interrupted. Continue unassessed and return when this card is available again."
     a.save()
     return a
 
@@ -171,6 +171,7 @@ def commit_grade(attempt_id, claim, grade, outcomes, reason, candidate=None):
         candidate.update(due=updated.due, fsrs=json.loads(updated.to_json()), log=json.loads(log.to_json()),
                          collection=card.collection, streak=card.streak)
     card.due, card.fsrs = candidate["due"], candidate["fsrs"]
+    card.deferred_until = None
     card.collection, card.streak = candidate["collection"], candidate["streak"]
     card.progress_version += 1
     card.review_count += 1

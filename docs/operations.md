@@ -24,7 +24,7 @@ Open `http://127.0.0.1:8766`. Only localhost HTTP is a supported development rec
 
 Local commands read the process environment; they do not automatically source `.env`. The default database and private audio directory are under ignored `var/`. Set `APP_DATA_DIR` and `AUDIO_DIR` for another location. `.env` is used by Compose.
 
-The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops; the web exposes expired work for explicit retry after the 300-second execution budget. A new study run does not silently retry uncertain paid calls.
+The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops; the web exposes expired work for explicit retry after the 300-second execution budget. Opening Practice does not silently retry uncertain paid calls.
 
 ## Docker Compose and private LAN HTTPS
 
@@ -102,9 +102,11 @@ Queued/new executions use settings at dispatch; already dispatched calls retain 
 
 Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Samples and authoring syntax](examples/README.md) describe the exact schemas. Import is limited to 5 MB/10,000 source records and is all-or-nothing on validation failure; duplicates are skipped without overwriting/restoring them. Vocabulary sources become study-ready only after valid paired examples are saved. Refresh their detail page for preparation status; failures expose Retry.
 
-Start a run explicitly. Skip/closed-unassessed defer only within that run. Resume retains those deferrals; a finished run does not automatically repeat them. Explicitly starting a new run permits due deferred cards again. Current Due now counts can remain positive after a run is finished.
+Use **Practice** on the dashboard or **Study this deck** in a private deck. Practice is continuous: the same selected scope restores its current unfinished question, while future questions are selected as needed. There are no study runs to start, finish or resume. The dashboard remembers the latest displayed scope as its default selection.
 
-Due Forgot cards come first, followed by due reviewed Normal cards, then Ready unseen cards. Reviewed cards keep earliest-due/card-ID order; unseen cards use a shuffle derived from the run's UUID and their card IDs. A new run independently reshuffles unseen cards, while refresh/Resume retains the same ordering rule. Eligibility is evaluated before each new question, so newly Ready cards can join an active run without replacing a displayed question. Shuffling does not change stored review times, memory or balanced Vocabulary directions. This applies to both Generic and Vocabulary Cards and requires no database migration.
+Due Forgot cards come first, followed by due reviewed Normal cards, then a random eligible unseen card. Reviewed cards retain earliest-due/card-ID order. New examples can become Ready during practice; checking an empty practice page again reevaluates current availability. Current questions and fixed submissions stay unchanged.
+
+Skip and a confirmed unassessed exit set the card aside for 30 minutes across visits and scopes. Its stored FSRS due, memory, collection, streak and review direction remain unchanged. Due now excludes temporarily deferred cards; **Available again** shows when practice can resume. At expiry the card becomes eligible if its scheduler due permits. Repeating the same action does not extend the timer, and stale work cannot postpone newer progress. Already accepted work may still finish, subject to the existing terminal/progress guards.
 
 Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal. Read the back while processing; a service error permits the same-input Retry or a server-confirmed unassessed exit. Typed transcript changes and replacement recordings after reveal cannot affect the score.
 
@@ -126,6 +128,8 @@ docker compose build
 docker compose run --rm migrate
 docker compose up -d web worker caddy
 ```
+
+Migration `0004_continuous_practice` removes historical run metadata while preserving card progress, presentations, attempts, scored reviews, frozen inputs and deadlines. It also copies presentation scope and the remaining time of recent valid neutral deferrals. Legacy unassessed exits have no separate closure timestamp, so their remaining deferral is reconstructed from the saved submission time. Take a cold backup and retain its exact image before upgrading; this migration is not reversible with `migrate` alone. Roll back using the pre-upgrade backup and matching image. Existing question URLs remain valid; old run bookmarks redirect to the dashboard and old start forms redirect to Practice.
 
 ## Delivered cold backup and restore
 

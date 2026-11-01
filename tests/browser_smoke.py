@@ -23,6 +23,8 @@ def run(options):
         page.goto(target+"/login/"); page.screenshot(path=str(output/"login.png"),full_page=True)
         page.locator("#id_username").fill(access["username"]); page.locator("#id_password").fill(access["password"])
         page.get_by_role("button",name="Log in").click(); page.wait_for_url(target+"/")
+        assert page.get_by_role("button",name="Practice",exact=True).count()==1
+        assert "Start a new run" not in page.locator("main").inner_text()
         page.screenshot(path=str(output/"dashboard.png"),full_page=True)
         checked("Fieldnotes login and dashboard")
         page.goto(target+"/decks/")
@@ -106,9 +108,10 @@ def run(options):
         assert page.locator(".recall-result h3").inner_text()=="Needs a refresh"
         assert "min" in page.locator(".next-review").inner_text()
         page.locator("#next-card").click(); page.wait_for_selector("h1",state="visible")
-        assert page.locator("h1").inner_text()=="Finished this run."
-        finished=page.url; page.reload(); assert page.url==finished; assert page.locator("h1").inner_text()=="Finished this run."
-        checked("Forgot and persisted one-minute due; exhausted run does not automatically restart")
+        assert page.locator("h1").inner_text()=="Nothing to practice right now."
+        empty_url=page.url; page.reload(); assert page.url==empty_url
+        assert page.locator("h1").inner_text()=="Nothing to practice right now."
+        checked("Forgot and persisted one-minute due; temporarily empty practice rechecks availability")
         deck_id=re.search(r"/decks/(\d+)/",deck_url)[1]
         page.goto(target+"/progress/?window=all&deck="+deck_id)
         metrics=page.locator(".metric").all_text_contents(); assert metrics==["2","2","50%"],metrics
@@ -124,6 +127,9 @@ def run(options):
             page.wait_for_timeout(900); page.reload()
         assert page.get_by_role("heading",name="Current example pair").count()==1
         checked("Vocabulary manual creation and actual durable Generator preparation")
+        page.goto(empty_url);page.wait_for_selector("#review-card")
+        assert page.url!=empty_url
+        checked("Newly Ready Vocabulary enters practice from the previously empty URL")
         page.goto(deck_url); page.get_by_role("button",name="Archive deck",exact=True).click()
         page.screenshot(path=str(output/"library.png"),full_page=True)
         assert page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")

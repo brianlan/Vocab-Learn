@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "change": "Continuous practice with 30-minute temporary deferral",
+  "schema_migration": "learning.0004_continuous_practice",
+  "automated_tests": {
+    "count": 49,
+    "seconds": 14.95
+  },
+  "browser": {
+    "groups": 11,
+    "type": "Headless Chromium with synthetic microphone and real configured providers"
+  },
+  "migration": {
+    "previous_schema_regression_passed": true,
+    "actual_cold_backup_rehearsal_passed": true,
+    "production_migration_passed": true,
+    "persisted_learner_and_history_fields_unchanged": true,
+    "selected_scopes_preserved": true,
+    "obsolete_tables_removed": true,
+    "sqlite_and_foreign_key_integrity_passed": true,
+    "backup_procedure_sha256": "0bf424a6c674104ba020555a6d869c8248843b6e97fb5e6fcb95dab632e0ca4f"
+  },
+  "deployment": {
+    "image": "sha256:47f5e9ec637f0022ae51e19a78a4c37672201152f05533538cf021d3f5735ba2",
+    "https_hostname_ca_and_health_passed": true,
+    "login_and_private_pages_passed": true,
+    "source_sha256": {
+      "learning/models.py": "9d6e2c277aa4f93432b3d465e3606e215f6562a6ebb3552c06b91973c731440a",
+      "learning/review.py": "c5493aa2df440599ca0892e5e1120cdd358d2461b74163624c6d9fd9ee5e4797",
+      "learning/views.py": "35c9860f203a6f87c8b9ac833494a30f7fb11d4745e42fa34564cf0745309bf2",
+      "learning/migrations/0004_continuous_practice.py": "781cc4f0f1089777a06dd0dbc21766d3e27c853ce68985da7c24c358688ea03c",
+      "templates/learning/dashboard.html": "57018e43f30f021064b6328791bb2608f63a2694d9938dcea8348dab67042a0b",
+      "templates/learning/practice_empty.html": "f69fc3edb3ad9bcb62b1058636f394f01df4c82ab6f36c6d8938983ad2b2ffbc"
+    }
+  },
+  "limits": [
+    "Physical microphone and Edge checks were not repeated.",
+    "Bulk generation queue timeout/retry behavior was not changed.",
+    "Legacy unassessed exits lack a closure timestamp; migration uses their saved submission time."
+  ]
+}

@@ -1,12 +1,12 @@
 # Vocab-Learn
 
-A browser application for learning through flash cards, spoken answers and spaced repetition. V1 supports authored Generic Cards and Vocabulary Cards with AI-generated Recognition/Production examples.
+A browser application for continuous practice through flash cards, spoken answers and spaced repetition. V1 supports authored Generic Cards and Vocabulary Cards with AI-generated Recognition/Production examples.
 
 V1 is implemented and available for user acceptance. The application uses Django 5.2, SQLite, FSRS and a bounded background worker, with independent ASR/Judge/Generator profiles and MiniMax defaults.
 
 ![The Fieldnotes study interface](docs/implementation/previews/review-front.png)
 
-Start with the [running and maintenance guide](docs/operations.md). The [V1 Development Specification](docs/specs/v1.md) contains the agreed rules and 45 acceptance cases; the [implementation acceptance record](docs/implementation/v1-acceptance.md) distinguishes automated, real-provider and browser evidence from remaining device-specific checks.
+Start with the [running and maintenance guide](docs/operations.md). The [V1 Development Specification](docs/specs/v1.md) contains the agreed rules and acceptance cases; the [implementation acceptance record](docs/implementation/v1-acceptance.md) distinguishes automated, real-provider and browser evidence from remaining device-specific checks.
 
 ## Local start
 

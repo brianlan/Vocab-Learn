@@ -13,7 +13,7 @@ from django.db import connections
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from learning import authoring, review
-from learning.models import Deck, StudyRun, Attempt, ScoredReview
+from learning.models import Deck, Attempt, ScoredReview, Presentation
 from learning.worker import run_worker
 from .test_learning import GENERIC, audio_bytes
 
@@ -26,11 +26,23 @@ class ConcurrencyTests(TransactionTestCase):
         self.card=authoring.save_card(self.deck,"generic",GENERIC)
 
     def presentation(self, deck=None):
-        return review.next_presentation(StudyRun.objects.create(user=self.user,deck=deck or self.deck))
+        return review.next_question(self.user,deck or self.deck)
+
+    def test_concurrent_practice_entries_reuse_one_current_question(self):
+        barrier=threading.Barrier(2)
+        def enter(_):
+            try:
+                barrier.wait()
+                return review.next_question(self.user,self.deck).pk
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            questions=list(pool.map(enter,range(2)))
+        self.assertEqual(questions[0],questions[1])
+        self.assertEqual(Presentation.objects.count(),1)
 
     def test_two_real_connections_cannot_both_score_same_progress(self):
         first=review.submit(self.presentation(),"speak",1,"unused")
-        second=review.submit(self.presentation(),"speak",1,"unused")
+        second=review.submit(review.next_question(self.user),"speak",1,"unused")
         barrier=threading.Barrier(2)
         def complete(a):
             try:

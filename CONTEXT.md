@@ -76,8 +76,11 @@ A retained card excluded from active study, with its authored content, learning 
 **Scored Review**:
 A card interaction producing one A-E result, including a user's explicit Forgot action. Skip and unassessed interactions are not scored reviews.
 
-**Study Run**:
-An explicitly started pass through a user's available study queue, retaining skipped/unassessed deferrals when resumed. Finishing it does not automatically start another pass or change the deferred cards' schedules.
+**Continuous Practice**:
+Ongoing study that resumes an unfinished question or selects an eligible card whenever the learner returns, without separately started or completed passes.
+
+**Temporary Deferral**:
+A time-limited pause in a card's availability for practice, preserving its spaced repetition progress and historical reviews.
 
 **Spoken Answer**:
 One spoken response to the whole card, supplied through Speak and addressing all blanks when present. It can contain words, phrases, or sentences.
@@ -107,7 +110,7 @@ The learner's server-confirmed closure of a submitted attempt without a score, p
 The action of discarding a recording before submission and returning to the question without revealing its answer.
 
 **Skip**:
-An ungraded action that reveals the answer while preserving the card's collection and success streak.
+An ungraded action that reveals the answer and temporarily defers the card for 30 minutes while preserving its learning progress.
 
 **Forgot**:
 The action of explicitly reporting that the answer has been forgotten and viewing the back of the card.
