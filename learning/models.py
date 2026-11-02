@@ -128,9 +128,13 @@ class GenerationJob(models.Model):
     execution = models.PositiveIntegerField(default=1)
     claim = models.UUIDField(default=uuid.uuid4)
     requested_at = models.DateTimeField(default=timezone.now)
-    deadline = models.DateTimeField(db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    deadline = models.DateTimeField(null=True, blank=True, db_index=True)
     result = models.ForeignKey(ExamplePair, null=True, on_delete=models.SET_NULL, related_name="+")
     provenance = models.JSONField(default=dict)
     error = models.CharField(max_length=300, blank=True)
     error_category = models.CharField(max_length=24, blank=True)
     retryable = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["state", "requested_at"], name="generation_queue_order")]

@@ -194,15 +194,16 @@ def process_generation(job_id, claim):
         pair = job.card.active_pair
         source["previous_pair"] = {"target_sentence": pair.target_sentence, "native_sentence": pair.native_sentence}
     p = bounded_profile("GENERATOR", job.deadline)
-    GenerationJob.objects.filter(pk=job_id, claim=claim, state="processing").update(provenance=p.metadata())
+    if not GenerationJob.objects.filter(pk=job_id, claim=claim, state="processing", deadline__gt=timezone.now()).update(provenance=p.metadata()):
+        return
     result, provenance = providers.generate(source, p)
     save_pair(job_id, claim, result, provenance)
 
 
 @transaction.atomic
 def expire_generations():
-    GenerationJob.objects.filter(state__in=["queued", "processing"], deadline__lte=timezone.now()).update(
-        state="failed", error="Example preparation expired. Retry explicitly; your source is saved.", error_category="timeout", retryable=True)
+    GenerationJob.objects.filter(state="processing", deadline__lte=timezone.now()).update(
+        state="failed", claim=uuid.uuid4(), error="Example preparation expired. Retry explicitly; your source is saved.", error_category="timeout", retryable=True)
 
 
 @transaction.atomic
@@ -215,8 +216,8 @@ def retry_generation(job):
     job.state, job.claim, job.error = "queued", uuid.uuid4(), ""
     job.error_category, job.retryable = "", True
     job.requested_at = timezone.now()
-    job.deadline = job.requested_at+timedelta(seconds=settings.GENERATION_TIMEOUT_SECONDS)
-    job.save(update_fields=["execution", "state", "claim", "error", "error_category", "retryable", "requested_at", "deadline"])
+    job.started_at, job.deadline, job.provenance = None, None, {}
+    job.save(update_fields=["execution", "state", "claim", "error", "error_category", "retryable", "requested_at", "started_at", "deadline", "provenance"])
     return job
 
 
@@ -226,10 +227,14 @@ def claim_work():
     job = Attempt.objects.filter(state="submitted", deadline__gt=now).order_by("submitted_at").first()
     kind = "assessment"
     if not job:
-        job = GenerationJob.objects.filter(state="queued", deadline__gt=now).order_by("requested_at").first()
+        job = GenerationJob.objects.filter(state="queued").order_by("requested_at", "pk").first()
         kind = "generation"
     if not job:
         return None
     job.state = "processing"
-    job.save(update_fields=["state"])
+    fields = ["state"]
+    if kind == "generation":
+        job.started_at, job.deadline, job.claim = now, now+timedelta(seconds=settings.GENERATION_TIMEOUT_SECONDS), uuid.uuid4()
+        fields += ["started_at", "deadline", "claim"]
+    job.save(update_fields=fields)
     return kind, job.pk, job.claim, job.deadline

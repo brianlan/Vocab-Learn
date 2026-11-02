@@ -11,6 +11,42 @@ from fsrs import Card as MemoryCard, Rating, Scheduler
 
 
 class ContinuousPracticeMigrationTests(TestCase):
+    def test_generation_migration_only_removes_queued_deadlines_and_preserves_failed_work(self):
+        alias="generation_migration_test"
+        with tempfile.TemporaryDirectory() as folder:
+            config=copy.deepcopy(connections["default"].settings_dict)
+            config["NAME"]=str(Path(folder)/"legacy.sqlite3")
+            connections.databases[alias]=config;connection=connections[alias]
+            try:
+                executor=MigrationExecutor(connection);old_target=[("learning","0005_remove_examplepair_gloss")]
+                executor.migrate(old_target);old=executor.loader.project_state(old_target).apps
+                user=old.get_model("auth","User").objects.using(alias).create(username="learner",password="!")
+                deck=old.get_model("learning","Deck").objects.using(alias).create(owner_id=user.pk,name="Private")
+                card=old.get_model("learning","Card").objects.using(alias).create(deck_id=deck.pk,
+                    kind="vocabulary",word="absorb",explanation="Take in liquid.",identity="absorb",ready=False,
+                    fsrs={"unchanged":"memory"},review_count=3)
+                Job=old.get_model("learning","GenerationJob")
+                now=timezone.now()
+                for state in ["queued","processing","failed","done"]:
+                    Job.objects.using(alias).create(card_id=card.pk,source_version=1,state=state,
+                        requested_at=now-timedelta(hours=1),deadline=now-timedelta(minutes=55),
+                        provenance={"model":"previous-dispatch"} if state!="queued" else {})
+                before=list(Job.objects.using(alias).order_by("pk").values())
+                card_before=old.get_model("learning","Card").objects.using(alias).values().get(pk=card.pk)
+                executor=MigrationExecutor(connection);target=[("learning","0006_generation_execution_budget")]
+                executor.migrate(target);new=executor.loader.project_state(target).apps
+                after=list(new.get_model("learning","GenerationJob").objects.using(alias).order_by("pk").values())
+                for row in before:
+                    row["started_at"]=None
+                    if row["state"]=="queued":row["deadline"]=None
+                self.assertEqual(after,before)
+                self.assertEqual(new.get_model("learning","Card").objects.using(alias).values().get(pk=card.pk),card_before)
+                with connection.cursor() as cursor:
+                    self.assertEqual(cursor.execute("PRAGMA integrity_check").fetchone()[0],"ok")
+                    self.assertEqual(cursor.execute("PRAGMA foreign_key_check").fetchall(),[])
+            finally:
+                connection.close();del connections[alias];del connections.databases[alias]
+
     def test_removing_generated_gloss_preserves_pair_and_frozen_history(self):
         alias="lexical_migration_test"
         with tempfile.TemporaryDirectory() as folder:

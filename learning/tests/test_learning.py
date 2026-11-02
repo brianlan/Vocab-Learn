@@ -56,7 +56,7 @@ class LearningTests(TestCase):
 
     def ready(self, card):
         job = card.generation_jobs.get(mode="initial")
-        job.state = "processing"; job.save()
+        job.state = "processing"; job.started_at=timezone.now(); job.deadline=job.started_at+timedelta(seconds=300); job.save()
         work.save_pair(job.pk, job.claim, PAIR, {"model": "test"})
         card.refresh_from_db()
         return card
@@ -136,20 +136,130 @@ class LearningTests(TestCase):
         """PREP-INITIAL / GEN-UNSTARTED."""
         card = self.vocabulary(); job = card.generation_jobs.get()
         self.assertFalse(card.ready); self.assertFalse(review.available(self.user).exists())
-        job.deadline = timezone.now()-timedelta(seconds=1); job.save()
-        self.client.get(reverse("card", args=[card.pk]))
+        self.assertIsNone(job.started_at);self.assertIsNone(job.deadline)
+        later=timezone.now()+timedelta(days=1)
+        with patch("learning.work.timezone.now",return_value=later):
+            response=self.client.get(reverse("card",args=[card.pk]))
+            job.refresh_from_db();self.assertEqual(job.state,"queued")
+            self.assertContains(response,"Queued")
+            claimed=work.claim_work()
+        job.refresh_from_db()
+        self.assertEqual(claimed,("generation",job.pk,job.claim,later+timedelta(seconds=300)))
+        self.assertEqual(job.started_at,later)
+        with patch("learning.work.timezone.now",return_value=job.deadline):
+            self.client.get(reverse("card", args=[card.pk]))
         job.refresh_from_db(); self.assertEqual(job.state,"failed")
+        self.assertNotEqual(job.claim,claimed[2])
         retried = work.retry_generation(job)
         self.assertEqual(retried.execution,2)
+        self.assertIsNone(retried.started_at);self.assertIsNone(retried.deadline)
         self.assertEqual(Card.objects.count(),1)
         self.ready(card)
         self.assertEqual(review.available(self.user).count(),1)
 
+    def test_bulk_generation_waits_for_capacity_without_spending_execution_budget(self):
+        content="word,explanation,native_language,target_language\n"+"".join(
+            f"word-{i},One intended meaning.,Chinese,English\n" for i in range(1201))
+        self.assertEqual(authoring.import_csv(self.deck,"vocabulary",content.encode()),(1201,0))
+        now=timezone.now()+timedelta(hours=2)
+        with patch("learning.work.timezone.now",return_value=now):
+            work.expire_generations()
+            self.assertEqual(GenerationJob.objects.filter(state="queued",deadline__isnull=True).count(),1201)
+            receipts=[work.claim_work(),work.claim_work()]
+        self.assertEqual(GenerationJob.objects.filter(state="queued").count(),1199)
+        self.assertEqual(GenerationJob.objects.filter(state="processing",started_at=now).count(),2)
+        for receipt in receipts:self.assertEqual(receipt[3],now+timedelta(seconds=300))
+        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=299)):
+            self.assertIsNotNone(work.save_pair(receipts[0][1],receipts[0][2],PAIR,{}))
+        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=301)):
+            work.expire_generations()
+            self.assertIsNone(work.save_pair(receipts[1][1],receipts[1][2],PAIR,{}))
+            next_job=work.claim_work()
+        self.assertEqual(GenerationJob.objects.filter(state="failed").count(),1)
+        self.assertEqual(Card.objects.filter(ready=True).count(),1)
+        self.assertEqual(next_job[3],now+timedelta(seconds=601))
+        self.assertEqual(GenerationJob.objects.filter(state="queued",deadline__isnull=True).count(),1198)
+
+    def test_assessment_keeps_submission_deadline_and_queue_priority(self):
+        self.vocabulary()
+        self.generic();a=review.submit(self.present(),"speak",1,"unused")
+        deadline=a.deadline
+        with patch("learning.work.timezone.now",return_value=a.submitted_at+timedelta(seconds=100)):
+            receipt=work.claim_work()
+        self.assertEqual(receipt,("assessment",a.pk,a.claim,deadline))
+        self.assertEqual(GenerationJob.objects.get().state,"queued")
+        self.assertEqual(deadline,a.submitted_at+timedelta(seconds=300))
+
+    def test_explicit_preparation_requeue_is_scoped_and_idempotent(self):
+        def failed(card):
+            job=card.generation_jobs.get()
+            job.state="failed";job.error_category="timeout";job.provenance={"model":"previous-dispatch"};job.save()
+            return job
+        first=failed(self.vocabulary())
+        duplicate=failed(self.vocabulary(word="duplicate"))
+        newest=authoring.new_generation(duplicate.card);newest.state="failed";newest.save()
+        busy=failed(self.vocabulary(word="already-waiting"));authoring.new_generation(busy.card)
+        changed=self.vocabulary(word="revised");old=failed(changed)
+        authoring.save_card(self.deck,"vocabulary",{**VOCAB,"word":"revised","explanation":"A new sense."},changed)
+        archived=failed(self.vocabulary(word="archived"));Card.objects.filter(pk=archived.card_id).update(archived=True)
+        foreign_deck=Deck.objects.create(owner=self.other,name="Private")
+        foreign=failed(authoring.save_card(foreign_deck,"vocabulary",VOCAB))
+        ready=self.ready(self.vocabulary(word="ready"));self.score(ready,"E")
+        before_cards=list(Card.objects.order_by("pk").values())
+        before_reviews=list(ScoredReview.objects.values())
+        output=io.StringIO()
+        with patch("learning.providers.generate") as provider:
+            call_command("requeue_preparation",self.user.username,dry_run=True,stdout=output)
+            self.assertIn("Eligible failed initial tasks: 2",output.getvalue())
+            first.refresh_from_db();self.assertEqual(first.state,"failed")
+            call_command("requeue_preparation",self.user.username,stdout=output)
+            provider.assert_not_called()
+        for job in [first,newest]:
+            job.refresh_from_db();self.assertEqual(job.state,"queued")
+            self.assertEqual(job.execution,2);self.assertIsNone(job.started_at);self.assertIsNone(job.deadline)
+            self.assertEqual(job.provenance,{})
+        for job in [duplicate,busy,archived,foreign]:
+            job.refresh_from_db();self.assertEqual(job.state,"failed")
+        old.refresh_from_db();self.assertEqual(old.state,"cancelled")
+        output=io.StringIO();call_command("requeue_preparation",self.user.username,stdout=output)
+        self.assertIn("Requeued 0 tasks",output.getvalue())
+        self.assertEqual(list(Card.objects.order_by("pk").values()),before_cards)
+        self.assertEqual(list(ScoredReview.objects.values()),before_reviews)
+        with self.assertRaises(CommandError):call_command("requeue_preparation","missing-user",stdout=output)
+
+    def test_cancelled_generation_does_not_dispatch_or_commit(self):
+        card=self.vocabulary();receipt=work.claim_work()
+        from learning.providers import Profile
+        def cancel(*args):
+            authoring.archive_card(card,True)
+            return Profile("GENERATOR","https://provider.test","selected","placeholder-only",120)
+        with patch("learning.work.bounded_profile",side_effect=cancel),patch("learning.providers.generate") as generate:
+            work.process_generation(receipt[1],receipt[2])
+        generate.assert_not_called()
+        self.assertIsNone(work.save_pair(receipt[1],receipt[2],PAIR,{}))
+        self.assertFalse(ExamplePair.objects.exists())
+
+    def test_generation_retry_waits_then_starts_a_fresh_execution(self):
+        card=self.vocabulary();receipt=work.claim_work();job=card.generation_jobs.get()
+        GenerationJob.objects.filter(pk=job.pk).update(provenance={"model":"old"})
+        with patch("learning.work.timezone.now",return_value=job.deadline):
+            job=work.retry_generation(job)
+        self.assertEqual(job.state,"queued")
+        self.assertIsNone(job.started_at);self.assertIsNone(job.deadline);self.assertEqual(job.provenance,{})
+        later=timezone.now()+timedelta(days=2)
+        with patch("learning.work.timezone.now",return_value=later):
+            fresh=work.claim_work()
+        self.assertEqual(fresh[3],later+timedelta(seconds=300))
+        self.assertNotEqual(receipt[2],fresh[2])
+        self.assertIsNone(work.save_pair(receipt[1],receipt[2],PAIR,{}))
+        with patch("learning.work.timezone.now",return_value=later+timedelta(seconds=1)):
+            self.assertIsNotNone(work.save_pair(fresh[1],fresh[2],PAIR,{}))
+
     def test_generation_claim_crash_replay_and_old_source(self):
         """GEN-CLAIMED / GEN-COMMITTED / GEN-STALE."""
-        card = self.vocabulary(); job=card.generation_jobs.get(); old=job.claim
-        job.state="processing"; job.deadline=timezone.now()-timedelta(seconds=1); job.save()
-        job=work.retry_generation(job); job.state="processing"; job.save()
+        card = self.vocabulary(); work.claim_work();job=card.generation_jobs.get();old=job.claim
+        job.deadline=timezone.now()-timedelta(seconds=1); job.save()
+        job=work.retry_generation(job);work.claim_work();job.refresh_from_db()
         self.assertIsNone(work.save_pair(job.pk,old,PAIR,{}))
         pair=work.save_pair(job.pk,job.claim,PAIR,{})
         self.assertEqual(work.save_pair(job.pk,job.claim,PAIR,{}).pk,pair.pk)
@@ -210,7 +320,7 @@ class LearningTests(TestCase):
         before={key:getattr(card,key) for key in ["fsrs","due","deferred_until","collection","streak",
             "review_count","source_version","progress_version","direction_block","direction_index","cue_direction"]}
         job=card.generation_jobs.get(mode="rotation",state="queued")
-        job.state="processing";job.save()
+        job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
         pair=work.save_corrected_pair(card.pk,card.source_version,card.active_pair_id,
             {**PAIR,"native_sentence":"那次误会很小。"},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
         card.refresh_from_db()
@@ -443,7 +553,7 @@ class LearningTests(TestCase):
                     deck=Deck.objects.create(owner=self.user,name=f"{target}/{native}/{direction}/{action}")
                     card=authoring.save_card(deck,"vocabulary",{**VOCAB,"target_language":target,"native_language":native,
                         "word":"misunderstanding" if target=="English" else "malentendido"})
-                    job=card.generation_jobs.get();job.state="processing";job.save()
+                    job=card.generation_jobs.get();job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
                     data={**PAIR}
                     if target=="Spanish": data.update(target_sentence="Un malentendido interrumpió la conversación.",target_highlight="malentendido")
                     if native=="Spanish": data.update(native_sentence="Un malentendido interrumpió la conversación.",native_highlight="malentendido")
@@ -611,7 +721,7 @@ class LearningTests(TestCase):
         job=card.generation_jobs.get(mode="rotation",state="queued")
         p=self.present(card); frozen=p.snapshot.copy(); version=card.progress_version
         review.submit(p,"skip")
-        job.state="processing"; job.save()
+        job.state="processing"; job.started_at=timezone.now(); job.deadline=job.started_at+timedelta(seconds=300); job.save()
         candidate=work.save_pair(job.pk,job.claim,{**PAIR,"target_sentence":"Another misunderstanding arose."},{})
         card.refresh_from_db(); self.assertEqual((card.active_pair_id,card.progress_version),(original,version))
         with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(minutes=30)):
@@ -624,7 +734,7 @@ class LearningTests(TestCase):
 
     def test_pair_activation_before_question_preserves_progress(self):
         card=self.ready(self.vocabulary()); self.score(card,"E"); card.refresh_from_db()
-        job=card.generation_jobs.get(mode="rotation",state="queued"); job.state="processing"; job.save()
+        job=card.generation_jobs.get(mode="rotation",state="queued"); job.state="processing"; job.started_at=timezone.now(); job.deadline=job.started_at+timedelta(seconds=300); job.save()
         pair=work.save_pair(job.pk,job.claim,{**PAIR,"target_sentence":"Another misunderstanding arose."},{})
         before=(card.fsrs,card.progress_version,card.collection,card.streak,card.direction_index,ScoredReview.objects.count())
         card.due=timezone.now()-timedelta(seconds=1); card.save(update_fields=["due"])

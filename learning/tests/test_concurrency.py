@@ -12,10 +12,10 @@ from django.contrib.auth import get_user_model
 from django.db import connections
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
-from learning import authoring, review
-from learning.models import Deck, Attempt, ScoredReview, Presentation
+from learning import authoring, review, work
+from learning.models import Deck, Attempt, ScoredReview, Presentation, GenerationJob
 from learning.worker import run_worker
-from .test_learning import GENERIC, audio_bytes
+from .test_learning import GENERIC, VOCAB, audio_bytes
 
 
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
@@ -54,6 +54,68 @@ class ConcurrencyTests(TransactionTestCase):
         self.assertEqual(sorted(results),["assessed","closed_unassessed"])
         self.assertEqual(ScoredReview.objects.count(),1)
         self.card.refresh_from_db(); self.assertEqual(self.card.progress_version,1)
+
+    def test_concurrent_generation_claims_are_distinct(self):
+        for word in ["first","second"]:
+            authoring.save_card(self.deck,"vocabulary",{**VOCAB,"word":word})
+        barrier=threading.Barrier(2)
+        def claim(_):
+            try:
+                barrier.wait()
+                return work.claim_work()
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            receipts=list(pool.map(claim,range(2)))
+        self.assertEqual(len({r[1] for r in receipts}),2)
+        self.assertEqual(GenerationJob.objects.filter(state="processing",started_at__isnull=False,deadline__isnull=False).count(),2)
+
+    @override_settings(GENERATION_TIMEOUT_SECONDS=5,WORKER_CLEANUP_GRACE_SECONDS=1,WORKER_CONCURRENCY=2)
+    def test_aged_generation_queue_executes_after_all_slots_recover(self):
+        stop=threading.Event();lock=threading.Lock();requests=[];running=peak=0
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(inner):
+                nonlocal running,peak
+                body=json.loads(inner.rfile.read(int(inner.headers["Content-Length"])))
+                source=json.loads(body["messages"][1]["content"])
+                with lock:
+                    requests.append(source["word"]);running+=1;peak=max(peak,running)
+                try:
+                    inner.send_response(200);inner.send_header("Content-Type","application/json");inner.end_headers()
+                    if source["word"].startswith("stall"):
+                        while not stop.wait(.02):inner.wfile.write(b" ");inner.wfile.flush()
+                    else:
+                        time.sleep(1)
+                        pair={"target_sentence":"A <focus>healthy</focus> example.","native_sentence":"一个<focus>健康的</focus>例子。"}
+                        inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps(pair)}}]}).encode())
+                except (BrokenPipeError,ConnectionResetError):pass
+                finally:
+                    with lock:running-=1
+            def log_message(inner,*args):pass
+        server=ThreadingHTTPServer(("127.0.0.1",0),Handler);server.daemon_threads=True
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        cards=[];old=timezone.now()-timedelta(hours=2)
+        for index,word in enumerate(["stall-a","stall-b","healthy"]):
+            card=authoring.save_card(self.deck,"vocabulary",{**VOCAB,"word":word});cards.append(card)
+            card.generation_jobs.update(requested_at=old+timedelta(seconds=index))
+        started=time.monotonic();anchor=timezone.now()
+        try:
+            with patch.dict(os.environ,{"GENERATOR_ENDPOINT":f"http://127.0.0.1:{server.server_port}/generate",
+                    "GENERATOR_API_KEY":"test-only","ALLOW_INSECURE_PROVIDER_HTTP":"1"}):
+                run_worker(once=True,concurrency=2)
+            elapsed=time.monotonic()-started
+            self.assertEqual(GenerationJob.objects.filter(state="done").count(),1)
+            self.assertEqual(GenerationJob.objects.filter(state="failed").count(),2)
+            cards[2].refresh_from_db();self.assertTrue(cards[2].ready)
+            self.assertEqual(sorted(requests),["healthy","stall-a","stall-b"])
+            self.assertLessEqual(peak,2)
+            self.assertLess(elapsed,9)
+            for job in GenerationJob.objects.all():
+                self.assertGreaterEqual(job.started_at,anchor)
+                self.assertEqual(job.deadline-job.started_at,timedelta(seconds=5))
+            self.assertEqual(ScoredReview.objects.count(),0)
+            print(f"GENERATION-CAPACITY: aged queue recovered after both slots stalled; healthy completion in {elapsed:.3f}s.",flush=True)
+        finally:
+            stop.set();server.shutdown();server.server_close();thread.join(timeout=2)
 
     def test_exit_and_grade_compete_on_separate_connections(self):
         a=review.submit(self.presentation(),"speak",1,"unused")

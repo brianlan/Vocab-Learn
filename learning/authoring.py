@@ -2,8 +2,6 @@ import csv
 import hashlib
 import io
 import json
-from datetime import timedelta
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -33,10 +31,8 @@ def identity(kind, data):
 
 
 def new_generation(card, mode="initial"):
-    now = timezone.now()
     return GenerationJob.objects.create(card=card, source_version=card.source_version, mode=mode,
-        **({"token": card.rotation_token} if mode == "rotation" else {}), requested_at=now,
-        deadline=now + timedelta(seconds=settings.GENERATION_TIMEOUT_SECONDS))
+        **({"token": card.rotation_token} if mode == "rotation" else {}))
 
 
 def invalidate_cards(cards):

@@ -24,7 +24,7 @@ Open `http://127.0.0.1:8766`. Only localhost HTTP is a supported development rec
 
 Local commands read the process environment; they do not automatically source `.env`. The default database and private audio directory are under ignored `var/`. Set `APP_DATA_DIR` and `AUDIO_DIR` for another location. `.env` is used by Compose.
 
-The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops; the web exposes expired work for explicit retry after the 300-second execution budget. Opening Practice does not silently retry uncertain paid calls.
+The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops. Generation waits durably in Queued without an execution deadline; claiming starts its 300-second execution budget. The web exposes expired Generating work for explicit retry. Spoken assessments retain their 300-second submission-based deadline, including queue wait. Opening Practice does not silently retry uncertain paid calls.
 
 ## Docker Compose and private LAN HTTPS
 
@@ -112,6 +112,21 @@ Speak records the whole answer. Cancel is available before submission, including
 
 Vocabulary backs show the authored target and original explanation. Recognition accepts concise equivalent meanings such as 吸收 for absorb; a correct word does not have to expand every property in its definition. Production still requires the target expression for complete recall. Generated example pairs contain sentences and minimal highlights only, with no separate translated definition.
 
+### Recovering failed initial preparation
+
+Background generation starts its execution clock only when a worker claims it. Queued tasks may wait longer than five minutes or survive a worker restart without failing; each claim receives its full `GENERATION_TIMEOUT_SECONDS` budget. The existing two-slot worker prioritizes queued spoken assessments when a slot becomes available. Running calls are not preempted. Changing concurrency or raising a timeout is not needed to correct queue ageing.
+
+To explicitly recover a learner's failed initial preparation, preview and then requeue:
+
+```sh
+docker compose exec web python manage.py requeue_preparation alice --dry-run
+docker compose exec web python manage.py requeue_preparation alice
+```
+
+This retries only the latest failed initial request for each active, current-version, not-ready source belonging to that learner. It reuses saved sources/jobs, preserves Ready pairs and learning/history, and skips active work, archives, other owners and older revisions. Rerunning does not enqueue duplicates. The command makes no provider calls; the worker processes committed requests independently. Its preview reports requests with prior dispatch metadata. This is an explicit retry, and old records without dispatch metadata do not prove that no remote request was ever issued.
+
+A new model/transport/validation failure remains Failed and exposes Retry; no automatic paid retry is added. Queued and Generating are distinct on card details. Long queues still take time to process; the execution budget limits active work, not total preparation latency.
+
 ### Correcting older Ready examples
 
 After upgrading to the lexical-pair prompt, preview and explicitly refresh a learner's existing examples:
@@ -147,6 +162,8 @@ docker compose up -d web worker caddy
 Migration `0004_continuous_practice` removes historical run metadata while preserving card progress, presentations, attempts, scored reviews, frozen inputs and deadlines. It also copies presentation scope and the remaining time of recent valid neutral deferrals. Legacy unassessed exits have no separate closure timestamp, so their remaining deferral is reconstructed from the saved submission time. Take a cold backup and retain its exact image before upgrading; this migration is not reversible with `migrate` alone. Roll back using the pre-upgrade backup and matching image. Existing question URLs remain valid; old run bookmarks redirect to the dashboard and old start forms redirect to Practice.
 
 Migration `0005_remove_examplepair_gloss` intentionally removes the generated definition column from example pairs. All other fields and historical presentation/review JSON remain unchanged; old grades are not recalculated. Retain the pre-upgrade cold backup and image to recover that removed column on rollback. Existing Ready sentences need the explicit correction command above to benefit from the new generation prompt.
+
+Migration `0006_generation_execution_budget` adds nullable start times/deadlines and a queue-order index, and clears only legacy queued deadlines. Done, failed and processing records retain their old deadlines and metadata; unknown historical start times stay empty. It does not retry old failures automatically. Take a cold backup and preserve its matching image; rollback uses that artifact rather than reversing the changed queue semantics. Run the explicit recovery command after upgrading, separately from the backup window.
 
 ## Delivered cold backup and restore
 

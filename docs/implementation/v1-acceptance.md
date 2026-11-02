@@ -19,7 +19,7 @@ The application uses Django 5.2.18, Python 3.11, SQLite, fsrs 6.3.2 and markdown
 
 ## Executed verification
 
-This table records the initial V1 delivery. The continuous-practice and Vocabulary lexical-meaning follow-ups below record later changes; the per-run shuffle follow-up is historical and superseded.
+This table records the initial V1 delivery. The continuous-practice, Vocabulary lexical-meaning and generation-queue follow-ups below record later changes; the per-run shuffle follow-up is historical and superseded.
 
 | Layer | Executed result | Evidence and scope |
 | --- | --- | --- |
@@ -80,11 +80,12 @@ The named specification cases are mapped below. This map identifies available im
 | NEVER-STARTED | L: `never_started_and_expired_execution_fencing`; status expires unclaimed execution without a running worker. |
 | EXPIRED-EXECUTION | L: `never_started_and_expired_execution_fencing`; old claim cannot commit after Retry. |
 | PAIR-LOCK-RACE | L: `direction_slots_and_pair_lock_race`; candidate arrival while an old question is retained does not change that question's logical progress. |
-| GEN-UNSTARTED | L: `first_preparation_failure_keeps_source_out_of_queue`; generation intent is durable and status exposes expiry/Retry. |
-| GEN-CLAIMED | L: `generation_claim_crash_replay_and_old_source`; expired claimed generation is explicitly retried and the old claim is rejected. |
+| GEN-UNSTARTED | L: `first_preparation_failure_keeps_source_out_of_queue`, `bulk_generation_waits_for_capacity_without_spending_execution_budget`; 1,201 sources wait two hours and receive fresh budgets only at claim. C: `concurrent_generation_claims_are_distinct`, `aged_generation_queue_executes_after_all_slots_recover`. |
+| GEN-CLAIMED | L: `generation_claim_crash_replay_and_old_source`, `generation_retry_waits_then_starts_a_fresh_execution`, `cancelled_generation_does_not_dispatch_or_commit`; expired claimed generation is explicitly retried and old claims cannot commit. |
+| GEN-BULK-RECOVERY | L: `explicit_preparation_requeue_is_scoped_and_idempotent`; migration test `generation_migration_only_removes_queued_deadlines_and_preserves_failed_work`; actual cold-artifact rehearsal and production recovery preserve sources/progress/history and reuse existing jobs. |
 | GEN-COMMITTED | L: `generation_claim_crash_replay_and_old_source`, `direction_slots_and_pair_lock_race`; saved pair replay remains idempotent. |
 | GEN-STALE | L: `generation_claim_crash_replay_and_old_source`; learning-content edit keeps fresh source outside Ready until its own pair is accepted. |
-| WORKER-CAPACITY | C: `worker_recovers_actual_capacity_after_stalled_provider`, `worker_kills_and_reaps_stalled_conversion_child`; sole slot occupied, 5-second budget, one-second healthy work queued at second 4. Conversion/provider scenarios completed at second 6.441/6.439, before the asserted second-7 target. Conversion PID is confirmed absent after cleanup. |
+| WORKER-CAPACITY | C: `worker_recovers_actual_capacity_after_stalled_provider`, `worker_kills_and_reaps_stalled_conversion_child`; sole-slot conversion/provider scenarios complete before the asserted second-7 target and conversion PID is absent after cleanup. `aged_generation_queue_executes_after_all_slots_recover` occupies both generation slots; the aged healthy request completes in 6.450 seconds with a fresh budget. |
 | TWO-ATTEMPTS | L: `distinct_attempts_and_source_edit_fence`; C: `two_real_connections_cannot_both_score_same_progress`. Loser closes without another score. |
 | SOURCE-EDIT | L: `distinct_attempts_and_source_edit_fence`, `pipeline_closes_stale_attempt_before_more_paid_work`; old work cannot score reset progress. |
 | SAME-WORD | L: `independent_same_word_cards_preserve_other_progress`, `format_only_edits_preserve_progress`; reviewing one sense does not update the other card. |
@@ -118,7 +119,7 @@ The drill image precedes the final stale-work/unconfirmed-upload fixes, which do
 
 - Test real microphones in desktop Chrome and Edge on the intended clients. Synthetic/headless Chromium cannot establish microphone hardware quality, device selection, real permission dialogs or Edge behavior.
 - Configure name resolution and trust the exported Caddy public root on each LAN client, then confirm warning-free HTTPS and actual recording. Server-side hostname/chain verification has passed; no other device's trust store has been installed or verified automatically.
-- Complete the product acceptance pass using the 48 specification cases and these evidence references. Some tests combine cases or exercise representative branches: exact 9+2+1-second browser refresh arithmetic, every delayed rotation winner, every crash instruction boundary and live hot replacement of all three providers have not all been individually replayed.
+- Complete the product acceptance pass using the 49 specification cases and these evidence references. Some tests combine cases or exercise representative branches: exact 9+2+1-second browser refresh arithmetic, every delayed rotation winner, every crash instruction boundary and live hot replacement of all three providers have not all been individually replayed.
 - Review language quality on personal learning material. All three configured default tasks worked on representative public fixtures; the compatible ASR route has contract-test coverage, not a live certification of every provider. This release makes no measured long-term retention or broad ASR/Judge accuracy claim.
 
 No public registration, additional UI languages, answer typing, sharing/marketplace, LiteLLM layer, mobile app or public-cloud deployment was added; those remain outside the agreed V1 boundary.
@@ -156,3 +157,13 @@ Before the schema upgrade, the delivered cold-backup command saved the original 
 All 75 existing Ready cards for the selected learner received new pair revisions, followed by two word-class corrections found during inspection. Original source/progress/history and old-pair fingerprints remained unchanged, excluding authorized active/cue pointers and superseded rotation intent. The 1,126 not-ready sources and all initial-generation jobs were untouched; rerun preview reports zero remaining old Ready pairs. The final inline-marker refinement changes only the provider wire format, so these normalized plaintext pairs remain usable. Trusted HTTPS, login/CSRF/secure session, private pages/assets and deployed runtime source hashes passed. Physical microphones and Edge were not retested; linguistic quality remains model-dependent.
 
 ![Vocabulary back with the authored English explanation](previews/vocabulary-back.png)
+
+## Generation-queue execution-budget follow-up
+
+Implemented on 2026-11-02 following [ADR 0003](../adr/0003-generation-clock-at-claim.md). Background generation now waits durably in Queued with no start/deadline. `claim_work()` atomically starts a bounded execution and returns the same worker interface; the supervisor retains its two-slot limit and real process/transport cleanup. Spoken assessment deadlines still start at submission and retain priority for available slots. Retry requeues generation without consuming its next execution budget, and expired/cancelled claims cannot dispatch or commit new output.
+
+[Verification results](generation-queue-results.json) record 63 passing automated tests and 12 passing Chromium groups using a synthetic microphone and the actual configured ASR/Judge/Generator. The controlled bulk fixture imports 1,201 sources, advances two hours, claims two and verifies that waiting consumes no execution budget. Separate-connection claims are distinct. With both generation slots stalled, the healthy aged request completes in 6.450 seconds; the existing assessment/conversion recovery checks also pass. Model prompts, semantic grading and SRS rules were not changed in this follow-up.
+
+The delivered cold backup and its matching old image were retained. That actual artifact was restored into an isolated volume, migrated, and used to rehearse the explicit `requeue_preparation` command with network disabled. Field comparisons use column names because SQLite table rebuilding may change column order. Migration preserves all old fields except queued deadlines, leaves historical start times unknown, and does not automatically retry failed work. Recovery reuses the 1,126 existing failed initial jobs, preserves all source/card/pair/presentation/attempt/review data and other jobs, and produces a zero-candidate preview before the worker resumes. Production migration/recovery passed the same checks, with SQLite integrity/foreign keys intact; the isolated volume was removed.
+
+Trusted HTTPS, login/CSRF/secure session, private pages/assets and deployed source hashes passed. Live observations cover a backlog waiting beyond five minutes with no queued deadlines, while new Ready pairs continue arriving and active executions receive full budgets. Background generation continues after this deployment; actual provider/validation failures remain explicit Failed requests for operator/learner Retry rather than automatic paid replays. Physical microphones and Edge were not retested.

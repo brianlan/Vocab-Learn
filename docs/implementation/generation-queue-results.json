@@ -1,0 +1,151 @@
+{
+  "status": "passed",
+  "change": "Start background generation execution budgets at claim; preserve submission-based assessment deadlines",
+  "schema_migration": "learning.0006_generation_execution_budget",
+  "automated_tests": {
+    "count": 63,
+    "seconds": 22.468
+  },
+  "bulk_queue_test": {
+    "sources": 1201,
+    "simulated_queue_wait_hours": 2,
+    "initial_claims": 2,
+    "queued_jobs_keep_no_deadline": true,
+    "each_claim_receives_full_execution_budget": true
+  },
+  "concurrency": {
+    "distinct_atomic_claims": true,
+    "all_generation_slots_stalled": 2,
+    "healthy_aged_job_completion_seconds": 6.45,
+    "actual_process_transport_recovery_passed": true,
+    "assessment_priority_and_submission_deadline_preserved": true
+  },
+  "browser": {
+    "groups": 12,
+    "type": "Headless Chromium, synthetic microphone; physical device and Edge remain manual checks",
+    "real_configured_asr_judge_generator": true
+  },
+  "migration": {
+    "actual_cold_backup_rehearsal_passed": true,
+    "production_preserved_fields_except_queued_deadlines": true,
+    "historical_start_times_not_invented": true,
+    "failed_work_not_automatically_requeued": true,
+    "integrity_and_foreign_keys_passed": true,
+    "matching_old_image_retained": true,
+    "backup_procedure_sha256": "0bf424a6c674104ba020555a6d869c8248843b6e97fb5e6fcb95dab632e0ca4f"
+  },
+  "explicit_recovery": {
+    "rehearsal": {
+      "requeued": 1126,
+      "sources_progress_pairs_presentations_attempts_history_preserved": true,
+      "existing_jobs_reused": true,
+      "unchanged_ready_jobs_preserved": true
+    },
+    "production": {
+      "requeued": 1126,
+      "sources_progress_pairs_presentations_attempts_history_preserved": true,
+      "existing_jobs_reused": true,
+      "unchanged_ready_jobs_preserved": true
+    },
+    "dry_run_with_prior_dispatch_metadata": 2,
+    "idempotent_preview_before_worker_start": 0,
+    "network_disabled_in_rehearsal": true,
+    "requeue_command_made_no_provider_calls": true
+  },
+  "deployment": {
+    "image": "sha256:deeabab523af6d58fe15701547eb8cdbe30c2d5ab0a21e0f70ef1bfde45edcbd",
+    "trusted_https_health": true,
+    "login_csrf_secure_session": true,
+    "private_pages_and_assets": true,
+    "source_sha256": {
+      "learning/models.py": "e308149e442c4a61aa3a1f6d7c87dc014db91e0646998c278c2b6982bfb9b5cb",
+      "learning/providers.py": "d59d353d7f290eb17a9287c83565ef01420fe3de0bcc7faeb95064cf667d5c5d",
+      "learning/review.py": "cde27e4b4573189abcf8e9244a6d25f0fe44704b0c0b08ca84dfd254ac3db867",
+      "learning/work.py": "7533b7b8c34201f6c9afe678cb33ed56fbf4c579cce55da61940a82167e07985",
+      "learning/authoring.py": "7d4aaa2c7cdbf618773b381fe3ab8e9ad3a420f279c773f79ed940d43def79e4",
+      "learning/worker.py": "519d92a578dbca77a99f883a2a661c917cbc6cc90300574b38876fcfcf07086f",
+      "learning/management/commands/requeue_preparation.py": "235b07248af93a3a1b3f04a4c4567378f29402bc26a06d0781a8f9653f078c2a",
+      "learning/migrations/0006_generation_execution_budget.py": "738d58323841a8e64d4a1e1eaaa91210a39d70a35c5cf9bc3e9f221fb2287b96",
+      "templates/learning/back.html": "a0de1e4699d7f1fc7888bdf899f4cd6e4515d1c2d6c2373e467e968f152996e1",
+      "templates/learning/card.html": "afa677aa79029b06166367c5fb0c0d3d43c9bafc96bb7f6dfb12d41565d84125",
+      "templates/learning/review.html": "ea147f6823d5936198a7c8b1e6b42762a8956e531a187484fd3878388f15eedb",
+      "templates/learning/statistics.html": "089614a8228b5924093c1e039cfdb671dd94236e302cce5e2439aed09ed98f56"
+    },
+    "deployed_source_matches": true
+  },
+  "live_observation": {
+    "scope": "Current-source initial preparation for the selected learner; transient counts at the recorded time.",
+    "first": {
+      "observed_at": "2026-11-02T02:06:53.852095+00:00",
+      "states": {
+        "done": 98,
+        "processing": 2,
+        "queued": 1101
+      },
+      "queued_without_deadline": 1101,
+      "queued_older_than_five_minutes": 0,
+      "oldest_queue_wait_seconds": 104.5,
+      "leases": [
+        {
+          "started": "2026-11-02T02:06:20.832163+00:00",
+          "budget_seconds": 300.0
+        },
+        {
+          "started": "2026-11-02T02:06:52.016938+00:00",
+          "budget_seconds": 300.0
+        }
+      ],
+      "ready_cards": 98
+    },
+    "after_five_minute_queue_age": {
+      "observed_at": "2026-11-02T02:10:17.609725+00:00",
+      "states": {
+        "done": 135,
+        "failed": 4,
+        "processing": 2,
+        "queued": 1060
+      },
+      "queued_without_deadline": 1060,
+      "queued_older_than_five_minutes": 1060,
+      "oldest_queue_wait_seconds": 308.3,
+      "leases": [
+        {
+          "started": "2026-11-02T02:10:12.035621+00:00",
+          "budget_seconds": 300.0
+        },
+        {
+          "started": "2026-11-02T02:10:12.646778+00:00",
+          "budget_seconds": 300.0
+        }
+      ],
+      "ready_cards": 135
+    },
+    "background_generation_continues": true,
+    "completed_after_long_queue_wait": {
+      "observed_at": "2026-11-02T02:17:21.664321+00:00",
+      "queued_over_five_minutes_then_completed": true,
+      "queue_wait_seconds": 723.33,
+      "execution_budget_seconds": 300.0,
+      "completion_seconds_after_claim": 5.89,
+      "failed_without_started_at": 0,
+      "failure_categories": [
+        {
+          "error_category": "invalid_output",
+          "count": 11
+        }
+      ],
+      "current_states": {
+        "done": 220,
+        "failed": 11,
+        "processing": 2,
+        "queued": 968
+      },
+      "ready_cards": 220
+    }
+  },
+  "limits": [
+    "Model/transport/validation failures remain explicit Failed requests and are not automatically replayed.",
+    "Queue waiting has no execution deadline, so processing a large backlog still takes time.",
+    "Physical microphones and Edge were not retested."
+  ]
+}
