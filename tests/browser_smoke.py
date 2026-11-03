@@ -119,6 +119,13 @@ def run(options):
         metrics=page.locator(".metric").all_text_contents(); assert metrics==["2","2","50%"],metrics
         page.screenshot(path=str(output/"progress.png"),full_page=True)
         checked("Distinct-card/scored-review/accuracy metrics exclude Skip")
+        page.goto(deck_url);page.get_by_role("button",name="Archive deck",exact=True).click()
+        page.goto(target+"/decks/")
+        page.locator("#id_name").fill("Vocabulary direction QA "+str(int(time.time())))
+        page.get_by_role("button",name="Create deck").click();deck_url=page.url
+        page.get_by_role("button",name="Study this deck").click()
+        assert page.locator("h1").inner_text()=="Nothing to practice right now."
+        empty_url=page.url
         page.goto(deck_url+"new/?kind=vocabulary")
         page.locator("#id_word").fill("misunderstanding")
         page.locator("#id_explanation").fill("A problem caused when people understand one another incorrectly.")
@@ -133,6 +140,18 @@ def run(options):
         assert page.url!=empty_url
         assert "<focus>" not in page.locator(".prompt").inner_text()
         checked("Newly Ready Vocabulary enters practice from the previously empty URL")
+        cue=page.locator(".prompt").inner_text()
+        page.get_by_role("button",name=re.compile("Forgot")).click();page.wait_for_selector("#next-card")
+        assert page.locator(".recall-result h3").inner_text()=="Needs a refresh"
+        assert "min" in page.locator(".next-review").inner_text()
+        page.locator("#next-card").click()
+        assert page.locator("h1").inner_text()=="Nothing to practice right now."
+        deadline=time.monotonic()+75
+        while page.locator("#review-card").count()==0 and time.monotonic()<deadline:
+            page.wait_for_timeout(900);page.reload()
+        page.wait_for_selector("#review-card")
+        assert page.locator(".prompt").inner_text()==cue
+        checked("Forgot Vocabulary retains its exact cue and language at the actual one-minute review")
         page.get_by_role("button",name=re.compile("Skip")).click()
         page.wait_for_selector("#next-card")
         assert page.locator(".answer").inner_text()=="misunderstanding"

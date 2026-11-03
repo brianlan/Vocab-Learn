@@ -24,6 +24,8 @@ Open `http://127.0.0.1:8766`. Only localhost HTTP is a supported development rec
 
 Local commands read the process environment; they do not automatically source `.env`. The default database and private audio directory are under ignored `var/`. Set `APP_DATA_DIR` and `AUDIO_DIR` for another location. `.env` is used by Compose.
 
+Migration `0007_retain_incomplete_directions` restores cleared direction locks for existing incomplete Vocabulary reviews and Forgot reinforcement. Stop web/worker during upgrade. It restores the latest current-source scored direction against the current active example pair; already held questions remain fixed. It changes only direction index/cue fields, preserving due, memory, collection/streak, counts and history. Reversing this migration retains the restored locks; use a matching cold backup/image for an exact rollback.
+
 The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops. Generation waits durably in Queued without an execution deadline; claiming starts its 300-second execution budget. The web exposes expired Generating work for explicit retry. Spoken assessments retain their 300-second submission-based deadline, including queue wait. Opening Practice does not silently retry uncertain paid calls.
 
 ## Docker Compose and private LAN HTTPS

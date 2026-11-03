@@ -194,8 +194,9 @@ def commit_grade(attempt_id, claim, grade, outcomes, reason, candidate=None):
     card.progress_version += 1
     card.review_count += 1
     if card.kind == "vocabulary":
-        card.direction_index += 1
-        card.cue_pair, card.cue_direction = None, ""
+        if grade in "DE" and card.collection == "Normal":
+            card.direction_index += 1
+            card.cue_pair, card.cue_direction = None, ""
         card.generation_jobs.filter(mode="rotation", state__in=["queued", "processing", "failed", "done"]).update(state="cancelled")
         card.rotation_token = uuid.uuid4() if grade == "E" and card.collection == "Normal" else None
     card.save()

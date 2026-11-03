@@ -627,7 +627,7 @@ class LearningTests(TestCase):
                         a=self.spoken(p);a=review.commit_grade(a.pk,a.claim,"E",[],"Complete controlled fixture")
                     else:a=review.submit(p,action)
                     card.refresh_from_db()
-                    self.assertEqual(card.direction_index,0 if action=="skip" else 1)
+                    self.assertEqual(card.direction_index,int(action=="speak"))
                     self.assertEqual(a.grade,"" if action=="skip" else "A" if action=="forgot" else "E")
 
     def test_short_sentence_and_invalid_audio_remain_whole_tasks(self):
@@ -774,6 +774,109 @@ class LearningTests(TestCase):
         review.exit_attempt(current);card.refresh_from_db()
         self.assertEqual(card.deferred_until,deadline)
         self.assertEqual(ScoredReview.objects.count(),1)
+
+    def test_normal_direction_waits_for_complete_recall(self):
+        for direction,last in product(["recognition","production"],"DE"):
+            with self.subTest(direction=direction,last=last):
+                other="production" if direction=="recognition" else "recognition"
+                card=self.ready(self.vocabulary(word=f"normal-{direction}-{last}"))
+                index=0 if last=="D" else 1
+                card.direction_block=[direction,other] if index==0 else [other,direction]
+                card.direction_index=index;card.save()
+                pair=card.active_pair_id;now=timezone.now();previous=None
+                for grade in ["C","C",last]:
+                    with patch("learning.review.timezone.now",return_value=now):
+                        p=review.next_question(self.user,self.deck)
+                        self.assertEqual((p.snapshot["direction"],p.snapshot["pair_id"]),(direction,pair))
+                        if previous:self.assertNotEqual(p.pk,previous.pk)
+                        a=self.spoken(p);review.commit_grade(a.pk,a.claim,grade,[],"Controlled recall")
+                        card.refresh_from_db()
+                        self.assertIsNone(review.next_question(self.user,self.deck))
+                    self.assertEqual(card.collection,"Normal")
+                    if grade=="C":
+                        self.assertEqual((card.direction_index,card.cue_direction,card.cue_pair_id),(index,direction,pair))
+                        self.assertEqual(card.due,a.submitted_at+timedelta(minutes=1))
+                    else:
+                        self.assertEqual((card.direction_index,card.cue_direction,card.cue_pair_id),(index+1,"",None))
+                    now=card.due;previous=p
+                self.assertEqual(card.generation_jobs.filter(mode="rotation").count(),int(last=="E"))
+                due=card.due
+                with patch("learning.review.timezone.now",return_value=now),patch(
+                        "learning.review.random.sample",return_value=[other,direction]) as shuffle:
+                    following=review.next_question(self.user,self.deck)
+                self.assertEqual(following.snapshot["direction"],other)
+                self.assertEqual(shuffle.call_count,int(index==1))
+                card.refresh_from_db();self.assertEqual((card.due,card.review_count),(due,3))
+                card.archived=True;card.save(update_fields=["archived"])
+
+    def test_forgot_direction_stays_locked_until_graduation(self):
+        for direction,entry,last in product(["recognition","production"],"AB","DE"):
+            with self.subTest(direction=direction,entry=entry,last=last):
+                other="production" if direction=="recognition" else "recognition"
+                card=self.ready(self.vocabulary(word=f"forgot-{direction}-{entry}-{last}"))
+                index=0 if entry=="A" else 1
+                card.direction_block=[direction,other] if index==0 else [other,direction]
+                card.direction_index=index;card.save()
+                pair=card.active_pair_id;now=timezone.now();streak=0
+                grades=[entry,"D","E","C","D",entry,"E","D",last]
+                for position,grade in enumerate(grades):
+                    with patch("learning.review.timezone.now",return_value=now):
+                        p=review.next_question(self.user,self.deck)
+                        self.assertEqual((p.snapshot["direction"],p.snapshot["pair_id"]),(direction,pair))
+                        if grade=="A":a=review.submit(p,"forgot")
+                        else:
+                            a=self.spoken(p);a=review.commit_grade(a.pk,a.claim,grade,[],"Controlled reinforcement")
+                        review.commit_grade(a.pk,a.claim,grade,[],"Duplicate receipt")
+                        card.refresh_from_db()
+                        self.assertIsNone(review.next_question(self.user,self.deck))
+                    streak=streak+1 if grade in "DE" else 0
+                    self.assertEqual((card.streak,card.review_count),(streak,position+1))
+                    if streak<3:
+                        self.assertEqual(card.collection,"Forgot")
+                        self.assertEqual((card.direction_index,card.cue_direction,card.cue_pair_id),(index,direction,pair))
+                        interval=timedelta(days=1) if grade in "DE" else timedelta(minutes=1)
+                        self.assertEqual(card.due,a.submitted_at+interval)
+                        self.assertFalse(card.generation_jobs.filter(mode="rotation").exists())
+                    else:
+                        self.assertEqual(card.collection,"Normal")
+                        self.assertEqual((card.direction_index,card.cue_direction,card.cue_pair_id),(index+1,"",None))
+                    now=card.due
+                self.assertEqual(card.generation_jobs.filter(mode="rotation").count(),int(last=="E"))
+                self.assertEqual(ScoredReview.objects.filter(card=card).count(),len(grades))
+                with patch("learning.review.timezone.now",return_value=now),patch(
+                        "learning.review.random.sample",return_value=[other,direction]):
+                    following=review.next_question(self.user,self.deck)
+                self.assertEqual(following.snapshot["direction"],other)
+                card.archived=True;card.save(update_fields=["archived"])
+
+    def test_incomplete_direction_survives_neutral_actions_and_stale_tabs(self):
+        card=self.ready(self.vocabulary());card.direction_block=["recognition","production"];card.save()
+        self.score(card,"C");card.refresh_from_db()
+        p=self.present(card);other_scope=review.next_question(self.user)
+        card.refresh_from_db()
+        before=(card.fsrs,card.due,card.collection,card.streak,card.direction_index,card.review_count,card.progress_version)
+        a=self.spoken(p)
+        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Controlled outage","transport"))
+        a=review.retry_attempt(a);review.exit_attempt(a)
+        card.refresh_from_db();at=card.deferred_until
+        for action in ["skip","speak"]:
+            with patch("learning.review.timezone.now",return_value=at):
+                p=review.next_question(self.user,self.deck)
+                self.assertEqual(p.snapshot["direction"],"recognition")
+                self.assertEqual(p.snapshot["pair_id"],card.active_pair_id)
+                if action=="skip":review.submit(p,"skip")
+                else:
+                    a=self.spoken(p);review.commit_grade(a.pk,a.claim,"D",[],"Complete after interruption")
+            card.refresh_from_db();at=card.deferred_until
+            if action=="skip":
+                self.assertEqual((card.fsrs,card.due,card.collection,card.streak,card.direction_index,
+                    card.review_count,card.progress_version),before)
+        stale=review.submit(other_scope,"forgot")
+        self.assertEqual(stale.state,"closed_unassessed")
+        card.refresh_from_db()
+        self.assertEqual((card.direction_index,card.review_count),(1,2))
+        self.assertIsNone(card.deferred_until)
+        self.assertEqual(ScoredReview.objects.filter(card=card).count(),2)
 
     def test_direction_slots_and_pair_lock_race(self):
         """DIRECTION-BLOCK / PAIR-ROTATION / PAIR-LOCK-RACE."""

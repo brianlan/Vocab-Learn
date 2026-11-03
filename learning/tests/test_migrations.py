@@ -11,6 +11,80 @@ from fsrs import Card as MemoryCard, Rating, Scheduler
 
 
 class ContinuousPracticeMigrationTests(TestCase):
+    def test_direction_upgrade_relocks_only_incomplete_unheld_current_sources(self):
+        alias="direction_migration_test"
+        with tempfile.TemporaryDirectory() as folder:
+            config=copy.deepcopy(connections["default"].settings_dict)
+            config["NAME"]=str(Path(folder)/"legacy.sqlite3")
+            connections.databases[alias]=config;connection=connections[alias]
+            try:
+                old_target=[("learning","0006_generation_execution_budget")]
+                executor=MigrationExecutor(connection);executor.migrate(old_target)
+                old=executor.loader.project_state(old_target).apps
+                user=old.get_model("auth","User").objects.using(alias).create(username="learner",password="!")
+                deck=old.get_model("learning","Deck").objects.using(alias).create(owner_id=user.pk,name="Private")
+                Card=old.get_model("learning","Card");Pair=old.get_model("learning","ExamplePair")
+                Presentation=old.get_model("learning","Presentation");Attempt=old.get_model("learning","Attempt")
+                Review=old.get_model("learning","ScoredReview");Job=old.get_model("learning","GenerationJob")
+                cases=[("partial","Normal","C",0,False,1,True),
+                    ("forgot-a","Forgot","A",0,False,1,True),
+                    ("forgot-b","Forgot","B",0,False,1,True),
+                    ("forgot-c","Forgot","C",0,False,1,True),
+                    ("first-success","Forgot","D",1,False,1,True),
+                    ("second-success","Forgot","E",2,False,1,True),
+                    ("complete-d","Normal","D",0,False,1,False),
+                    ("complete-e","Normal","E",0,False,1,False),
+                    ("held-forgot","Forgot","B",0,True,1,False),
+                    ("held-partial","Normal","C",0,True,1,False),
+                    ("revised-source","Normal","C",0,False,2,False),
+                    ("unseen","Normal",None,0,False,1,False)]
+                expected={}
+                for n,(name,collection,grade,streak,held,version,restore) in enumerate(cases):
+                    direction="recognition" if n%2==0 else "production"
+                    other="production" if direction=="recognition" else "recognition"
+                    block=[direction,other] if n%3==0 else [other,direction]
+                    index=block.index(direction)
+                    card=Card.objects.using(alias).create(deck_id=deck.pk,kind="vocabulary",word=name,
+                        identity=name,explanation="Authored meaning.",source_version=version,progress_version=7,
+                        collection=collection,streak=streak,fsrs={"unchanged":"memory"},review_count=int(grade is not None),
+                        deferred_until=timezone.now()+timedelta(minutes=30),direction_block=block,direction_index=index+1)
+                    pair=Pair.objects.using(alias).create(card_id=card.pk,source_version=version,
+                        target_sentence="An original example.",target_highlight="example",
+                        native_sentence="一个例子。",native_highlight="例子")
+                    corrected=Pair.objects.using(alias).create(card_id=card.pk,source_version=version,
+                        target_sentence="A corrected example.",target_highlight="example",
+                        native_sentence="另一个例子。",native_highlight="例子",provenance={"corrects_pair_id":pair.pk})
+                    card.active_pair_id=corrected.pk
+                    if held:card.cue_pair_id=pair.pk;card.cue_direction=other
+                    card.save(using=alias)
+                    if grade:
+                        frozen={"kind":"vocabulary","source_version":1,"direction":direction,"pair_id":pair.pk}
+                        p=Presentation.objects.using(alias).create(user_id=user.pk,card_id=card.pk,
+                            source_version=1,progress_version=6,snapshot=frozen,budget=12)
+                        a=Attempt.objects.using(alias).create(presentation_id=p.pk,action="speak",state="assessed",grade=grade)
+                        Review.objects.using(alias).create(attempt_id=a.pk,card_id=card.pk,user_id=user.pk,grade=grade,
+                            reviewed_at=timezone.now(),next_due=card.due,snapshot=frozen,fsrs_log={},duration=2,budget=12)
+                    if held:
+                        Presentation.objects.using(alias).create(user_id=user.pk,card_id=card.pk,source_version=1,
+                            progress_version=7,snapshot={"direction":other,"pair_id":pair.pk},budget=12)
+                    Job.objects.using(alias).create(card_id=card.pk,source_version=version,mode="rotation",state="failed")
+                    if restore:expected[card.pk]={"direction_index":index,"cue_direction":direction,"cue_pair_id":corrected.pk}
+                names=["Deck","Card","ExamplePair","Presentation","Attempt","ScoredReview","GenerationJob"]
+                before={name:list(old.get_model("learning",name).objects.using(alias).order_by("pk").values()) for name in names}
+                for row in before["Card"]:row.update(expected.get(row["id"],{}))
+                target=[("learning","0007_retain_incomplete_directions")]
+                for repeat in range(2):
+                    executor=MigrationExecutor(connection);executor.migrate(target)
+                    new=executor.loader.project_state(target).apps
+                    for name in names:
+                        self.assertEqual(list(new.get_model("learning",name).objects.using(alias).order_by("pk").values()),before[name])
+                    if repeat==0:MigrationExecutor(connection).migrate(old_target)
+                with connection.cursor() as cursor:
+                    self.assertEqual(cursor.execute("PRAGMA integrity_check").fetchone()[0],"ok")
+                    self.assertEqual(cursor.execute("PRAGMA foreign_key_check").fetchall(),[])
+            finally:
+                connection.close();del connections[alias];del connections.databases[alias]
+
     def test_generation_migration_only_removes_queued_deadlines_and_preserves_failed_work(self):
         alias="generation_migration_test"
         with tempfile.TemporaryDirectory() as folder:

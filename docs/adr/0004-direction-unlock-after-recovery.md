@@ -1,0 +1,5 @@
+# Unlock a review direction only after complete recall and Forgot recovery
+
+Short A/B/C schedules combined with advancing on every scored interaction repeatedly showed the paired opposite-language cue within minutes. Keep randomized two-direction blocks, but consume a slot only when a committed D/E results in Normal. Normal incomplete recall retains the cue; Forgot retains the direction and example pair through the first two successes and all resets, releasing them only on graduation. Balance applies to completed direction stages, not attempts. Graduation can establish recovery in one direction; a later failure in the other direction begins reinforcement again.
+
+Keep this decision inside the existing review module's grading commit after collection/streak calculation. Shared FSRS scheduling, neutral-action deferral and E-only pair rotation keep their existing rules and interfaces. A data migration restores cleared legacy incomplete locks from current-source history while preserving held questions, corrected active examples, memory/due, streak/counts and historical data. See the [current specification](../specs/v1.md#balanced-directions).

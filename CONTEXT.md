@@ -35,7 +35,7 @@ A saved version of an Example Pair and its generation provenance used by a revie
 Replacement of a Vocabulary Card's current Example Pair while preserving its learning progress and historical reviews.
 
 **Review Direction**:
-The selected Recognition or Production form of a Vocabulary Card, determining the displayed cue and requested response.
+The selected Recognition or Production form of a Vocabulary Card, determining the displayed cue and requested response. Normal A/B/C retain it; Forgot retains it through its third consecutive complete-recall success. A D/E resulting in Normal completes the current direction stage and advances the balanced sequence, without separate direction-level memory or scheduling.
 
 **Reference Answer**:
 For a Generic Card, the author's single plaintext benchmark response for the whole card, covering all its blanks when present. It can contain words, phrases, or short sentences; other formulations are assessed by the AI judge rather than enumerated as accepted variants.
@@ -65,7 +65,7 @@ The next scheduled review opportunity for a card, displayed as an approximate re
 Consecutive qualifying complete-recall successes for a card in the Forgot Collection, preserved across missed days and ungraded interactions.
 
 **Graduation**:
-A card's return from the Forgot Collection to the Normal Collection after completing its spaced success streak.
+A card's return from the Forgot Collection to the Normal Collection after completing its spaced success streak in its locked direction. It establishes recovery in that direction rather than independent mastery of both directions.
 
 **Private Deck**:
 A collection of learning cards maintained by one user for their own learning.
