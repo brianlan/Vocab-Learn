@@ -46,6 +46,7 @@ def run(options):
         assert "four" not in page.content().lower()
         page.screenshot(path=str(output/"review-front.png"),full_page=True)
         checked("Manual entry, deck-scoped practice, front has no hidden reference")
+        page.wait_for_timeout(13000)
         page.get_by_role("button",name=re.compile("Speak")).click()
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
         page.wait_for_timeout(1800); page.get_by_role("button",name="Stop & check").click()
@@ -56,11 +57,12 @@ def run(options):
         checked("Actual MediaRecorder upload reveals reference before model completion")
         page.wait_for_selector("#next-card",timeout=60000)
         assert page.locator(".transcript").inner_text().strip()
-        assert page.locator(".recall-result h3").inner_text() in ["Quick recall","Correct recall"]
+        assert page.locator(".recall-result h3").inner_text()=="Correct recall"
+        assert re.search(r"~(?:24 hours|[123] days?)",page.locator(".next-review").inner_text())
         assert page.locator('[data-metric="cards_today"]').inner_text()=="1"
         assert page.locator("textarea:not([readonly]),[contenteditable=true]").count()==0
         page.screenshot(path=str(output/"feedback.png"),full_page=True)
-        checked("Real ASR/Judge result, readonly response, persisted Next review")
+        checked("Real ASR/Judge slow complete response receives D with a persisted one-to-three-day Next review")
         review_url=page.url
         add_generic(fixtures[1]); page.goto(review_url)
         page.locator("#next-card").click(); page.wait_for_selector(".cloze-blank")

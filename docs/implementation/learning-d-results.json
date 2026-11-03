@@ -1,0 +1,63 @@
+{
+  "status": "passed",
+  "change": "Use 1–3 elapsed days for Normal D only while the FSRS result remains Learning",
+  "automated_tests": {
+    "count": 66,
+    "seconds": 22.594
+  },
+  "scheduling_checks": {
+    "day_choices_tested": [
+      1,
+      2,
+      3
+    ],
+    "generic_and_vocabulary": true,
+    "native_memory_state_step_and_log_preserved": true,
+    "due_saved_in_card_memory_attempt_and_history": true,
+    "replay_and_database_retry_reuse_one_choice": true,
+    "c_then_d_gets_day_window": true,
+    "c_then_e_keeps_native_short_interval": true,
+    "fresh_e_and_mature_d_e_keep_native_schedule": true,
+    "forgot_success_rules_unchanged": true
+  },
+  "browser": {
+    "groups": 12,
+    "type": "Headless Chromium, synthetic microphone; physical device and Edge remain manual checks",
+    "actual_asr_judge_slow_complete_response": {
+      "grade": "D",
+      "duration_seconds": 14.926,
+      "quick_recall_budget_seconds": 12,
+      "saved_next_review_days": 1.0,
+      "attempt_and_history_due_match": true
+    }
+  },
+  "deployment": {
+    "image": "sha256:0e83b3196089eaf72b8892b01b5e46f1940ef0e2fc7f975e5086816e015fbbe0",
+    "schema_migration_required": false,
+    "cold_backup_and_original_image_retained": true,
+    "existing_account_source_progress_pair_presentation_attempt_review_and_generation_fields_unchanged": true,
+    "trusted_https_health": true,
+    "login_csrf_secure_session": true,
+    "private_pages_and_assets": true,
+    "source_sha256": {
+      "learning/models.py": "e308149e442c4a61aa3a1f6d7c87dc014db91e0646998c278c2b6982bfb9b5cb",
+      "learning/providers.py": "d59d353d7f290eb17a9287c83565ef01420fe3de0bcc7faeb95064cf667d5c5d",
+      "learning/review.py": "5d86da947f9be7bd2a5935a9fddc3d77e7a6c02f68da47f922eb7fbfb43f5ff9",
+      "learning/work.py": "7533b7b8c34201f6c9afe678cb33ed56fbf4c579cce55da61940a82167e07985",
+      "learning/authoring.py": "7d4aaa2c7cdbf618773b381fe3ab8e9ad3a420f279c773f79ed940d43def79e4",
+      "learning/worker.py": "519d92a578dbca77a99f883a2a661c917cbc6cc90300574b38876fcfcf07086f",
+      "learning/management/commands/requeue_preparation.py": "235b07248af93a3a1b3f04a4c4567378f29402bc26a06d0781a8f9653f078c2a",
+      "learning/migrations/0006_generation_execution_budget.py": "738d58323841a8e64d4a1e1eaaa91210a39d70a35c5cf9bc3e9f221fb2287b96",
+      "templates/learning/back.html": "a0de1e4699d7f1fc7888bdf899f4cd6e4515d1c2d6c2373e467e968f152996e1",
+      "templates/learning/card.html": "afa677aa79029b06166367c5fb0c0d3d43c9bafc96bb7f6dfb12d41565d84125",
+      "templates/learning/review.html": "ea147f6823d5936198a7c8b1e6b42762a8956e531a187484fd3878388f15eedb",
+      "templates/learning/statistics.html": "089614a8228b5924093c1e039cfdb671dd94236e302cce5e2439aed09ed98f56"
+    },
+    "deployed_source_matches": true
+  },
+  "limits": [
+    "Existing saved schedules and historical grades were not recomputed.",
+    "E, mature D, C and Forgot rules remain unchanged; this is a scoped business due-time override.",
+    "Physical microphones and Edge were not retested for this scheduling change."
+  ]
+}

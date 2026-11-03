@@ -513,16 +513,77 @@ class LearningTests(TestCase):
         card=self.generic(); a=self.score(card,"B")
         card.refresh_from_db(); self.assertEqual((card.collection,card.streak),("Forgot",0))
         self.assertEqual(card.due,a.submitted_at+timedelta(minutes=1))
-        for streak,grade in [(1,"D"),(2,"E"),(3,"D")]:
-            a=self.score(card,grade); card.refresh_from_db()
-            self.assertEqual(card.streak,streak)
-            self.assertTrue(card.fsrs["stability"]>0)
-            if streak<3: self.assertEqual(card.due,a.submitted_at+timedelta(days=1))
+        with patch("learning.review.random.randint") as jitter:
+            for streak,grade in [(1,"D"),(2,"E"),(3,"D")]:
+                a=self.score(card,grade); card.refresh_from_db()
+                self.assertEqual(card.streak,streak)
+                self.assertTrue(card.fsrs["stability"]>0)
+                if streak<3: self.assertEqual(card.due,a.submitted_at+timedelta(days=1))
+            jitter.assert_not_called()
         self.assertEqual(card.collection,"Normal")
         self.score(card,"C"); card.refresh_from_db(); self.assertEqual(card.collection,"Normal")
         self.score(card,"B"); self.score(card,"E"); self.score(card,"C"); card.refresh_from_db()
         self.assertEqual((card.collection,card.streak),("Forgot",0))
         self.assertEqual(review.relative_due(timezone.now()-timedelta(seconds=1)),"Due now")
+
+    def test_learning_d_uses_one_to_three_days_and_preserves_memory_and_replay(self):
+        from fsrs import Card as MemoryCard,Rating,Scheduler,State
+        for days in [1,2,3]:
+            card=self.ready(self.vocabulary()) if days==2 else self.generic(question=f"First D fixture {days}?")
+            with patch("learning.review.Scheduler",return_value=Scheduler(enable_fuzzing=False)),patch(
+                    "learning.review.random.randint",return_value=days) as jitter:
+                a=self.score(card,"D",duration=90)
+                replay=review.commit_grade(a.pk,a.claim,"D",[],"Duplicate receipt")
+                jitter.assert_called_once_with(1,3)
+            card.refresh_from_db();event=ScoredReview.objects.get(attempt=a)
+            expected,log=Scheduler(enable_fuzzing=False).review_card(
+                MemoryCard(card_id=card.pk,due=a.submitted_at),Rating.Good,review_datetime=a.submitted_at)
+            self.assertEqual(expected.due,a.submitted_at+timedelta(minutes=10))
+            expected.due=a.submitted_at+timedelta(days=days)
+            self.assertEqual(card.fsrs,json.loads(expected.to_json()))
+            self.assertEqual(event.fsrs_log,json.loads(log.to_json()))
+            self.assertEqual((card.due,a.next_due,event.next_due,replay.next_due),(expected.due,)*4)
+            self.assertEqual((card.collection,card.review_count,card.progress_version),("Normal",1,1))
+            self.assertEqual((card.fsrs["state"],card.fsrs["step"]),(State.Learning.value,1))
+            self.assertEqual(ScoredReview.objects.filter(card=card).count(),1)
+
+    def test_learning_d_after_c_changes_only_d_and_keeps_e_history_adaptive(self):
+        from fsrs import Scheduler
+        for grade,expected_days in [("D",2),("E",1)]:
+            card=self.generic(question=f"Partial then {grade} fixture?")
+            with patch("learning.review.Scheduler",return_value=Scheduler(enable_fuzzing=False)):
+                first=self.score(card,"C")
+                self.assertEqual(first.next_due,first.submitted_at+timedelta(minutes=1))
+                with patch("learning.review.timezone.now",return_value=first.next_due),patch(
+                        "learning.review.random.randint",return_value=2) as jitter:
+                    result=self.score(card,grade,duration=90 if grade=="D" else 2)
+                self.assertEqual(jitter.call_count,1 if grade=="D" else 0)
+            self.assertEqual(result.next_due,result.submitted_at+timedelta(days=expected_days))
+            first.refresh_from_db()
+            self.assertEqual(first.next_due,first.submitted_at+timedelta(minutes=1))
+
+    def test_mature_d_and_all_e_keep_native_fsrs_schedule(self):
+        from datetime import datetime,timezone as tz
+        from fsrs import Card as MemoryCard,Rating,Scheduler
+        anchor=datetime(2030,1,20,12,tzinfo=tz.utc)
+        for mature,grade in [(False,"E"),(True,"D"),(True,"E")]:
+            card=self.generic(question=f"Native FSRS {mature}/{grade} fixture?")
+            with patch("learning.review.Scheduler",return_value=Scheduler(enable_fuzzing=False)):
+                if mature:
+                    with patch("learning.review.timezone.now",return_value=anchor-timedelta(days=10)):
+                        self.score(card,"E")
+                    card.refresh_from_db();memory=MemoryCard.from_dict(card.fsrs)
+                else:memory=MemoryCard(card_id=card.pk,due=anchor)
+                expected,_=Scheduler(enable_fuzzing=False).review_card(memory,
+                    Rating.Good if grade=="D" else Rating.Easy,review_datetime=anchor)
+                with patch("learning.review.timezone.now",return_value=anchor),patch("learning.review.random.randint") as jitter:
+                    result=self.score(card,grade,duration=90 if grade=="D" else 2)
+                jitter.assert_not_called()
+            card.refresh_from_db()
+            self.assertEqual(result.next_due,expected.due)
+            self.assertEqual(card.fsrs,json.loads(expected.to_json()))
+            if mature:self.assertGreater(result.next_due-anchor,timedelta(days=3))
+            else:self.assertEqual(result.next_due-anchor,timedelta(days=8))
 
     def test_actual_due_clock_all_eight_graduation_routes(self):
         from datetime import datetime, timezone as tz
@@ -791,20 +852,24 @@ class LearningTests(TestCase):
         self.assertEqual(result.next_due,anchor+timedelta(minutes=1))
 
     def test_database_only_retry_reuses_judgment_and_fuzzed_candidate(self):
-        self.generic(); a=self.spoken(self.present()); a.transcript="four"; a.save()
         original=Card.save
-        calls=[]
-        def save(card,*args,**kwargs):
-            calls.append(card.pk)
-            if len(calls)==1: raise OperationalError("database is locked")
-            return original(card,*args,**kwargs)
         from fsrs import Scheduler
         units=[{"id":1,"outcome":"complete","reason":"Complete fixture"}]
-        with patch("learning.providers.assess",return_value=(units,{})) as judge,patch.object(Card,"save",save),patch("learning.review.Scheduler",wraps=Scheduler) as schedule:
-            work.process_assessment(a.pk,a.claim)
-        self.assertEqual(judge.call_count,1); self.assertEqual(schedule.call_count,1)
-        a.refresh_from_db(); self.assertEqual(a.state,"assessed")
-        self.assertEqual(ScoredReview.objects.count(),1)
+        for index,(grade,duration) in enumerate([("E",2),("D",90)],1):
+            self.generic(question=f"Database retry {grade} fixture?");a=self.spoken(self.present(),duration)
+            a.transcript="four";a.save();calls=[]
+            def save(card,*args,**kwargs):
+                calls.append(card.pk)
+                if len(calls)==1:raise OperationalError("database is locked")
+                return original(card,*args,**kwargs)
+            with patch("learning.providers.assess",return_value=(units,{})) as judge,patch.object(Card,"save",save),patch(
+                    "learning.review.Scheduler",wraps=Scheduler) as schedule,patch("learning.review.random.randint",return_value=2) as jitter:
+                work.process_assessment(a.pk,a.claim)
+            self.assertEqual(judge.call_count,1);self.assertEqual(schedule.call_count,1)
+            self.assertEqual(jitter.call_count,1 if grade=="D" else 0)
+            a.refresh_from_db();self.assertEqual((a.state,a.grade),("assessed",grade))
+            if grade=="D":self.assertEqual(a.next_due,a.submitted_at+timedelta(days=2))
+            self.assertEqual(ScoredReview.objects.count(),index)
 
     def test_ownership_all_surfaces_and_post_csrf(self):
         card=self.generic(); p=self.present(); job=self.vocabulary().generation_jobs.get()

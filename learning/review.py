@@ -8,7 +8,7 @@ from django.db import transaction
 from django.db.models import Case, When, Value, IntegerField, Q
 from django.db.models.functions import Coalesce, Greatest, Random
 from django.utils import timezone
-from fsrs import Card as MemoryCard, Rating, Scheduler
+from fsrs import Card as MemoryCard, Rating, Scheduler, State
 from .authoring import new_generation
 from .models import Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render, recall_budget, highlight
@@ -184,6 +184,8 @@ def commit_grade(attempt_id, claim, grade, outcomes, reason, candidate=None):
                 card.collection = "Normal"
             else:
                 updated.due = a.submitted_at + (timedelta(days=1) if grade in "DE" else timedelta(minutes=1))
+        elif grade == "D" and updated.state == State.Learning:
+            updated.due = a.submitted_at + timedelta(days=random.randint(1, 3))
         candidate.update(due=updated.due, fsrs=json.loads(updated.to_json()), log=json.loads(log.to_json()),
                          collection=card.collection, streak=card.streak)
     card.due, card.fsrs = candidate["due"], candidate["fsrs"]

@@ -19,7 +19,7 @@ The application uses Django 5.2.18, Python 3.11, SQLite, fsrs 6.3.2 and markdown
 
 ## Executed verification
 
-This table records the initial V1 delivery. The continuous-practice, Vocabulary lexical-meaning and generation-queue follow-ups below record later changes; the per-run shuffle follow-up is historical and superseded.
+This table records the initial V1 delivery. The continuous-practice, Vocabulary lexical-meaning, generation-queue and Learning-D follow-ups below record later changes; the per-run shuffle follow-up is historical and superseded.
 
 | Layer | Executed result | Evidence and scope |
 | --- | --- | --- |
@@ -67,6 +67,7 @@ The named specification cases are mapped below. This map identifies available im
 | VOCAB-GRADING | L: unit precedence/time boundaries; Live: native equivalents, partial and wrong meaning, target, suitable substitute and wrong-sense production. |
 | LANGUAGE-DIRECTIONS | L: `language_pairs_directions_and_actions_are_separate_dimensions` covers 3 pairs × 2 directions × 3 actions; Live: 3 language ASR and all-pair generation probes. |
 | SRS-TIMELINE | L: `forgot_timeline_and_preserved_scheduler_memory`, `actual_due_clock_all_eight_graduation_routes`; controlled clock advances to the saved due. |
+| LEARNING-D-INTERVAL | L: `learning_d_uses_one_to_three_days_and_preserves_memory_and_replay`, `learning_d_after_c_changes_only_d_and_keeps_e_history_adaptive`, `mature_d_and_all_e_keep_native_fsrs_schedule`, `database_only_retry_reuses_judgment_and_fuzzed_candidate`; Forgot timeline checks reject D-day sampling. Browser: actual slow complete speech receives D and a saved day-scale Next review. |
 | PAIR-ROTATION | L: `direction_slots_and_pair_lock_race`, `pair_activation_before_question_preserves_progress`, `forgot_rotation_third_d_vs_e`; Live: changed replacement sentences. |
 | QUEUE-PRACTICE | L: `skip_defers_for_thirty_minutes_without_changing_learning_progress`, `new_cards_are_random_and_only_displayed_question_is_fixed`, `queue_preserves_review_due_order_and_candidate_scope`, `new_ready_cards_join_without_changing_displayed_question`, `empty_practice_rechecks_ready_cards_and_snoozed_availability`, `unassessed_exit_is_idempotent_and_stale_work_cannot_snooze_new_progress`; C: concurrent entry resumes one question. |
 | DIRECTION-BLOCK | L: `direction_slots_and_pair_lock_race`, `language_pairs_directions_and_actions_are_separate_dimensions`. |
@@ -119,7 +120,7 @@ The drill image precedes the final stale-work/unconfirmed-upload fixes, which do
 
 - Test real microphones in desktop Chrome and Edge on the intended clients. Synthetic/headless Chromium cannot establish microphone hardware quality, device selection, real permission dialogs or Edge behavior.
 - Configure name resolution and trust the exported Caddy public root on each LAN client, then confirm warning-free HTTPS and actual recording. Server-side hostname/chain verification has passed; no other device's trust store has been installed or verified automatically.
-- Complete the product acceptance pass using the 49 specification cases and these evidence references. Some tests combine cases or exercise representative branches: exact 9+2+1-second browser refresh arithmetic, every delayed rotation winner, every crash instruction boundary and live hot replacement of all three providers have not all been individually replayed.
+- Complete the product acceptance pass using the 50 specification cases and these evidence references. Some tests combine cases or exercise representative branches: exact 9+2+1-second browser refresh arithmetic, every delayed rotation winner, every crash instruction boundary and live hot replacement of all three providers have not all been individually replayed.
 - Review language quality on personal learning material. All three configured default tasks worked on representative public fixtures; the compatible ASR route has contract-test coverage, not a live certification of every provider. This release makes no measured long-term retention or broad ASR/Judge accuracy claim.
 
 No public registration, additional UI languages, answer typing, sharing/marketplace, LiteLLM layer, mobile app or public-cloud deployment was added; those remain outside the agreed V1 boundary.
@@ -167,3 +168,11 @@ Implemented on 2026-11-02 following [ADR 0003](../adr/0003-generation-clock-at-c
 The delivered cold backup and its matching old image were retained. That actual artifact was restored into an isolated volume, migrated, and used to rehearse the explicit `requeue_preparation` command with network disabled. Field comparisons use column names because SQLite table rebuilding may change column order. Migration preserves all old fields except queued deadlines, leaves historical start times unknown, and does not automatically retry failed work. Recovery reuses the 1,126 existing failed initial jobs, preserves all source/card/pair/presentation/attempt/review data and other jobs, and produces a zero-candidate preview before the worker resumes. Production migration/recovery passed the same checks, with SQLite integrity/foreign keys intact; the isolated volume was removed.
 
 Trusted HTTPS, login/CSRF/secure session, private pages/assets and deployed source hashes passed. Live observations cover a backlog waiting beyond five minutes with no queued deadlines, while new Ready pairs continue arriving and active executions receive full budgets. Background generation continues after this deployment; actual provider/validation failures remain explicit Failed requests for operator/learner Retry rather than automatic paid replays. Physical microphones and Edge were not retested.
+
+## Normal Learning-D interval follow-up
+
+Implemented on 2026-11-03: replace the minute-scale due only when Normal D still leaves the card in FSRS Learning. Select 1, 2 or 3 elapsed days once from the original submission anchor, and preserve the native stability, difficulty, state, learning step and log. When D completes Learning and enters Review, keep its native adaptive interval. E, C, Forgot and their history-sensitive behavior remain unchanged; existing saved schedules and reviews are not recalculated.
+
+[Verification results](learning-d-results.json) record 66 passing automated tests and 12 passing Chromium workflow groups. Tests cover all three day choices, Generic/Vocabulary, D after C, unchanged short E after C, native fresh E and mature D/E, Forgot success timing, result replay and database-only retry without resampling. The browser waits beyond the quick-recall budget before speaking through the actual MediaRecorder/FFmpeg/ASR/Judge path, verifies Correct recall and a day-scale Next review, and retains the original English Vocabulary explanation.
+
+The original image and a delivered cold backup were retained before deployment. No schema migration or rescheduling operation was needed; before/after fingerprints matched every stored field of accounts, sources, progress, example pairs, presentations, attempts, scored reviews and generation jobs. Trusted HTTPS, secure login/private pages/assets and deployed source hashes passed. Physical microphones and Edge were not retested for this scheduling change.

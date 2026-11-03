@@ -112,6 +112,10 @@ Speak records the whole answer. Cancel is available before submission, including
 
 Vocabulary backs show the authored target and original explanation. Recognition accepts concise equivalent meanings such as 吸收 for absorb; a correct word does not have to expand every property in its definition. Production still requires the target expression for complete recall. Generated example pairs contain sentences and minimal highlights only, with no separate translated definition.
 
+### Initial D review intervals
+
+For a Normal card, a D whose FSRS result remains in Learning is scheduled a uniformly selected 1, 2 or 3 elapsed days after the original submission. This replaces its minute-scale learning step while preserving FSRS memory/state and the learning step itself. Once D completes Learning and enters Review, its native adaptive interval applies. E remains fully history-adaptive, and Forgot retains its one-minute failure/partial and 24-hour first/second-success rules. The effective due is saved once and reused on processing/result replay. Deploying this policy does not reschedule existing cards or rewrite past reviews.
+
 ### Recovering failed initial preparation
 
 Background generation starts its execution clock only when a worker claims it. Queued tasks may wait longer than five minutes or survive a worker restart without failing; each claim receives its full `GENERATION_TIMEOUT_SECONDS` budget. The existing two-slot worker prioritizes queued spoken assessments when a slot becomes available. Running calls are not preempted. Changing concurrency or raising a timeout is not needed to correct queue ageing.
