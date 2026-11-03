@@ -1,0 +1,5 @@
+# Preserve the marked highlight position
+
+Counting substring matches rejects valid compute/computer and 计算/计算机 examples. Choosing the first substring can also highlight the wrong occurrence. Preserve the selected position from the existing inline focus markers as two required ExamplePair fields, target_highlight_start and native_highlight_start. Render the saved slice rather than searching again; permit other unmarked occurrences, including shared substrings and compounds. This avoids language-specific tokenization heuristics and keeps the original selected span unambiguous.
+
+Positions use zero-based Unicode code points in the stored plain sentence. Extract them with the trimmed expression while preserving surrounding whitespace. Keep one marker pair per sentence, language, shape and answer-leak validation. New frozen questions/Judge tasks include the visible highlight position; old snapshots remain unchanged. Migration backfills each legacy pair's first matching position to preserve its previous rendering, without scoring, rescheduling or generation. See the [current specification](../specs/v1.md#initial-pair-and-generation-quality).

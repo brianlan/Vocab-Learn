@@ -26,7 +26,8 @@ GENERIC = {"question": "What is two plus two?", "answer": "four", "explanation":
 VOCAB = {"word": "misunderstanding", "explanation": "A problem caused by people understanding each other incorrectly.",
          "target_language": "English", "native_language": "Chinese"}
 PAIR = {"target_sentence": "A small misunderstanding stopped the conversation.", "target_highlight": "misunderstanding",
-        "native_sentence": "一个小小的误会打断了谈话。", "native_highlight": "误会"}
+        "target_highlight_start": 8, "native_sentence": "一个小小的误会打断了谈话。", "native_highlight": "误会",
+        "native_highlight_start": 5}
 
 
 def audio_bytes():
@@ -322,7 +323,7 @@ class LearningTests(TestCase):
         job=card.generation_jobs.get(mode="rotation",state="queued")
         job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
         pair=work.save_corrected_pair(card.pk,card.source_version,card.active_pair_id,
-            {**PAIR,"native_sentence":"那次误会很小。"},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
+            {**PAIR,"native_sentence":"那次误会很小。","native_highlight_start":2},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
         card.refresh_from_db()
         self.assertEqual({key:getattr(card,key) for key in before},before)
         self.assertEqual(card.active_pair_id,pair.pk)
@@ -334,7 +335,7 @@ class LearningTests(TestCase):
         self.assertIsNone(card.rotation_token)
         self.assertEqual(ScoredReview.objects.count(),1)
         pair=work.save_corrected_pair(card.pk,card.source_version,pair.pk,
-            {**PAIR,"native_sentence":"他们有个误会。"},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
+            {**PAIR,"native_sentence":"他们有个误会。","native_highlight_start":4},{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})
         review.submit(p,"skip")
         p.refresh_from_db();self.assertEqual(p.snapshot,frozen)
         with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(minutes=31)):
@@ -616,8 +617,8 @@ class LearningTests(TestCase):
                         "word":"misunderstanding" if target=="English" else "malentendido"})
                     job=card.generation_jobs.get();job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
                     data={**PAIR}
-                    if target=="Spanish": data.update(target_sentence="Un malentendido interrumpió la conversación.",target_highlight="malentendido")
-                    if native=="Spanish": data.update(native_sentence="Un malentendido interrumpió la conversación.",native_highlight="malentendido")
+                    if target=="Spanish": data.update(target_sentence="Un malentendido interrumpió la conversación.",target_highlight="malentendido",target_highlight_start=3)
+                    if native=="Spanish": data.update(native_sentence="Un malentendido interrumpió la conversación.",native_highlight="malentendido",native_highlight_start=3)
                     work.save_pair(job.pk,job.claim,data,{"fixture":"controlled pair"});card.refresh_from_db()
                     card.direction_block=[direction,"production" if direction=="recognition" else "recognition"];card.save()
                     p=review.next_question(self.user,deck)
@@ -774,6 +775,27 @@ class LearningTests(TestCase):
         review.exit_attempt(current);card.refresh_from_db()
         self.assertEqual(card.deferred_until,deadline)
         self.assertEqual(ScoredReview.objects.count(),1)
+
+    def test_marked_positions_survive_storage_and_both_review_directions(self):
+        from learning.providers import validate_pair
+        data=validate_pair({"target_sentence":"I use a computer to <focus>compute</focus> the total.",
+            "native_sentence":"我用计算机<focus>计算</focus>总数。"},"compute","Chinese")
+        for direction in ["recognition","production"]:
+            card=self.vocabulary(word="compute",explanation="Calculate a result using numbers.")
+            job=card.generation_jobs.get();job.state="processing";job.started_at=timezone.now()
+            job.deadline=job.started_at+timedelta(seconds=300);job.save()
+            pair=work.save_pair(job.pk,job.claim,data,{"model":"controlled fixture"})
+            card.refresh_from_db()
+            card.direction_block=[direction,"production" if direction=="recognition" else "recognition"];card.save()
+            p=self.present(card)
+            expected=('I use a computer to <strong class="target-word">compute</strong> the total.'
+                if direction=="recognition" else '我用计算机<strong class="target-word">计算</strong>总数。')
+            self.assertEqual(p.snapshot["question_html"],expected)
+            self.assertEqual(p.snapshot["highlight_start"],pair.target_highlight_start if direction=="recognition" else pair.native_highlight_start)
+            self.assertContains(self.client.get(reverse("presentation",args=[p.pk])),expected,html=True)
+            self.assertEqual(card.review_count,0)
+            card.archived=True;card.save(update_fields=["archived"])
+            self.deck=Deck.objects.create(owner=self.user,name="Next direction")
 
     def test_normal_direction_waits_for_complete_recall(self):
         for direction,last in product(["recognition","production"],"DE"):

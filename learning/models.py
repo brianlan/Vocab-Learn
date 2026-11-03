@@ -60,8 +60,10 @@ class ExamplePair(models.Model):
     source_version = models.PositiveIntegerField()
     target_sentence = models.TextField()
     target_highlight = models.TextField()
+    target_highlight_start = models.PositiveIntegerField()
     native_sentence = models.TextField()
     native_highlight = models.TextField()
+    native_highlight_start = models.PositiveIntegerField()
     provenance = models.JSONField(default=dict)
     created_at = models.DateTimeField(default=timezone.now)
 

@@ -95,6 +95,9 @@ class ProviderTests(TestCase):
         for hidden in ["reference","gloss","native_sentence","native_highlight"]:
             self.assertNotIn(hidden,payload)
         self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["JUDGE"])
+        with patch("learning.providers.chat",return_value=result) as chat:
+            p.assess({**legacy,"highlight_start":11},"吸收",self.profile())
+        self.assertEqual(chat.call_args.args[2]["highlight_start"],11)
         generic={"kind":"generic","reference":"call off","units":1}
         with patch("learning.providers.chat",return_value=result) as chat:
             p.assess(generic,"cancel",self.profile())
@@ -102,12 +105,12 @@ class ProviderTests(TestCase):
 
     def test_invalid_pair_shape_highlights_and_answer_leak(self):
         valid={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}
-        plain={"target_sentence":"A bank is nearby.","target_highlight":"bank","native_sentence":"银行就在附近。","native_highlight":"银行"}
+        plain={"target_sentence":"A bank is nearby.","target_highlight":"bank","target_highlight_start":2,
+            "native_sentence":"银行就在附近。","native_highlight":"银行","native_highlight_start":0}
         self.assertEqual(p.validate_pair(valid,"bank"),plain)
         with self.assertRaises(p.StageError): p.validate_pair({**valid,"gloss":"银行"},"bank","Chinese")
         with self.assertRaises(p.StageError): p.validate_pair({**valid,"native_sentence":"A financial <focus>institution</focus>."},"bank","Chinese")
         for changed in [{"native_sentence":"<focus>bank</focus>"},
-                        {"target_sentence":"bank <focus>bank</focus>"},
                         {"native_sentence":"<focus></focus>就在附近。"},
                         {"native_sentence":"银行就在附近。"},
                         {"native_sentence":"<focus><focus>银行</focus></focus>就在附近。"},
@@ -119,6 +122,39 @@ class ProviderTests(TestCase):
         result=p.validate_pair(marked,"abrupt","Chinese")
         self.assertEqual(result["native_highlight"],"突然的")
         self.assertNotIn("<focus>",result["native_sentence"])
+
+    def test_highlighting_uses_the_marked_occurrence_not_a_shared_substring(self):
+        from learning.rendering import highlight
+        cases=[("compute", "We <focus>compute</focus> the total with a computer.",
+                'We <strong class="target-word">compute</strong> the total with a computer.'),
+            ("compute", "I use a computer to <focus>compute</focus> the total.",
+                'I use a computer to <strong class="target-word">compute</strong> the total.'),
+            ("compute", "We compute a sum, then <focus>compute</focus> the total.",
+                'We compute a sum, then <strong class="target-word">compute</strong> the total.'),
+            ("pan", "El panadero compra <focus>pan</focus>.",
+                'El panadero compra <strong class="target-word">pan</strong>.')]
+        for word,sentence,expected in cases:
+            with self.subTest(word=word,sentence=sentence):
+                native="面包师买<focus>面包</focus>。" if word=="pan" else "我用计算机<focus>计算</focus>总数。"
+                data={"target_sentence":sentence,"native_sentence":native}
+                result=p.validate_pair(data,word,"Chinese")
+                self.assertEqual(highlight(result["target_sentence"],result["target_highlight"],
+                    result["target_highlight_start"]),expected)
+                expected_native=('面包师买<strong class="target-word">面包</strong>。' if word=="pan" else
+                    '我用计算机<strong class="target-word">计算</strong>总数。')
+                self.assertEqual(highlight(result["native_sentence"],result["native_highlight"],
+                    result["native_highlight_start"]),expected_native)
+
+    def test_focus_offsets_preserve_unicode_padding_and_safe_html(self):
+        from learning.rendering import highlight
+        data={"target_sentence":"🧮 A computer can <focus> compute </focus> a total < 10.",
+            "native_sentence":"用计算机<focus> 计算 </focus>总数。"}
+        result=p.validate_pair(data,"compute","Chinese")
+        self.assertEqual(highlight(result["target_sentence"],result["target_highlight"],result["target_highlight_start"]),
+            '🧮 A computer can  <strong class="target-word">compute</strong>  a total &lt; 10.')
+        self.assertEqual(highlight(result["native_sentence"],result["native_highlight"],result["native_highlight_start"]),
+            '用计算机 <strong class="target-word">计算</strong> 总数。')
+        with self.assertRaises(ValueError):highlight(result["native_sentence"],"计算",0)
 
     def test_rotation_requires_both_new_sentences_and_configuration_rejects_nan(self):
         pair={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}

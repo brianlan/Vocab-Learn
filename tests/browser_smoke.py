@@ -127,8 +127,8 @@ def run(options):
         assert page.locator("h1").inner_text()=="Nothing to practice right now."
         empty_url=page.url
         page.goto(deck_url+"new/?kind=vocabulary")
-        page.locator("#id_word").fill("misunderstanding")
-        page.locator("#id_explanation").fill("A problem caused when people understand one another incorrectly.")
+        page.locator("#id_word").fill("compute")
+        page.locator("#id_explanation").fill("Calculate a result using numbers, often with a computer.")
         page.locator("#id_target_language").select_option("English"); page.locator("#id_native_language").select_option("Chinese")
         page.get_by_role("button",name="Save",exact=False).click()
         deadline=time.monotonic()+45
@@ -154,8 +154,8 @@ def run(options):
         checked("Forgot Vocabulary retains its exact cue and language at the actual one-minute review")
         page.get_by_role("button",name=re.compile("Skip")).click()
         page.wait_for_selector("#next-card")
-        assert page.locator(".answer").inner_text()=="misunderstanding"
-        assert page.locator(".explanation").inner_text()=="A problem caused when people understand one another incorrectly."
+        assert page.locator(".answer").inner_text()=="compute"
+        assert page.locator(".explanation").inner_text()=="Calculate a result using numbers, often with a computer."
         assert page.locator(".paired-examples p").count()==2
         assert "<focus>" not in page.locator(".paired-examples").inner_text()
         page.screenshot(path=str(output/"vocabulary-back.png"),full_page=True)

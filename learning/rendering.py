@@ -161,6 +161,8 @@ def recall_budget(units, question_count, reference):
     return max(12, math.ceil(5 * units + question_count / 20 + sum(not c.isspace() for c in reference) / 5))
 
 
-def highlight(sentence, expression):
-    before, after = sentence.split(expression, 1)
+def highlight(sentence, expression, start):
+    if start < 0 or sentence[start:start + len(expression)] != expression:
+        raise ValueError("The highlighted expression does not match its saved position.")
+    before, after = sentence[:start], sentence[start + len(expression):]
     return escape(before) + "<strong class=\"target-word\">" + escape(expression) + "</strong>" + escape(after)

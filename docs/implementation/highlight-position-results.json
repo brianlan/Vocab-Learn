@@ -1,0 +1,55 @@
+{
+  "status": "passed",
+  "change": "Preserve the exact marked occurrence through generation, storage, frozen review and rendering",
+  "automated_tests": {
+    "count": 74,
+    "seconds": 23.746,
+    "retained_failed_compute_diagnostic_now_passes": true,
+    "english_substrings_spanish_compounds_and_repeated_unmarked_text": true,
+    "chinese_compound_then_selected_expression": true,
+    "unicode_padding_and_safe_html_escaping": true,
+    "both_review_directions_and_visible_judge_position": true,
+    "malformed_marker_language_and_answer_leak_checks_retained": true,
+    "legacy_pair_positions_backfilled_without_rewriting_progress_or_history": true
+  },
+  "browser": {
+    "groups": 13,
+    "checks": [
+      "Fieldnotes login and dashboard",
+      "Manual entry, deck-scoped practice, front has no hidden reference",
+      "Actual MediaRecorder upload reveals reference before model completion",
+      "Real ASR/Judge slow complete response receives D with a persisted one-to-three-day Next review",
+      "Formatted multi-blanks, neutral Skip, Cancel/refresh clock retention, explicit lost-clock restart",
+      "Ignored permissions remain cancellable; obsolete streams stop all tracks and late rejections cannot replace newer UI",
+      "Forgot and persisted one-minute due; temporarily empty practice rechecks availability",
+      "Distinct-card/scored-review/accuracy metrics exclude Skip",
+      "Vocabulary manual creation and actual durable Generator preparation",
+      "Newly Ready Vocabulary enters practice from the previously empty URL",
+      "Forgot Vocabulary retains its exact cue and language at the actual one-minute review",
+      "Vocabulary back retains the authored expression/English explanation and paired examples",
+      "Private deck archive, no horizontal overflow and no browser runtime errors"
+    ],
+    "type": "Headless Chromium, synthetic microphone; physical device and Edge remain manual checks",
+    "live_generated_preview_compute_sentence": "We compute the total with a computer.",
+    "live_generated_preview_compute_highlight_start": 3,
+    "live_judge_concise_meaning_complete": true
+  },
+  "deployment": {
+    "image": "sha256:f7c4698998dc122ead83bfb32ec387e488356e43ee8ea00e95602704ca60b46f",
+    "migration": "0008_example_highlight_positions",
+    "cold_backup_and_matching_original_image_retained": true,
+    "network_disabled_backup_upgrade_rehearsal": true,
+    "backfilled_example_pairs": 1313,
+    "all_preexisting_fields_in_eight_application_tables_preserved": true,
+    "only_two_position_fields_added": true,
+    "repeat_upgrade_unchanged": true,
+    "sqlite_integrity_and_foreign_keys": true,
+    "production_compute_retry_succeeded": true,
+    "trusted_https_login_private_pages_and_assets": true,
+    "deployed_source_matches": true
+  },
+  "limits": [
+    "Physical microphones and Edge were not retested.",
+    "Legacy positions preserve the old displayed occurrence; historical snapshots remain unchanged."
+  ]
+}

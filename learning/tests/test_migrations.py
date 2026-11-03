@@ -11,6 +11,49 @@ from fsrs import Card as MemoryCard, Rating, Scheduler
 
 
 class ContinuousPracticeMigrationTests(TestCase):
+    def test_highlight_positions_upgrade_preserves_examples_progress_and_frozen_history(self):
+        alias="highlight_migration_test"
+        with tempfile.TemporaryDirectory() as folder:
+            config=copy.deepcopy(connections["default"].settings_dict)
+            config["NAME"]=str(Path(folder)/"legacy.sqlite3")
+            connections.databases[alias]=config;connection=connections[alias]
+            try:
+                old_target=[("learning","0007_retain_incomplete_directions")]
+                executor=MigrationExecutor(connection);executor.migrate(old_target)
+                old=executor.loader.project_state(old_target).apps
+                user=old.get_model("auth","User").objects.using(alias).create(username="learner",password="!")
+                deck=old.get_model("learning","Deck").objects.using(alias).create(owner_id=user.pk,name="Private")
+                card=old.get_model("learning","Card").objects.using(alias).create(deck_id=deck.pk,kind="vocabulary",
+                    word="compute",identity="compute",explanation="Calculate a result.",fsrs={"unchanged":"memory"},
+                    review_count=3,progress_version=3,collection="Forgot",streak=2,direction_block=["recognition","production"])
+                pair=old.get_model("learning","ExamplePair").objects.using(alias).create(card_id=card.pk,source_version=1,
+                    target_sentence="🧮 We compute totals.",target_highlight="compute",native_sentence="我们计算总数。",native_highlight="计算")
+                card.active_pair_id=card.cue_pair_id=pair.pk;card.cue_direction="recognition";card.save(using=alias)
+                frozen={"kind":"vocabulary","source_version":1,"direction":"recognition","pair_id":pair.pk,
+                    "question_html":'🧮 We <strong class="target-word">compute</strong> totals.',"question_text":pair.target_sentence}
+                p=old.get_model("learning","Presentation").objects.using(alias).create(user_id=user.pk,
+                    card_id=card.pk,source_version=1,progress_version=2,snapshot=frozen,budget=12)
+                a=old.get_model("learning","Attempt").objects.using(alias).create(presentation_id=p.pk,
+                    action="speak",state="assessed",grade="E",transcript="计算")
+                old.get_model("learning","ScoredReview").objects.using(alias).create(attempt_id=a.pk,card_id=card.pk,
+                    user_id=user.pk,grade="E",reviewed_at=timezone.now(),next_due=card.due,snapshot=frozen,fsrs_log={},duration=2,budget=12)
+                old.get_model("learning","GenerationJob").objects.using(alias).create(card_id=card.pk,source_version=1,state="failed")
+                names=["Card","ExamplePair","Presentation","Attempt","ScoredReview","GenerationJob"]
+                before={name:list(old.get_model("learning",name).objects.using(alias).order_by("pk").values()) for name in names}
+                before["ExamplePair"][0].update(target_highlight_start=5,native_highlight_start=2)
+                target=[("learning","0008_example_highlight_positions")]
+                for repeat in range(2):
+                    executor=MigrationExecutor(connection);executor.migrate(target)
+                    new=executor.loader.project_state(target).apps
+                    for name in names:
+                        self.assertEqual(list(new.get_model("learning",name).objects.using(alias).order_by("pk").values()),before[name])
+                    if repeat==0:MigrationExecutor(connection).migrate(old_target)
+                with connection.cursor() as cursor:
+                    self.assertEqual(cursor.execute("PRAGMA integrity_check").fetchone()[0],"ok")
+                    self.assertEqual(cursor.execute("PRAGMA foreign_key_check").fetchall(),[])
+            finally:
+                connection.close();del connections[alias];del connections.databases[alias]
+
     def test_direction_upgrade_relocks_only_incomplete_unheld_current_sources(self):
         alias="direction_migration_test"
         with tempfile.TemporaryDirectory() as folder:

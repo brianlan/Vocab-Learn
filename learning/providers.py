@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import httpx
 
 TASK_LABELS = {"ASR": "Speech recognition", "JUDGE": "Answer assessment", "GENERATOR": "Example preparation"}
-PROMPT_VERSIONS = {"JUDGE": "lexical-meaning-v2", "GENERATOR": "lexical-pair-v2"}
+PROMPT_VERSIONS = {"JUDGE": "lexical-meaning-v3", "GENERATOR": "lexical-pair-v3"}
 
 
 class StageError(Exception):
@@ -149,6 +149,7 @@ Return ONLY {"units":[{"id":1,"outcome":"complete|partial|incorrect","reason":"s
 Write every reason in English, even for Chinese or Spanish responses. Quoted learner expressions may retain their
 original language, but all surrounding feedback prose must be English. This is an English-only application interface.
 Return exactly one unit per expected id. Do not choose grades, times or schedules.
+When supplied, highlight_start identifies the selected expression's zero-based Unicode character position in question_text.
 Generic tasks recall the authored reference expression/content. Equivalent spelling, appropriate forms, number renderings
 and full-sentence delivery may be complete. A suitable DIFFERENT synonym is partial even if fluent: reference 'call off',
 response 'cancel' is partial. A wrong or unanswered unit is incorrect. Interpret all blanks from the one utterance.
@@ -189,7 +190,7 @@ def assess(snapshot, transcript, p=None):
         # Legacy snapshots retain their original gloss; generated translations are not grading authority.
         fields = ("kind", "direction", "word", "explanation", "question_text",
                   "target_highlight" if snapshot["direction"] == "recognition" else "native_highlight",
-                  "target_language", "native_language", "language")
+                  "target_language", "native_language", "language", "highlight_start")
         task = {key: snapshot[key] for key in fields if key in snapshot}
     else:
         task = snapshot
@@ -209,7 +210,8 @@ The target sentence and its marked expression MUST use target_language; the nati
 First choose the conventional native lexical equivalent of the authored sense; then build a natural example using it.
 Prefer the precise standard equivalent over a looser synonym: Chinese 'abnormal' should normally use 异常/不正常/反常,
 not a generic 奇怪 cue inviting 'weird' or 'strange'. Keep the source's actual sense, not an unrelated dictionary meaning.
-Each highlight must be the SHORTEST complete expression corresponding only to the target, occurring once in its sentence.
+Mark exactly ONE occurrence of the SHORTEST complete expression corresponding only to the target.
+The marker position identifies the selected occurrence, even if the same characters appear elsewhere inside another word.
 It MUST be an EXACT CONTIGUOUS substring copied character-for-character from that sentence. Never add, remove or reorder
 characters/particles: write 天气<focus>突然</focus>变化, not a separate 突然的. Check both sentences for natural grammar.
 The target highlight is the authored expression or an appropriate grammatical form, without neighboring modifiers.
@@ -250,11 +252,9 @@ def validate_pair(data, word, native_language=""):
             raise StageError("GENERATOR", "An example's marked expression was empty. Retry preparation.")
         result[language + "_sentence"] = prefix + expression + suffix
         result[language + "_highlight"] = expression.strip()
+        result[language + "_highlight_start"] = len(prefix) + len(expression) - len(expression.lstrip())
     if native_language == "Chinese" and any(not re.search(r"[\u3400-\u9fff]", result[f]) for f in ["native_sentence", "native_highlight"]):
         raise StageError("GENERATOR", "The Chinese example or highlighted expression was not in Chinese. Retry preparation.")
-    for language in ("target", "native"):
-        if result[language + "_sentence"].count(result[language + "_highlight"]) != 1:
-            raise StageError("GENERATOR", "A highlight was missing from its sentence or appeared more than once. Retry preparation.")
     target_pattern = r"(?<![A-Za-z])" + r"\s+".join(re.escape(part) for part in word.split()) + r"(?![A-Za-z])"
     if re.search(target_pattern, result["native_sentence"], flags=re.I):
         raise StageError("GENERATOR", "The generated cue revealed the target. Retry preparation.")

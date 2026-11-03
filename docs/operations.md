@@ -28,6 +28,8 @@ Migration `0007_retain_incomplete_directions` restores cleared direction locks f
 
 The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops. Generation waits durably in Queued without an execution deadline; claiming starts its 300-second execution budget. The web exposes expired Generating work for explicit retry. Spoken assessments retain their 300-second submission-based deadline, including queue wait. Opening Practice does not silently retry uncertain paid calls.
 
+Migration `0008_example_highlight_positions` adds and backfills the selected positions for saved example pairs. Stop web/worker for the upgrade. Original sentence/highlight strings, progress, schedules, direction locks and frozen history are preserved. Existing failed tasks require explicit Retry; migration does not call a model or retry them. Use a matching cold backup/image for an exact rollback.
+
 ## Docker Compose and private LAN HTTPS
 
 ```sh

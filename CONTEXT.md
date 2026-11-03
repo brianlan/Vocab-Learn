@@ -29,7 +29,7 @@ A Vocabulary Card review that presents a native-language context and asks for th
 Aligned target-language and native-language sentences expressing the same situation, with corresponding expressions identified for review.
 
 **Example Revision**:
-A saved version of an Example Pair and its generation provenance used by a review, distinct from the vocabulary being learned. It has no separately generated definition or native reference-answer paragraph.
+A saved version of an Example Pair, its selected expression occurrences and its generation provenance used by a review, distinct from the vocabulary being learned. It has no separately generated definition or native reference-answer paragraph.
 
 **Example Rotation**:
 Replacement of a Vocabulary Card's current Example Pair while preserving its learning progress and historical reviews.

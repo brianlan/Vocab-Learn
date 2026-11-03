@@ -42,7 +42,9 @@ def snapshot(card):
     pair = card.cue_pair
     recognition = card.cue_direction == "recognition"
     sentence, expression = ((pair.target_sentence, pair.target_highlight) if recognition else (pair.native_sentence, pair.native_highlight))
-    return {**base, "question_html": highlight(sentence, expression), "question_text": sentence,
+    start = pair.target_highlight_start if recognition else pair.native_highlight_start
+    return {**base, "question_html": highlight(sentence, expression, start), "question_text": sentence,
+            "highlight_start": start,
             "reference": card.word, "word": card.word,
             "units": 1, "reading_count": sum(not c.isspace() for c in sentence), "direction": card.cue_direction,
             "language": card.native_language if recognition else card.target_language,
