@@ -42,6 +42,8 @@ python manage.py test learning.tests --noinput
 
 The tests include file-backed SQLite races, provider contracts, scheduling and worker resource recovery. Browser and live-provider probes are explicit opt-in checks; see the acceptance record and operations guide. New accounts start empty; a dedicated preview account may contain sample decks and synthetic acceptance history.
 
+Evaluate Generator prompt changes with the [unedited-output regression workflow](docs/research/generator-prompt-evaluation.md). Content edited after generation does not establish that a prompt improved; compare frozen inputs, retain failed outputs and review meaning as well as format before promotion.
+
 ## Reference
 
 - [Domain glossary](CONTEXT.md)

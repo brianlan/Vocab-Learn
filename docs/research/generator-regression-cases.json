@@ -1,0 +1,252 @@
+[
+  {
+    "id": "centrifugal",
+    "source": {
+      "word": "centrifugal",
+      "explanation": "Moving or tending away from a center, especially during rotation.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Uses idiomatic centrifugal action in a concrete spinning-device context instead of saying that motion itself pushes water."
+  },
+  {
+    "id": "defeater",
+    "source": {
+      "word": "defeater",
+      "explanation": "A person or team that defeats a particular opponent in a contest or battle.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Uses the relational defeater of a particular champion rather than the awkward generic winner label. The native span identifies that victorious opponent without inserting an independent named participant."
+  },
+  {
+    "id": "existential",
+    "source": {
+      "word": "existential",
+      "explanation": "Concerning human existence and questions of meaning, choice and purpose in life.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Preserves the authored broad life-meaning sense instead of asserting affiliation with the philosophical school existentialism."
+  },
+  {
+    "id": "justice",
+    "source": {
+      "word": "justice",
+      "explanation": "Fair treatment of people, giving them impartial consideration.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Replaces the stiff showed justice collocation with ensure justice and retains the fairness sense rather than the law-system or judge sense."
+  },
+  {
+    "id": "prevention",
+    "source": {
+      "word": "prevention",
+      "explanation": "Action intended to stop something bad before it happens.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Uses a concrete nonmedical prevention context, avoiding the cancer-screening qualification and the new candidate's questionable implication that fire drills prevent fires."
+  },
+  {
+    "id": "struggle",
+    "source": {
+      "word": "struggle",
+      "explanation": "Try hard to do something that is difficult.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "The Chinese focus now preserves difficult effort and trying, rather than effort alone. It does not claim successful understanding."
+  },
+  {
+    "id": "deserve",
+    "source": {
+      "word": "deserve",
+      "explanation": "Have earned or be worthy of something because of your actions, qualities or treatment.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Uses a natural entitled-to-reward equivalent rather than the awkward 值得一张贴纸 or mere advice 应该."
+  },
+  {
+    "id": "intercom",
+    "source": {
+      "word": "intercom",
+      "explanation": "A device for voice communication between different rooms or parts of a building.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Establishes a fixed building intercom in both languages, removes the unsupported office location, and avoids the portable-radio cue."
+  },
+  {
+    "id": "literature",
+    "source": {
+      "word": "literature",
+      "explanation": "Novels, poems and other artistic written works.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Uses the natural written-works noun 文学作品 rather than the abstract 文学 as the material adapted by a film."
+  },
+  {
+    "id": "past",
+    "source": {
+      "word": "past",
+      "explanation": "An adjective describing something that happened or existed before the present time.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Uses an unambiguous idiomatic adjective past modifying mistakes, instead of a former-role collocation or a change to noun past."
+  },
+  {
+    "id": "trick",
+    "source": {
+      "word": "trick",
+      "explanation": "A playful prank intended to amuse people or make someone look foolish.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "A concrete harmless prank selects the authored playful-trick sense rather than a clown performance or stunt."
+  },
+  {
+    "id": "absorb",
+    "source": {
+      "word": "absorb",
+      "explanation": "Take in liquid and hold it.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "The concise native focus expresses absorption without a clause about the whole scene."
+  },
+  {
+    "id": "adventure",
+    "source": {
+      "word": "adventure",
+      "explanation": "An exciting and unusual journey or experience, sometimes involving risk.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Keep independent copulas, quantities and time/place details out of the focus."
+  },
+  {
+    "id": "compute",
+    "source": {
+      "word": "compute",
+      "explanation": "Calculate a number or result using mathematics.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "The marked occurrence must be the target verb even if related words occur elsewhere."
+  },
+  {
+    "id": "monthly",
+    "source": {
+      "word": "monthly",
+      "explanation": "Happening once every month; an adjective describing an event, payment or publication.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Use the adjective sense. A natural native lexicalized compound may be valid; no artificial segmentation."
+  },
+  {
+    "id": "native",
+    "source": {
+      "word": "native",
+      "explanation": "Your native language or place is the one you grew up speaking or living in.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Use the authored born/grew-up sense, and allow natural native lexicalization."
+  },
+  {
+    "id": "embarrass",
+    "source": {
+      "word": "embarrass",
+      "explanation": "Make someone feel awkward or ashamed in a social situation.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Preserve causation. A necessary short native pronoun inside a contiguous focus is allowed."
+  },
+  {
+    "id": "pick-up",
+    "source": {
+      "word": "pick sb. up",
+      "explanation": "Go to collect someone, often by car, and take them somewhere. Use an object pronoun for the person.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Fill the slot with a pronoun, preserve separable particle order and highlight the full construction."
+  },
+  {
+    "id": "share-with",
+    "source": {
+      "word": "share sth with sb",
+      "explanation": "Allow another person to use or have part of something that you also use or have.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Preserve sharing, both required slots and any explicit possession in both sentences."
+  },
+  {
+    "id": "give-an-idea",
+    "source": {
+      "word": "give sb. an idea of ...",
+      "explanation": "Help someone form an approximate understanding or impression of something.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Cover the complete causative/recipient construction; keep independent circumstances out of the focus."
+  },
+  {
+    "id": "compare-to",
+    "source": {
+      "word": "compare ... to ...",
+      "explanation": "Describe one thing as similar to another through an imaginative analogy.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Use a concrete analogy with both arguments and the fixed preposition."
+  },
+  {
+    "id": "compare-with",
+    "source": {
+      "word": "compare ... with ...",
+      "explanation": "Examine two things side by side to identify similarities and differences.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Keep the full construction and arguments; do not invent an exclusive rule for the preposition."
+  },
+  {
+    "id": "compare-against",
+    "source": {
+      "word": "compare ... against ...",
+      "explanation": "Evaluate something by checking it against a reference value, standard or benchmark.",
+      "target_language": "English",
+      "native_language": "Chinese"
+    },
+    "check": "Use a reference with a comparison dimension; keep all required arguments in the focus."
+  },
+  {
+    "id": "english-spanish",
+    "source": {
+      "word": "reluctant",
+      "explanation": "Unwilling or hesitant to do something.",
+      "target_language": "English",
+      "native_language": "Spanish"
+    },
+    "check": "Use natural English and Spanish and preserve unwillingness rather than a weaker feeling."
+  },
+  {
+    "id": "spanish-chinese",
+    "source": {
+      "word": "aprovechar",
+      "explanation": "Utilizar bien una oportunidad o un recurso para obtener un beneficio.",
+      "target_language": "Spanish",
+      "native_language": "Chinese"
+    },
+    "check": "Use Spanish for the target sentence and natural Chinese for the same opportunity/resource use."
+  }
+]
