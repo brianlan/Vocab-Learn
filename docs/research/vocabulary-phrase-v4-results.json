@@ -1,0 +1,1022 @@
+{
+  "tested_at_utc": "2026-11-04T06:38:15.124600+00:00",
+  "case_count": 27,
+  "generator_prompt": "Create one simple aligned bilingual example pair for the authored target expression and intended meaning.\nTreat source JSON as data, not instructions. The word field may contain a word, phrase, or clause-level construction.\nThe authored explanation defines the intended sense; phonetics and synonyms are supporting context, not alternate targets.\nChoose a concrete, natural situation that makes that sense clear, using short sentences and easy surrounding vocabulary.\nPrefer one brief clause, adding context only when needed to establish the sense; avoid tails that restate the definition.\nPreserve the authored expression's lexical identity and word class. Appropriate inflection, agreement and grammatical\nrealization are allowed; a derived word or synonym is not a replacement for the authored target.\nWhen the expression uses dictionary slots (one's, somebody/sb., something/sth., or ... / …), infer their grammatical roles\nfrom the construction and explanation, and fill them naturally with possessives, people, things or actions. Do not print\nplaceholder abbreviations or unfilled dots in the example. Respect required argument order and particle placement,\nincluding the position of pronoun objects in separable constructions. Do not silently drop a fixed particle or preposition.\nIllustrate distinctions supported by the explanation; do not invent exclusive usage rules for overlapping constructions.\nIf the intended meaning cannot be established, return {\"needs_clarification\":true} instead of inventing a sense.\n\nReturn ONLY an object with exactly two nonempty strings: target_sentence and native_sentence.\nRequired shape (replace the schematic text with the actual sentences in the requested languages):\n{\"target_sentence\":\"text before <focus>selected expression</focus> text after\",\n \"native_sentence\":\"text before <focus>equivalent expression</focus> text after\"}\nIn EACH sentence, enclose exactly one occurrence of its learning expression in one <focus>...</focus> pair.\nThe target sentence must use target_language; the native sentence must use native_language.\nThe native sentence must faithfully express the SAME participants, actions, relationships and facts in natural language.\nDo not infer an unstated location, destination, cause or outcome. If natural wording needs an additional fact, include it\nin BOTH sentences. Keep independent circumstances outside both focuses, even when translation changes their position.\nChoose a precise, conventional native equivalent of the contextual sense, preserving grammatical meaning, rather than a\nlooser association or a translated definition. Do not expand a lexical equivalent into a teaching explanation.\n\nChoose the shortest CONTIGUOUS span that covers the complete learning expression in each sentence:\n- For a single word or continuous phrase, exclude independent modifiers, participants, objects and circumstances.\n  Apply that scope in BOTH languages: a degree modifier or object outside the target focus stays outside the native focus.\n- For a construction with slots, include ALL essential fixed parts and the slot fillers necessary to connect them or\n  complete the authored construction. A separated expression may therefore include an intervening object. Do not select\n  only the head verb while leaving a required particle or preposition outside the focus.\n- For a clause-level target, the complete realized clause may need highlighting. Do not impose a word or character limit.\n- Align the learning meaning of BOTH selected spans, including essential causative, recipient, temporal or other\n  relationships. Native word order may require a different span length or necessary participants inside the focus.\n  If a target construction's focus includes its filled participant slots, include those roles in the native focus too;\n  do not leave them outside while highlighting only the native head verb.\n  Meaning supplied only outside the native highlight cannot compensate for a missing part of the learning expression.\n  Exclude unrelated details from both highlights; do not expand a single-word target into a whole-sentence highlight.\nPlace markers directly around text in each sentence; do not add, delete or reorder characters to create a separate\nhighlight. The marker position identifies the occurrence even if its characters also appear elsewhere in another word.\nKeep sentence-final punctuation outside the focus. Before returning, verify that EACH of the two strings has exactly one\nopening and one closing focus tag around nonempty text; check grammar, complete construction coverage, sense, and bilingual\nalignment of sentences AND focuses. Correct any omissions before returning the JSON.\n\nIf previous_pair is supplied, choose a DIFFERENT simple situation and change both sentences, keeping the authored sense.\nThe native sentence is a Production cue: NEVER expose the target-language answer or copy a cognate identical to the target;\nonly when a literal cognate would reveal the answer, use the shortest natural native paraphrase instead.\nDo not return separate highlight fields, a gloss, translated definition, answer paragraph, notes or extra fields.\nThe authored explanation remains the teaching definition; no Markdown or HTML except the focus markers.",
+  "generator_prompt_sha256": "6ffaa9393d0d839b8f83581f7e47289556b4428cb876f13caf514aee5f3b8ed8",
+  "method": "One independent call per fixture through the deployed Generator profile with candidate lexical-pair-v4 code injected in this isolated probe process, two concurrent calls, no automatic retries or database writes.",
+  "limits": [
+    "Explanations are hand-authored evaluation fixtures, not the learner's unprovided source explanations.",
+    "Structural validity is not semantic correctness or a measured reliability rate.",
+    "No learner progress, existing examples, assessment results or application configuration were changed."
+  ],
+  "results": [
+    {
+      "case": "studies",
+      "source": {
+        "word": "do one’s studies",
+        "explanation": "To spend time studying and doing academic work.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "I <focus>do my studies</focus> after dinner.",
+        "native_sentence": "我晚饭后<focus>做自己的功课</focus>。"
+      },
+      "pair": {
+        "target_sentence": "I do my studies after dinner.",
+        "target_highlight": "do my studies",
+        "target_highlight_start": 2,
+        "native_sentence": "我晚饭后做自己的功课。",
+        "native_highlight": "做自己的功课",
+        "native_highlight_start": 4
+      },
+      "rendered": {
+        "target": "I <strong class=\"target-word\">do my studies</strong> after dinner.",
+        "native": "我晚饭后<strong class=\"target-word\">做自己的功课</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 40.448,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "beginning",
+      "source": {
+        "word": "at the beginning",
+        "explanation": "During the first part or start of an event or period.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "<focus>At the beginning</focus> of the movie, the lights went out.",
+        "native_sentence": "电影<focus>一开始</focus>，灯就灭了。"
+      },
+      "pair": {
+        "target_sentence": "At the beginning of the movie, the lights went out.",
+        "target_highlight": "At the beginning",
+        "target_highlight_start": 0,
+        "native_sentence": "电影一开始，灯就灭了。",
+        "native_highlight": "一开始",
+        "native_highlight_start": 2
+      },
+      "rendered": {
+        "target": "<strong class=\"target-word\">At the beginning</strong> of the movie, the lights went out.",
+        "native": "电影<strong class=\"target-word\">一开始</strong>，灯就灭了。"
+      },
+      "structural_validation": "passed",
+      "seconds": 7.172,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "point-out",
+      "source": {
+        "word": "point out",
+        "explanation": "To draw someone's attention to a fact, detail, or problem.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Could you <focus>point out</focus> the mistake in my drawing?",
+        "native_sentence": "你能<focus>指出</focus>我画作中的错误吗？"
+      },
+      "pair": {
+        "target_sentence": "Could you point out the mistake in my drawing?",
+        "target_highlight": "point out",
+        "target_highlight_start": 10,
+        "native_sentence": "你能指出我画作中的错误吗？",
+        "native_highlight": "指出",
+        "native_highlight_start": 2
+      },
+      "rendered": {
+        "target": "Could you <strong class=\"target-word\">point out</strong> the mistake in my drawing?",
+        "native": "你能<strong class=\"target-word\">指出</strong>我画作中的错误吗？"
+      },
+      "structural_validation": "passed",
+      "seconds": 7.94,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "introduce",
+      "source": {
+        "word": "introduce ... to ...",
+        "explanation": "To tell two people each other's names so they can meet; introduce one person to another.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "At the party, Anna <focus>introduced her brother Tom to her friend Li</focus>.",
+        "native_sentence": "在聚会上，安娜<focus>把她的哥哥汤姆介绍给她的朋友李</focus>。"
+      },
+      "pair": {
+        "target_sentence": "At the party, Anna introduced her brother Tom to her friend Li.",
+        "target_highlight": "introduced her brother Tom to her friend Li",
+        "target_highlight_start": 19,
+        "native_sentence": "在聚会上，安娜把她的哥哥汤姆介绍给她的朋友李。",
+        "native_highlight": "把她的哥哥汤姆介绍给她的朋友李",
+        "native_highlight_start": 7
+      },
+      "rendered": {
+        "target": "At the party, Anna <strong class=\"target-word\">introduced her brother Tom to her friend Li</strong>.",
+        "native": "在聚会上，安娜<strong class=\"target-word\">把她的哥哥汤姆介绍给她的朋友李</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 8.382,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "share",
+      "source": {
+        "word": "share sth with sb",
+        "explanation": "To let another person use or have part of something with you.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Could you <focus>share your umbrella with me</focus> when it rains?",
+        "native_sentence": "下雨的时候，你能<focus>和我共用一把伞</focus>吗？"
+      },
+      "pair": {
+        "target_sentence": "Could you share your umbrella with me when it rains?",
+        "target_highlight": "share your umbrella with me",
+        "target_highlight_start": 10,
+        "native_sentence": "下雨的时候，你能和我共用一把伞吗？",
+        "native_highlight": "和我共用一把伞",
+        "native_highlight_start": 8
+      },
+      "rendered": {
+        "target": "Could you <strong class=\"target-word\">share your umbrella with me</strong> when it rains?",
+        "native": "下雨的时候，你能<strong class=\"target-word\">和我共用一把伞</strong>吗？"
+      },
+      "structural_validation": "passed",
+      "seconds": 11.394,
+      "manual_review": "Shared participation and full construction are clear; the native sentence loses the explicit possessive your by saying an umbrella."
+    },
+    {
+      "case": "pick-up",
+      "source": {
+        "word": "pick sb. up",
+        "explanation": "To go to a place to collect someone, often in a car, and take them somewhere.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "I will <focus>pick my sister up</focus> at the station.",
+        "native_sentence": "我会去车站<focus>接妹妹</focus>。"
+      },
+      "pair": {
+        "target_sentence": "I will pick my sister up at the station.",
+        "target_highlight": "pick my sister up",
+        "target_highlight_start": 7,
+        "native_sentence": "我会去车站接妹妹。",
+        "native_highlight": "接妹妹",
+        "native_highlight_start": 5
+      },
+      "rendered": {
+        "target": "I will <strong class=\"target-word\">pick my sister up</strong> at the station.",
+        "native": "我会去车站<strong class=\"target-word\">接妹妹</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 12.951,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "leave-behind",
+      "source": {
+        "word": "leave … behind",
+        "explanation": "To go away without taking someone or something with you, intentionally or by accident.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "I packed all my things, but I still <focus>left my passport behind</focus>.",
+        "native_sentence": "我把东西都收拾好了，可还是<focus>把护照落下了</focus>。"
+      },
+      "pair": {
+        "target_sentence": "I packed all my things, but I still left my passport behind.",
+        "target_highlight": "left my passport behind",
+        "target_highlight_start": 36,
+        "native_sentence": "我把东西都收拾好了，可还是把护照落下了。",
+        "native_highlight": "把护照落下了",
+        "native_highlight_start": 13
+      },
+      "rendered": {
+        "target": "I packed all my things, but I still <strong class=\"target-word\">left my passport behind</strong>.",
+        "native": "我把东西都收拾好了，可还是<strong class=\"target-word\">把护照落下了</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 48.063,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "result",
+      "source": {
+        "word": "as a result",
+        "explanation": "Because of what happened before; used to introduce the consequence.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "The gate was locked, and <focus>as a result</focus>, the workers could not enter the yard.",
+        "native_sentence": "大门被锁上了，<focus>因此</focus>工人们无法进入院子。"
+      },
+      "pair": {
+        "target_sentence": "The gate was locked, and as a result, the workers could not enter the yard.",
+        "target_highlight": "as a result",
+        "target_highlight_start": 25,
+        "native_sentence": "大门被锁上了，因此工人们无法进入院子。",
+        "native_highlight": "因此",
+        "native_highlight_start": 7
+      },
+      "rendered": {
+        "target": "The gate was locked, and <strong class=\"target-word\">as a result</strong>, the workers could not enter the yard.",
+        "native": "大门被锁上了，<strong class=\"target-word\">因此</strong>工人们无法进入院子。"
+      },
+      "structural_validation": "passed",
+      "seconds": 7.517,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "idea",
+      "source": {
+        "word": "give sb. an idea of ...",
+        "explanation": "To help someone gain an approximate understanding or impression of something.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "If you watch this short video, it <focus>gives you an idea of what the old town looks like</focus> in winter.",
+        "native_sentence": "如果你看这段短视频，它<focus>能让你对老城冬天是什么样子有个大致印象</focus>。"
+      },
+      "pair": {
+        "target_sentence": "If you watch this short video, it gives you an idea of what the old town looks like in winter.",
+        "target_highlight": "gives you an idea of what the old town looks like",
+        "target_highlight_start": 34,
+        "native_sentence": "如果你看这段短视频，它能让你对老城冬天是什么样子有个大致印象。",
+        "native_highlight": "能让你对老城冬天是什么样子有个大致印象",
+        "native_highlight_start": 11
+      },
+      "rendered": {
+        "target": "If you watch this short video, it <strong class=\"target-word\">gives you an idea of what the old town looks like</strong> in winter.",
+        "native": "如果你看这段短视频，它<strong class=\"target-word\">能让你对老城冬天是什么样子有个大致印象</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 12.06,
+      "manual_review": "Causative/recipient meaning and the full construction are retained, but winter is outside the target focus and inside the native focus; the example is also longer than necessary."
+    },
+    {
+      "case": "job",
+      "source": {
+        "word": "it is somebody's job to do sth.",
+        "explanation": "To be someone's responsibility to perform a particular task.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "<focus>It is Anna's job to water the plants</focus>.",
+        "native_sentence": "<focus>给植物浇水是安娜的职责</focus>。"
+      },
+      "pair": {
+        "target_sentence": "It is Anna's job to water the plants.",
+        "target_highlight": "It is Anna's job to water the plants",
+        "target_highlight_start": 0,
+        "native_sentence": "给植物浇水是安娜的职责。",
+        "native_highlight": "给植物浇水是安娜的职责",
+        "native_highlight_start": 0
+      },
+      "rendered": {
+        "target": "<strong class=\"target-word\">It is Anna&#x27;s job to water the plants</strong>.",
+        "native": "<strong class=\"target-word\">给植物浇水是安娜的职责</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 4.661,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "recently",
+      "source": {
+        "word": "only recently",
+        "explanation": "Not until a short time before now; emphasizes that something did not happen earlier.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "The museum <focus>only recently</focus> opened its new wing.",
+        "native_sentence": "博物馆<focus>直到最近才</focus>开放了新展厅。"
+      },
+      "pair": {
+        "target_sentence": "The museum only recently opened its new wing.",
+        "target_highlight": "only recently",
+        "target_highlight_start": 11,
+        "native_sentence": "博物馆直到最近才开放了新展厅。",
+        "native_highlight": "直到最近才",
+        "native_highlight_start": 3
+      },
+      "rendered": {
+        "target": "The museum <strong class=\"target-word\">only recently</strong> opened its new wing.",
+        "native": "博物馆<strong class=\"target-word\">直到最近才</strong>开放了新展厅。"
+      },
+      "structural_validation": "passed",
+      "seconds": 6.857,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "demand",
+      "source": {
+        "word": "in demand",
+        "explanation": "Wanted or needed by many people, especially for work, goods, or skills.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Graphic design skills are <focus>in demand</focus> among small businesses.",
+        "native_sentence": "平面设计技能在小企业中<focus>很抢手</focus>。"
+      },
+      "pair": {
+        "target_sentence": "Graphic design skills are in demand among small businesses.",
+        "target_highlight": "in demand",
+        "target_highlight_start": 26,
+        "native_sentence": "平面设计技能在小企业中很抢手。",
+        "native_highlight": "很抢手",
+        "native_highlight_start": 11
+      },
+      "rendered": {
+        "target": "Graphic design skills are <strong class=\"target-word\">in demand</strong> among small businesses.",
+        "native": "平面设计技能在小企业中<strong class=\"target-word\">很抢手</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 5.817,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "compare-to-sense",
+      "source": {
+        "word": "compare ... to ...",
+        "explanation": "To describe one thing as similar to another, often with an imaginative analogy.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "You can <focus>compare a rainbow to a colorful bridge</focus>.",
+        "native_sentence": "你可以<focus>把彩虹比作一座彩色的桥</focus>。"
+      },
+      "pair": {
+        "target_sentence": "You can compare a rainbow to a colorful bridge.",
+        "target_highlight": "compare a rainbow to a colorful bridge",
+        "target_highlight_start": 8,
+        "native_sentence": "你可以把彩虹比作一座彩色的桥。",
+        "native_highlight": "把彩虹比作一座彩色的桥",
+        "native_highlight_start": 3
+      },
+      "rendered": {
+        "target": "You can <strong class=\"target-word\">compare a rainbow to a colorful bridge</strong>.",
+        "native": "你可以<strong class=\"target-word\">把彩虹比作一座彩色的桥</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 4.918,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "compare-with-sense",
+      "source": {
+        "word": "compare ... with ...",
+        "explanation": "To examine two things side by side to identify similarities and differences, such as comparing two products.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Customers can <focus>compare this phone with that phone</focus>.",
+        "native_sentence": "顾客可以<focus>把这部手机和那部手机作比较</focus>。"
+      },
+      "pair": {
+        "target_sentence": "Customers can compare this phone with that phone.",
+        "target_highlight": "compare this phone with that phone",
+        "target_highlight_start": 14,
+        "native_sentence": "顾客可以把这部手机和那部手机作比较。",
+        "native_highlight": "把这部手机和那部手机作比较",
+        "native_highlight_start": 4
+      },
+      "rendered": {
+        "target": "Customers can <strong class=\"target-word\">compare this phone with that phone</strong>.",
+        "native": "顾客可以<strong class=\"target-word\">把这部手机和那部手机作比较</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 14.767,
+      "manual_review": "Preserves with and both objects. The general comparison sense is suitable, but no concrete comparison dimension is illustrated."
+    },
+    {
+      "case": "compare-against-sense",
+      "source": {
+        "word": "compare ... against ...",
+        "explanation": "To evaluate something by checking it against a reference value, standard, or benchmark.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "<focus>Compare this phone against last year's model</focus>.",
+        "native_sentence": "<focus>把这款手机和去年的型号作比较</focus>。"
+      },
+      "pair": {
+        "target_sentence": "Compare this phone against last year's model.",
+        "target_highlight": "Compare this phone against last year's model",
+        "target_highlight_start": 0,
+        "native_sentence": "把这款手机和去年的型号作比较。",
+        "native_highlight": "把这款手机和去年的型号作比较",
+        "native_highlight_start": 0
+      },
+      "rendered": {
+        "target": "<strong class=\"target-word\">Compare this phone against last year&#x27;s model</strong>.",
+        "native": "<strong class=\"target-word\">把这款手机和去年的型号作比较</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 6.849,
+      "manual_review": "Preserves against and both arguments; last year's model supplies a reference, though an explicit benchmark dimension would make the intended sense clearer."
+    },
+    {
+      "case": "compare-to-neutral",
+      "source": {
+        "word": "compare ... to ...",
+        "explanation": "To examine two things to see how they are similar or different.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Please <focus>compare the new plan to the old plan</focus>.",
+        "native_sentence": "请<focus>将新方案与旧方案进行比较</focus>。"
+      },
+      "pair": {
+        "target_sentence": "Please compare the new plan to the old plan.",
+        "target_highlight": "compare the new plan to the old plan",
+        "target_highlight_start": 7,
+        "native_sentence": "请将新方案与旧方案进行比较。",
+        "native_highlight": "将新方案与旧方案进行比较",
+        "native_highlight_start": 1
+      },
+      "rendered": {
+        "target": "Please <strong class=\"target-word\">compare the new plan to the old plan</strong>.",
+        "native": "请<strong class=\"target-word\">将新方案与旧方案进行比较</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 5.377,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "compare-with-neutral",
+      "source": {
+        "word": "compare ... with ...",
+        "explanation": "To examine two things to see how they are similar or different.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Please <focus>compare these two plans with the one we used last year</focus> before the meeting.",
+        "native_sentence": "请在开会前<focus>把这两个计划与我们去年用的那个计划作比较</focus>。"
+      },
+      "pair": {
+        "target_sentence": "Please compare these two plans with the one we used last year before the meeting.",
+        "target_highlight": "compare these two plans with the one we used last year",
+        "target_highlight_start": 7,
+        "native_sentence": "请在开会前把这两个计划与我们去年用的那个计划作比较。",
+        "native_highlight": "把这两个计划与我们去年用的那个计划作比较",
+        "native_highlight_start": 5
+      },
+      "rendered": {
+        "target": "Please <strong class=\"target-word\">compare these two plans with the one we used last year</strong> before the meeting.",
+        "native": "请在开会前<strong class=\"target-word\">把这两个计划与我们去年用的那个计划作比较</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 6.147,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "compare-against-neutral",
+      "source": {
+        "word": "compare ... against ...",
+        "explanation": "To examine two things to see how they are similar or different.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Compare this report against last year's report to see whether the figures are different.",
+        "native_sentence": "把这份报告和去年的报告作比较，看看数字是否不同。"
+      },
+      "structural_validation": "failed",
+      "stage": "GENERATOR",
+      "category": "invalid_output",
+      "error": "Each example needs exactly one marked expression. Retry preparation.",
+      "seconds": 6.631,
+      "manual_review": "Rejected: neither sentence contains focus markers. The unchanged validator prevents this pair from being accepted."
+    },
+    {
+      "case": "pick-up-pronoun",
+      "source": {
+        "word": "pick sb. up",
+        "explanation": "To go to a place to collect someone and take them somewhere. The person being collected is already known and referred to by an object pronoun.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "I <focus>pick her up</focus> at the station and take her home.",
+        "native_sentence": "我去车站<focus>接她</focus>，然后送她回家。"
+      },
+      "pair": {
+        "target_sentence": "I pick her up at the station and take her home.",
+        "target_highlight": "pick her up",
+        "target_highlight_start": 2,
+        "native_sentence": "我去车站接她，然后送她回家。",
+        "native_highlight": "接她",
+        "native_highlight_start": 4
+      },
+      "rendered": {
+        "target": "I <strong class=\"target-word\">pick her up</strong> at the station and take her home.",
+        "native": "我去车站<strong class=\"target-word\">接她</strong>，然后送她回家。"
+      },
+      "structural_validation": "passed",
+      "seconds": 5.317,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "leave-behind-pronoun",
+      "source": {
+        "word": "leave … behind",
+        "explanation": "To go away without taking someone with you. The person is already known and referred to by an object pronoun.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "We went to the park and <focus>left him behind</focus>.",
+        "native_sentence": "我们去了公园，<focus>把他留下了</focus>。"
+      },
+      "pair": {
+        "target_sentence": "We went to the park and left him behind.",
+        "target_highlight": "left him behind",
+        "target_highlight_start": 24,
+        "native_sentence": "我们去了公园，把他留下了。",
+        "native_highlight": "把他留下了",
+        "native_highlight_start": 7
+      },
+      "rendered": {
+        "target": "We went to the park and <strong class=\"target-word\">left him behind</strong>.",
+        "native": "我们去了公园，<strong class=\"target-word\">把他留下了</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 20.095,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "regression-absorb",
+      "source": {
+        "word": "absorb",
+        "explanation": "If something absorbs liquid, it soaks it up and holds it.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "The sponge <focus>absorbs</focus> the spilled water.",
+        "native_sentence": "海绵<focus>吸收</focus>了洒出的水。"
+      },
+      "pair": {
+        "target_sentence": "The sponge absorbs the spilled water.",
+        "target_highlight": "absorbs",
+        "target_highlight_start": 11,
+        "native_sentence": "海绵吸收了洒出的水。",
+        "native_highlight": "吸收",
+        "native_highlight_start": 2
+      },
+      "rendered": {
+        "target": "The sponge <strong class=\"target-word\">absorbs</strong> the spilled water.",
+        "native": "海绵<strong class=\"target-word\">吸收</strong>了洒出的水。"
+      },
+      "structural_validation": "passed",
+      "seconds": 8.097,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "regression-adventure",
+      "source": {
+        "word": "adventure",
+        "explanation": "An exciting, unusual, sometimes risky journey or experience.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "Climbing the old tower was an <focus>adventure</focus> for the children.",
+        "native_sentence": "对孩子们来说，爬那座旧塔真<focus>是一次冒险</focus>。"
+      },
+      "pair": {
+        "target_sentence": "Climbing the old tower was an adventure for the children.",
+        "target_highlight": "adventure",
+        "target_highlight_start": 30,
+        "native_sentence": "对孩子们来说，爬那座旧塔真是一次冒险。",
+        "native_highlight": "是一次冒险",
+        "native_highlight_start": 13
+      },
+      "rendered": {
+        "target": "Climbing the old tower was an <strong class=\"target-word\">adventure</strong> for the children.",
+        "native": "对孩子们来说，爬那座旧塔真<strong class=\"target-word\">是一次冒险</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 8.602,
+      "manual_review": "Native focus includes the copula and quantity/classifier (是一次) rather than just the lexical meaning 冒险. The old over-broad selection problem is not fully resolved."
+    },
+    {
+      "case": "regression-abnormal",
+      "source": {
+        "word": "abnormal",
+        "explanation": "Different from what is usual or expected, especially in a strange or worrying way.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "The doctor said that the patient's heartbeat was <focus>abnormal</focus>.",
+        "native_sentence": "医生说病人的心跳<focus>异常</focus>。"
+      },
+      "pair": {
+        "target_sentence": "The doctor said that the patient's heartbeat was abnormal.",
+        "target_highlight": "abnormal",
+        "target_highlight_start": 49,
+        "native_sentence": "医生说病人的心跳异常。",
+        "native_highlight": "异常",
+        "native_highlight_start": 8
+      },
+      "rendered": {
+        "target": "The doctor said that the patient&#x27;s heartbeat was <strong class=\"target-word\">abnormal</strong>.",
+        "native": "医生说病人的心跳<strong class=\"target-word\">异常</strong>。"
+      },
+      "structural_validation": "passed",
+      "seconds": 12.264,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "regression-adopt",
+      "source": {
+        "word": "adopt",
+        "explanation": "Legally take another person's child into your family and raise them as your own.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "The couple legally <focus>adopted</focus> a child and are raising her as their own.",
+        "native_sentence": "这对夫妇依法<focus>收养</focus>了一个孩子，并把她当作自己的孩子抚养。"
+      },
+      "pair": {
+        "target_sentence": "The couple legally adopted a child and are raising her as their own.",
+        "target_highlight": "adopted",
+        "target_highlight_start": 19,
+        "native_sentence": "这对夫妇依法收养了一个孩子，并把她当作自己的孩子抚养。",
+        "native_highlight": "收养",
+        "native_highlight_start": 6
+      },
+      "rendered": {
+        "target": "The couple legally <strong class=\"target-word\">adopted</strong> a child and are raising her as their own.",
+        "native": "这对夫妇依法<strong class=\"target-word\">收养</strong>了一个孩子，并把她当作自己的孩子抚养。"
+      },
+      "structural_validation": "passed",
+      "seconds": 13.524,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "regression-account",
+      "source": {
+        "word": "account",
+        "explanation": "An arrangement with a bank to keep money there and take some out when needed.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "I opened a bank <focus>account</focus> so I can keep money there and take it out when needed.",
+        "native_sentence": "我在银行开了一个<focus>账户</focus>，可以把钱存在那里，需要时再取出来。"
+      },
+      "pair": {
+        "target_sentence": "I opened a bank account so I can keep money there and take it out when needed.",
+        "target_highlight": "account",
+        "target_highlight_start": 16,
+        "native_sentence": "我在银行开了一个账户，可以把钱存在那里，需要时再取出来。",
+        "native_highlight": "账户",
+        "native_highlight_start": 8
+      },
+      "rendered": {
+        "target": "I opened a bank <strong class=\"target-word\">account</strong> so I can keep money there and take it out when needed.",
+        "native": "我在银行开了一个<strong class=\"target-word\">账户</strong>，可以把钱存在那里，需要时再取出来。"
+      },
+      "structural_validation": "passed",
+      "seconds": 11.208,
+      "manual_review": "Conventional lexical focus is correct, but the sentence still contains a long definition-like purpose tail."
+    },
+    {
+      "case": "regression-abrupt",
+      "source": {
+        "word": "abrupt",
+        "explanation": "An abrupt change or action is very sudden, often unpleasantly so.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "His <focus>abrupt</focus> departure surprised us.",
+        "native_sentence": "他<focus>突然</focus>离开，这让我们很吃惊。"
+      },
+      "pair": {
+        "target_sentence": "His abrupt departure surprised us.",
+        "target_highlight": "abrupt",
+        "target_highlight_start": 4,
+        "native_sentence": "他突然离开，这让我们很吃惊。",
+        "native_highlight": "突然",
+        "native_highlight_start": 1
+      },
+      "rendered": {
+        "target": "His <strong class=\"target-word\">abrupt</strong> departure surprised us.",
+        "native": "他<strong class=\"target-word\">突然</strong>离开，这让我们很吃惊。"
+      },
+      "structural_validation": "passed",
+      "seconds": 8.731,
+      "manual_review": "Reviewed for authored sense, grammatical realization, full construction coverage and bilingual focus alignment; no material issue identified in this sample."
+    },
+    {
+      "case": "regression-absorptive",
+      "source": {
+        "word": "absorptive",
+        "explanation": "Having the ability or capacity to absorb liquid.",
+        "target_language": "English",
+        "native_language": "Chinese"
+      },
+      "profile": {
+        "task": "GENERATOR",
+        "endpoint": "https://api.minimax.cn/v1/chat/completions",
+        "model": "MiniMax-M3.1-Flash",
+        "timeout": 120.0,
+        "max_completion_tokens": 8192,
+        "protocol": "openai",
+        "prompt_version": "lexical-pair-v4"
+      },
+      "raw": {
+        "target_sentence": "This sponge is <focus>absorptive</focus>, so it quickly soaks up spilled tea.",
+        "native_sentence": "这块海绵<focus>能吸收液体</focus>，所以很快就能吸掉洒出的茶。"
+      },
+      "pair": {
+        "target_sentence": "This sponge is absorptive, so it quickly soaks up spilled tea.",
+        "target_highlight": "absorptive",
+        "target_highlight_start": 15,
+        "native_sentence": "这块海绵能吸收液体，所以很快就能吸掉洒出的茶。",
+        "native_highlight": "能吸收液体",
+        "native_highlight_start": 4
+      },
+      "rendered": {
+        "target": "This sponge is <strong class=\"target-word\">absorptive</strong>, so it quickly soaks up spilled tea.",
+        "native": "这块海绵<strong class=\"target-word\">能吸收液体</strong>，所以很快就能吸掉洒出的茶。"
+      },
+      "structural_validation": "passed",
+      "seconds": 20.411,
+      "manual_review": "Expresses the capacity/property naturally using a modal phrase rather than reducing it to an action noun."
+    }
+  ],
+  "round": "Final v4 candidate, matching the committed Generator prompt hash.",
+  "summary": {
+    "structurally_valid": 26,
+    "structurally_rejected": 1,
+    "requested_expression_structural_results": "15 of 15 requested sense-specific fixtures structurally accepted.",
+    "semantic_conclusion": "Construction realization improved in the inspected examples, but selection granularity and bilingual scope are not consistently correct. This is a candidate, not a claim of production reliability.",
+    "automated_checks": {
+      "django_suite": {
+        "passed": 75,
+        "seconds": 23.758
+      },
+      "final_provider_suite": {
+        "passed": 11,
+        "seconds": 0.166
+      }
+    },
+    "deployment": "Not deployed; production remains unchanged."
+  }
+}

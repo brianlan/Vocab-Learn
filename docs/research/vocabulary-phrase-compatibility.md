@@ -1,5 +1,7 @@
 # Vocabulary phrase compatibility research
 
+Follow-up: [v4 prompt revision and live evaluation](vocabulary-phrase-v4-evaluation.md). This document preserves the v3 investigation and its original observations; the follow-up records the candidate change and all later probe rounds.
+
 Reviewed: 2026-11-04. Scope: English usage from primary dictionary/publisher sources and concrete compatibility questions for the current Vocabulary contract. This note records evaluation and general design recommendations without changing the implementation. A separate live-generator probe covers 18 requests: 15 phrase fixtures and three neutral compare controls. Its explanations are evaluation fixtures, not recovered original card explanations. The [saved live results](vocabulary-phrase-generation-results.json) and manual review below distinguish structural validity from teaching quality.
 
 ## Current application boundary

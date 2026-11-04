@@ -156,6 +156,25 @@ class ProviderTests(TestCase):
             '用计算机 <strong class="target-word">计算</strong> 总数。')
         with self.assertRaises(ValueError):highlight(result["native_sentence"],"计算",0)
 
+    def test_realized_constructions_keep_complete_spans_through_generation_and_rendering(self):
+        from learning.rendering import highlight
+        cases=[("pick sb. up", "I will <focus>pick her up</focus> after school.",
+                "放学后我会<focus>接她</focus>。", "pick her up", "接她"),
+            ("it is somebody's job to do sth.", "<focus>It is his job to clean the room</focus>.",
+                "<focus>打扫房间是他的职责</focus>。", "It is his job to clean the room", "打扫房间是他的职责")]
+        for word,target,native,target_focus,native_focus in cases:
+            with self.subTest(word=word):
+                source={"word":word,"explanation":"The authored construction's intended meaning.",
+                    "target_language":"English","native_language":"Chinese"}
+                with patch("learning.providers.chat",return_value={"target_sentence":target,"native_sentence":native}) as chat:
+                    pair,metadata=p.generate(source,self.profile("GENERATOR"))
+                self.assertEqual(chat.call_args.args[2],source)
+                self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["GENERATOR"])
+                for language,marked,focus in [("target",target,target_focus),("native",native,native_focus)]:
+                    self.assertEqual(pair[language+"_highlight"],focus)
+                    self.assertEqual(highlight(pair[language+"_sentence"],focus,pair[language+"_highlight_start"]),
+                        marked.replace("<focus>",'<strong class="target-word">').replace("</focus>","</strong>"))
+
     def test_rotation_requires_both_new_sentences_and_configuration_rejects_nan(self):
         pair={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}
         with patch("learning.providers.chat",return_value=pair):
