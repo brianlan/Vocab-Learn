@@ -1,0 +1,4 @@
+services:
+  caddy:
+    ports:
+      - "${SECONDARY_LAN_BIND_IP:?Set SECONDARY_LAN_BIND_IP}:${HTTPS_PORT:-443}:443"

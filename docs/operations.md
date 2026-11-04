@@ -53,7 +53,18 @@ docker compose ps
 docker compose exec web python manage.py createlearner your_username
 ```
 
-One `migrate` service completes before web/worker start. The same application image runs web and worker. Caddy uses an internal CA, retained in its named volumes. Export only its public root certificate:
+One `migrate` service completes before web/worker start. The same application image runs web and worker. Caddy uses an internal CA, retained in its named volumes.
+
+To also bind a second private IPv4 address, add both lines to `.env`:
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.secondary-ip.yaml
+SECONDARY_LAN_BIND_IP=10.243.80.19
+```
+
+Compose merges the second Caddy port mapping with `LAN_BIND_IP`, keeping both addresses on `HTTPS_PORT`. Both addresses must be configured on the host. Apply with `docker compose config --quiet` and `docker compose up -d --no-deps caddy`. Future Compose commands automatically use both files through `.env`; remove the two lines to return to a single listener. Clients on either network resolve the same `APP_HOSTNAME` to the address they can reach and use the same HTTPS origin and trusted root. The web/worker processes and named data volumes do not need recreation for this change.
+
+Export only Caddy's public root certificate:
 
 ```sh
 mkdir -p var
