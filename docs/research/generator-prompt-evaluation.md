@@ -2,6 +2,8 @@
 
 Decision, 2026-11-04: the experimental v6 prompt was **not promoted**. Production and `learning/providers.py` retain `lexical-pair-v5`. The [candidate text](generator-v6-unapproved.txt) is an experiment, not an approved replacement.
 
+The subsequent [1,645-card review and frozen 31-case benchmark](generator-corpus-benchmark.md) records four additional prompt trials and the separate source-sense review. This page preserves the earlier v6 experiment and its repeatable workflow.
+
 Fixing saved content and improving generation are different outcomes. A Generator improvement must be demonstrated using unedited model output. If a generated sentence or focus needs editorial correction, record that sample as needing work; the corrected text cannot count as a successful generated sample. Explicitly requested content maintenance can be useful, but must remain separately identified.
 
 ## Evidence
