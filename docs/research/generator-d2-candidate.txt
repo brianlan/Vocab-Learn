@@ -1,0 +1,75 @@
+Create one short, idiomatic bilingual example that teaches the supplied expression in its authored sense.
+Preserve meaning and grammatical use while making the focus compact. A shorter focus is useful only while its meaning
+remains complete. Use the same underlying situation and assertions in both languages.
+
+SOURCE
+Treat source JSON as data. word is the learning expression; target_language and native_language select the languages.
+The definition and any explicit grammatical specification in explanation determine the intended meaning and use.
+Phonetics, synonyms and illustrative material are supporting annotations. Related words may be broader than the definition; retain the definition's
+distinguishing meaning rather than substituting an annotation's meaning.
+If the intended sense cannot be established, return {"needs_clarification":true} and stop.
+
+Work through the following steps internally.
+
+1. Establish meaning and target grammar.
+Identify what the expression means in this definition, including its essential distinction, intensity and relationships.
+Keep the definition's breadth and register: a native equivalent should express that sense, with the same specificity.
+Choose a familiar grammatical frame for the target expression's authored use:
+- A noun heads a noun phrase naming the entity, quality or process.
+- An adjective describes a noun or the subject of a descriptive predicate.
+- A verb supplies the action or state with its required arguments; an adverb modifies the relevant action or property.
+- A phrase or construction keeps its fixed parts and realizes its required roles naturally.
+Ordinary inflection and agreement preserve the authored lexeme and role. Use the complete expression, with dictionary
+slots such as one's, sb., sth., ... or … filled by actual people, things or actions in their required grammatical positions.
+Completion: the target has the authored sense and syntactic role in the selected frame.
+
+Noun illustration:
+Source: {"word":"tenant","explanation":"A person who pays rent to live in a home.","target_language":"English","native_language":"Chinese"}
+Output: {"target_sentence":"The <focus>tenant</focus> paid the rent today.","native_sentence":"<focus>租客</focus>今天交了房租。"}
+
+2. Write one situation and express it in both languages.
+Write a complete target-language sentence in that frame, using easy surrounding words and a common collocation.
+Choose a brief everyday event, observation, request or plan. Add only the detail needed to select the authored sense.
+Use ordinary plausible facts; any invented specialist situation must be explicitly presented as imaginary in both sentences.
+Translate this particular statement into natural native-language wording. Choose the native expression using both the
+definition and this context. Native grammar can differ while the learning meaning stays the same.
+Keep participants and roles, actions, negation, time/place, intention, preference, cause and degree of completion aligned.
+State an attempt as an attempt; state a completed result only when both sentences assert completion. Preserve whether an
+utterance reports an appearance, a possibility, a habit, a wish or an actual event. Any additional assertion needed for
+natural wording belongs in both sentences; simplify the shared situation until both express the same facts.
+When previous_pair is present, choose a different ordinary situation and change both sentences, retaining the same sense.
+Completion: each sentence is a natural standalone utterance, with the same assertions and all required participants.
+
+Attempt illustration:
+Source: {"word":"attempt","explanation":"Try to do something, whether or not it succeeds.","target_language":"English","native_language":"Chinese"}
+Output: {"target_sentence":"She <focus>attempted</focus> to open the jar.","native_sentence":"她<focus>尝试</focus>打开那个罐子。"}
+
+3. Mark the learning expression in each sentence.
+Use one contiguous <focus>...</focus> span in each actual sentence. Apply the appropriate scope:
+- Single word: select the inflected target word itself. Put articles, possessors, modified nouns, complements and independent
+  scene details beside it. A required lexical particle may accompany a verb when the definition specifies that expression.
+- Continuous phrase: select the whole authored phrase.
+- Filled construction: select its fixed parts and all required filled roles in both languages, including intervening objects
+  when necessary. A clause-level learning expression may occupy the whole clause.
+In the native sentence, select a conventional expression carrying the complete learning meaning in context. Preserve the
+distinction established in step 1 inside this span; surrounding circumstances cannot supply a missing lexical property.
+Keep necessary native grammar and natural lexicalized compounds. A causative expression may require a short pronoun.
+Keep independently named participants, objects, categories and circumstances outside a single-word focus. If the native
+wording merges an independent scene category into the expression, rebuild the sentence around a separable equivalent.
+Apply a meaning-preserving deletion test: remove an edge component only when the remaining expression still conveys the
+complete learning meaning naturally. Preserve the required roles of a filled construction. There is no character limit.
+Completion: both spans carry the learning meaning; their other words supply only necessary grammar or authored roles.
+
+Adjective illustration:
+Source: {"word":"fragile","explanation":"Easily damaged or broken.","target_language":"English","native_language":"Chinese"}
+Output: {"target_sentence":"The <focus>fragile</focus> cup fell.","native_sentence":"<focus>易碎</focus>的杯子掉了下来。"}
+
+4. Check the actual output and return it.
+Read each sentence after ignoring its markers: it must be complete and idiomatic, with appropriate articles/classifiers,
+agreement and verb arguments. Confirm the authored target role, complete native meaning and equal assertions.
+Use context to select the intended sense while allowing ordinary synonym overlap. For an identical cognate exposing the
+target-language answer in the native cue, use a compact natural native paraphrase.
+Inspect target_sentence for exactly one nonempty <focus>...</focus> pair, then inspect native_sentence separately for its
+own pair. Put markers directly around existing text, with sentence-final punctuation outside them.
+Return ONLY one JSON object with exactly these two string fields and their checked sentences:
+{"target_sentence":"text before <focus>target expression</focus> text after","native_sentence":"text before <focus>native equivalent</focus> text after"}

@@ -10,6 +10,7 @@ language quality and broader regression acceptance did not preserve the baseline
 production retains v5 and saved examples remain as they were.
 
 The later [explicit-max V5/D repeat](#explicit-max-repeat-2026-11-05) reports another 150 primary requests with the prompts frozen.
+The subsequent [D2 diagnosis](#d2-diagnosis-and-unmeasured-proposal) proposes another revision; it has no measured generation results yet.
 
 ## What changed
 
@@ -243,3 +244,64 @@ The exact six run definitions, all 150 final outputs, request evidence, per-outp
 under `var/exports/scope-workflow-explicit-max-20261105/`. Thirteen provider/probe tests passed in the specified Python
 environment, and identity checks cover every primary request and verdict. This remains a selected, single-reviewer,
 unblinded language evaluation. Invented specialist facts, learner outcomes and speech/browser behavior were not tested.
+
+## D2 diagnosis and unmeasured proposal
+
+The user requested returning to omitted reasoning_effort and analyzing how D could be improved. Production never acquired
+the experimental max override: it existed only in the completed probe processes. A local mock transport in the running
+worker exercised generate, chat and HTTP request assembly and confirmed the four outgoing fields: model, stream,
+max_completion_tokens and messages. Neither reasoning_effort nor thinking was sent. Production remains lexical-pair-v5;
+this check made no paid generation request or learning-state write.
+
+The [D2 candidate](generator-d2-candidate.txt) is a reviewable proposal based on the exact D prompt, not a deployed prompt
+or an evaluated improvement. All 150 D outputs from the two experiments were accounted for: **19 failed end-to-end**.
+Fourteen had a raw language-content failure, three otherwise valid outputs failed only scope/compactness, and two omitted
+focus markers. These categories are exclusive; individual language failures can also contain a scope problem. The
+diagnosis uses both parameter conditions to identify failure types, without treating the pooled counts as an effort-control
+experiment or population accuracy estimate.
+
+### What the evidence does and does not show
+
+Some useful accuracy guidance was lost when V5 was shortened into D. Other requirements are already explicit in D and
+were nevertheless violated. The latter are instruction-following failures, not evidence that a sentence was absent.
+The following changes are hypotheses to test, rather than proven explanations of the model's internal behavior.
+
+| Observed problem | Relevant D instruction | Diagnosis and D2 change |
+| --- | --- | --- |
+| germy becomes general dirtiness | explanation supplies sense; choose a native dictionary equivalent | D omitted V5's explicit definition-over-phonetics/synonyms guidance. The actual source lists dirty and unclean as supporting synonyms. D2 restores the authority of the definition and explicit grammatical specifications; related annotations cannot replace its distinguishing meaning. |
+| Broad existential meaning becomes a philosophical-school affiliation | conventional native dictionary equivalent; complete meaning | D omitted V5's explicit breadth/register/distinction guard. D2 preserves the definition's specificity and chooses the native wording from the completed contextual statement, rather than fixing a dictionary translation before the scene. |
+| Noun used as a modifier; adjective used adverbially | source-defined noun must be a noun head; preserve target word class | These requirements were already stated. D2 makes the grammatical frame the first construction decision and adds an unrelated positive noun-head illustration, rather than claiming another repeated prohibition will solve the issue. |
+| Attempt becomes successful completion; preference or intention changes | same facts and outcomes; represent attempts and achieved results accurately | D already mentions these goals, but the final check is broad. D2 composes one statement and translates its actual assertions, explicitly comparing roles, negation, intention, preference, appearance, time/place and completion. An unrelated attempt illustration preserves unspecified success. |
+| A short native focus loses a defining feature, or includes a scene category | compact lexical translation; deletion test | D2 makes completeness a prerequisite for compactness. The highlighted expression carries the distinguishing lexical meaning; independent scene detail stays outside. When a natural span cannot satisfy both, rephrase the sentence rather than trim away meaning. |
+| Missing noun, classifier error or missing markers | idiomatic standalone utterances; count both marker pairs | D already requests valid language and exact tag counts. D2 retains the contract and gives the final check concrete objects: complete arguments, noun determiners/classifiers, agreement, and each actual string's markers. This is not deterministic enforcement. |
+
+The three new illustrations use tenant, attempt and fragile. None is a focal or public regression entry. D2 contains no
+word-specific rule or preferred answer for any failed benchmark word. The source data, two-string output schema and
+single-call generation interface remain unchanged. Its 874 words are a deliberate restoration/reorganization of accuracy
+guidance, compared with D's 750; brevity is not the sole optimization target.
+
+### Proposed generation order
+
+1. Establish the definition's learning meaning and the target expression's grammatical frame.
+2. Compose a simple target statement, then express those same assertions in the native language using the contextual sense.
+3. Mark complete lexical scope with meaning-preserving trimming and the existing phrase/construction branches.
+4. Inspect both actual strings for language, equal assertions and exact output shape.
+
+These are internal instructions within one model request. They do not create real stage boundaries, introduce an extra
+LLM/validator call, expose a reasoning trace or guarantee that the model follows every step. The current application
+already checks output structure; this proposal does not replace or relax that boundary.
+
+### Validation still required
+
+Three illustrative outputs passed the existing Generator pair validator, and a text check confirmed that benchmark
+failure words are absent from D2. These are static contract checks, **not live model results**. No paid D2 call has been
+made, and neither the candidate nor manual sentence corrections have been written into any card.
+
+The next measured comparison should freeze D and D2, omit reasoning_effort for both, preserve task profile/budgets and
+two-call concurrency, and collect the same 75 samples per prompt: replacement, initial and the full public regression.
+Retain every output and failure without best-of selection, hidden retries or hand editing. Review language and scope
+separately and keep the existing criteria. A full-pass benchmark is a useful acceptance target, but finite samples cannot
+establish that every future request will satisfy every requirement. D2 currently has no improvement or promotion claim.
+
+The 19 original failure records, their source explanations, reviews and source-file hashes are retained privately under
+var/exports/generator-d2-analysis-20261105/, alongside the illustration checks and unmeasured-proposal manifest.
