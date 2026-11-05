@@ -10,7 +10,8 @@ language quality and broader regression acceptance did not preserve the baseline
 production retains v5 and saved examples remain as they were.
 
 The later [explicit-max V5/D repeat](#explicit-max-repeat-2026-11-05) reports another 150 primary requests with the prompts frozen.
-The subsequent [D2 diagnosis](#d2-diagnosis-and-unmeasured-proposal) proposes another revision; it has no measured generation results yet.
+The subsequent [D2 diagnosis](#d2-diagnosis-and-unmeasured-proposal) proposes another revision; the later
+[V5/D2 experiment](generator-v5-d2-evaluation.md) reports its measured results without promoting it.
 
 ## What changed
 
@@ -253,8 +254,9 @@ worker exercised generate, chat and HTTP request assembly and confirmed the four
 max_completion_tokens and messages. Neither reasoning_effort nor thinking was sent. Production remains lexical-pair-v5;
 this check made no paid generation request or learning-state write.
 
-The [D2 candidate](generator-d2-candidate.txt) is a reviewable proposal based on the exact D prompt, not a deployed prompt
-or an evaluated improvement. All 150 D outputs from the two experiments were accounted for: **19 failed end-to-end**.
+The [D2 candidate](generator-d2-candidate.txt) was prepared as an unmeasured proposal based on the exact D prompt. Its
+later [V5/D2 evaluation](generator-v5-d2-evaluation.md) did not justify promotion. At diagnosis time, all 150 D outputs from
+the two experiments were accounted for: **19 failed end-to-end**.
 Fourteen had a raw language-content failure, three otherwise valid outputs failed only scope/compactness, and two omitted
 focus markers. These categories are exclusive; individual language failures can also contain a scope problem. The
 diagnosis uses both parameter conditions to identify failure types, without treating the pooled counts as an effort-control
@@ -291,17 +293,19 @@ These are internal instructions within one model request. They do not create rea
 LLM/validator call, expose a reasoning trace or guarantee that the model follows every step. The current application
 already checks output structure; this proposal does not replace or relax that boundary.
 
-### Validation still required
+### Proposal-stage checks and planned validation
 
-Three illustrative outputs passed the existing Generator pair validator, and a text check confirmed that benchmark
-failure words are absent from D2. These are static contract checks, **not live model results**. No paid D2 call has been
-made, and neither the candidate nor manual sentence corrections have been written into any card.
+At proposal time, three illustrative outputs passed the existing Generator pair validator, and a text check confirmed that
+benchmark failure words are absent from D2. Those were static contract checks, **not live model results**; no paid D2 call
+had then been made. Neither the candidate nor manual sentence corrections have been written into any card.
 
-The next measured comparison should freeze D and D2, omit reasoning_effort for both, preserve task profile/budgets and
+The proposed next comparison was to freeze D and D2, omit reasoning_effort for both, preserve task profile/budgets and
 two-call concurrency, and collect the same 75 samples per prompt: replacement, initial and the full public regression.
+The user subsequently selected V5 as the comparator instead; the completed experiment is linked above.
 Retain every output and failure without best-of selection, hidden retries or hand editing. Review language and scope
 separately and keep the existing criteria. A full-pass benchmark is a useful acceptance target, but finite samples cannot
-establish that every future request will satisfy every requirement. D2 currently has no improvement or promotion claim.
+establish that every future request will satisfy every requirement. The proposal made no improvement claim, and the later
+measured comparison did not support promoting D2.
 
 The 19 original failure records, their source explanations, reviews and source-file hashes are retained privately under
 var/exports/generator-d2-analysis-20261105/, alongside the illustration checks and unmeasured-proposal manifest.
