@@ -1,0 +1,70 @@
+Create one short, idiomatic bilingual learning example for the supplied expression.
+
+OUTPUT
+Return ONLY this JSON object with the actual sentences:
+{"target_sentence":"...<focus>learning expression</focus>...","native_sentence":"...<focus>native equivalent</focus>..."}
+Both values are complete sentences. Check each value independently: exactly ONE <focus> opening tag and ONE </focus>
+closing tag around nonempty text in target_sentence, and exactly ONE pair in native_sentence. Mark the actual occurrence;
+sentence-final punctuation stays outside its tags. These checks apply to BOTH strings, including when one sentence is short.
+If the source meaning cannot be established, return {"needs_clarification":true}.
+
+DATA
+Use the source JSON as task data. word identifies the learning expression; explanation supplies its sense and word class.
+Use target_language for target_sentence and native_language for native_sentence.
+
+Work through these steps internally, then return the result.
+
+1. Establish scope.
+Choose the authored expression's grammatical realization and a conventional native dictionary equivalent.
+Establish both as lexical items before adding the participants and objects of a particular scene.
+For a source-defined noun, use the target as the noun head naming the entity or process.
+Scope is the complete meaning of word, including its inherent intensity, causation and relationships.
+Completion: the two expressions name the same learning meaning; their scope is fixed before you choose the scene.
+
+2. Build a scene.
+Write a brief everyday event, observation, request or plan around those expressions, using easy surrounding words.
+Use the authored lexeme in its specified word class; ordinary inflection and agreement are welcome.
+Use familiar everyday contexts or clearly imaginary scenes for invented specialist details.
+For an adjective, describe a noun or its subject. For a noun, name an entity, quality or process.
+Write both sentences as natural counterparts with the same participants, actions, facts and outcomes.
+Completion: each sentence stands as an ordinary utterance demonstrating the sense in a particular situation.
+When previous_pair is present, use a fresh situation and change both sentences while retaining the authored sense.
+
+3. Mark scope.
+Select a contiguous span in each sentence according to the applicable branch:
+- Single word: in target_sentence, select the inflected word itself. Its article, possessor, noun complements and other
+  phrase members stay in the surrounding text. An adjective's noun belongs beside its focus; a noun's of-phrase belongs
+  beside its focus. A required phrasal particle may accompany a verb when explanation specifies that lexical use.
+  In native_sentence, select a conventional lexical equivalent rather than an explanation assembled from its properties.
+  Put independent actors, objects, categories and circumstances in the surrounding sentence. Preserve natural native
+  compounds, inherent meaning and grammatical particles; a causative equivalent may need a short pronoun inside.
+  Place <focus> and </focus> directly around the selected expression in EACH sentence now.
+  Completion: the target focus names the authored word alone, and the native focus is its compact lexical translation.
+- Continuous phrase: select the complete phrase and its equivalent, with independent scene details in surrounding text.
+- Construction with slots such as one's, sb., sth., ... or …: fill the required roles naturally and select the complete
+  realized construction, including its fixed particles and necessary slot fillers, in both languages. Required pronoun
+  placement and particle order are part of the construction. A clause-level expression may require the whole clause.
+
+Apply the deletion test: trim an edge component whenever the remaining span still conveys the complete learning meaning.
+If an internal component only describes the scene, choose a conventional lexical equivalent and rebuild the sentence
+around it so that scope stays contiguous. Let a lexical equivalent carry its ordinary meaning without unpacking all the
+properties in its dictionary definition. Span length follows meaning and native grammar, with no character limit.
+Completion: every selected component contributes lexical meaning, required grammar, or an explicit slot of word.
+
+Two unrelated illustrations of lexical scope:
+Source: {"word":"porous","explanation":"Having many small holes through which air or liquid can pass.","target_language":"English","native_language":"Chinese"}
+Output: {"target_sentence":"We examined a <focus>porous</focus> rock.","native_sentence":"我们观察了一块<focus>多孔</focus>的岩石。"}
+Source: {"word":"expansion","explanation":"The process of becoming larger.","target_language":"English","native_language":"Chinese"}
+Output: {"target_sentence":"We measured the <focus>expansion</focus> of the metal.","native_sentence":"我们测量了金属的<focus>膨胀</focus>。"}
+
+
+4. Check the result.
+Verify the authored sense and target word class, idiomatic wording, equal assertions, and complete scope in both languages.
+Keep the same linguistic objects when discussing language. Represent attempts and achieved results accurately.
+Use context to select the intended sense while allowing ordinary synonym overlap. For an identical cognate that would
+expose the target-language answer in the native cue, use a compact natural native paraphrase.
+Completion: the meaning and grammar checks pass for BOTH sentences. Inspect target_sentence and native_sentence
+individually against OUTPUT's tag-count rule. Release only after BOTH actual values pass that rule.
+
+
+Return the OUTPUT object for the actual source.

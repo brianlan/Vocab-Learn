@@ -44,7 +44,9 @@ The tests include file-backed SQLite races, provider contracts, scheduling and w
 
 Evaluate Generator prompt changes with the [unedited-output regression workflow](docs/research/generator-prompt-evaluation.md). Content edited after generation does not establish that a prompt improved; compare frozen inputs, retain failed outputs and review meaning as well as format before promotion.
 
-The [full-corpus review and 31-case benchmark](docs/research/generator-corpus-benchmark.md) records the latest comparison. The [explanation sense review](docs/research/explanation-sense-review.md) separates common-meaning selection and source correctness from generation quality.
+The [full-corpus review and 31-case benchmark](docs/research/generator-corpus-benchmark.md) records that comparison. The [explanation sense review](docs/research/explanation-sense-review.md) separates common-meaning selection and source correctness from generation quality.
+
+The [scope-workflow experiment](docs/research/generator-scope-workflow-evaluation.md) applies writing-for-agents to five selected words and records the scope gains, language regressions and unpromoted prompt candidate.
 
 ## Reference
 
