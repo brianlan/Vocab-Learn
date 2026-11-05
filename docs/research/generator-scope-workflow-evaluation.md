@@ -9,6 +9,8 @@ Decision, 2026-11-05: the candidate improves the selected scope/compactness outc
 language quality and broader regression acceptance did not preserve the baseline. It remains a reviewable experiment;
 production retains v5 and saved examples remain as they were.
 
+The later [explicit-max V5/D repeat](#explicit-max-repeat-2026-11-05) reports another 150 primary requests with the prompts frozen.
+
 ## What changed
 
 V5 mixes scene creation, translation, slot realization, scope and format rules across a long body. The candidate uses an
@@ -140,3 +142,104 @@ The existing `scripts/probe_generation.py` collector is used without changing pr
 These are unseeded, selected samples reviewed by one unblinded agent. Several writing techniques changed together, so
 the comparison cannot attribute an effect to one skill principle. Prompt word counts use whitespace splitting, not model
 token billing. External factual checks of specialist scenes and spoken-answer/browser tests are outside this experiment.
+
+## Explicit-max repeat, 2026-11-05
+
+The user requested another run with `reasoning_effort: "max"` explicitly present, then clarified that only V5 and the
+frozen D candidate should be compared. The primary repeat contains **150 requests**, 75 per prompt: five repetitions of
+each focal word in replacement mode, five in initial mode, and one request for each of the 25 public regression cases.
+Already collected A records and interrupted B progress remain separate and are excluded at the user's request. C was not
+collected. No V5/D output was discarded or retried, and no new draft was introduced.
+
+All six primary batches reuse the exact historical prompts, source objects, previous pairs, task profiles and budgets.
+Two calls run concurrently; the timeout remains 120 seconds and `max_completion_tokens` remains 8,192. The only outgoing
+JSON addition is `reasoning_effort: "max"`. Per-request hashes verify the unchanged body after removing that addition.
+All 150 final model outputs remain unedited, including the three malformed focus outputs. Review uses the original
+scope/compactness, sense, alignment, fluency and context criteria; ordinary native grammar, lexicalization and mild
+stylistic differences remain allowed. All declared V5/D batches were completed regardless of interim scores.
+
+### Combined results, 75 requests per prompt
+
+| Outcome | Previous V5, omitted | Previous D, omitted | V5, explicit max | D, explicit max |
+| --- | ---: | ---: | ---: | ---: |
+| Valid structure | 74/75 | 74/75 | 73/75 | 74/75 |
+| Scope/compactness passes | 65/75 | 72/75 | 67/75 | 70/75 |
+| Raw text language-content passes | 73/75 | 68/75 | 72/75 | 68/75 |
+| End-to-end accepted | 64/75 | 65/75 | 65/75 | 66/75 |
+
+The D candidate again has a higher scope count and one additional end-to-end accepted output, while its raw language
+count is four below V5. This is not a clean improvement across the predefined outcomes. Both prompts gained one accepted
+output against their respective historical samples; those changes cannot be attributed to explicitly specifying max.
+
+### Focal words, ten requests per word and prompt
+
+| Word | V5 scope | D scope | V5 end-to-end | D end-to-end |
+| --- | ---: | ---: | ---: | ---: |
+| deterioration | 10/10 | 10/10 | 10/10 | 10/10 |
+| germy | 9/10 | 10/10 | 9/10 | 9/10 |
+| hybrid | 8/10 | 7/10 | 8/10 | 6/10 |
+| match | 9/10 | 9/10 | 8/10 | 9/10 |
+| swift | 8/10 | 10/10 | 8/10 | 10/10 |
+| Total | 44/50 | 46/50 | 43/50 | 44/50 |
+
+D does not meet the frozen scope stability target of at least 47/50 overall and 9/10 for every word. Its focal raw
+language count is 46/50 against V5's 48/50. Replacement and initial generation differ materially: D scored 21/25 on scope
+and 20/25 end-to-end for replacement, versus 25/25 and 24/25 for initial generation. Repeating the same five sources is
+not evidence of reliable correction for every future card.
+
+In the broader 25-case regression, V5 and D both passed structure in 25/25 and end-to-end in 22/25. Scope counts were
+23/25 and 24/25; raw language counts were 24/25 and 22/25 respectively. D's broader language count therefore did not
+recover the baseline.
+
+### Failures and review boundaries
+
+Examples are quoted from the unedited outputs; bold represents the original focus tags.
+
+- V5 initial `germy`, repeat 4: the native focus is **沾满了会让人生病的细菌**. The defining sickness clause is included in
+  the focus instead of a compact conventional equivalent. V5 also reproduced action frames inside `swift` focuses.
+- D replacement `hybrid`, repeat 1: “The **hybrid** strawberry tastes sweet but resists disease better than the local
+  variety.” The authored noun is used as a modifier instead of the required noun head, while **杂交草莓** also includes
+  the scene's strawberry category. Two other replacement outputs likewise use hybrid as a modifier.
+- D initial `germy`, repeat 4: “The dish towel was **germy**, so I put it in the wash.” becomes a native sentence with
+  **脏兮兮的**. Its boundary is compact, but general dirtiness does not preserve the germ-contamination meaning. Scope and
+  language scores are separate, just as in the earlier accidental/sudden example.
+- D regression `struggle`: “My sister **struggled** to lift the heavy box onto the table.” becomes
+  “我姐姐**努力**把那个沉重的箱子抬到了桌子上。” The focus loses the difficulty component and the native assertion adds
+  successful completion. V5 also repeats the narrower effort-only focus problem, without that explicit completion.
+- Both prompts translate broad `existential` questions as **存在主义的** questions, narrowing the meaning to a philosophical
+  school. D also adds a preference, 喜欢, to an English literature sentence that only asserts reading.
+
+Borderline items are retained with explicit notes rather than failed against a preferred-word whitelist. They include
+the native nominal-type predicate in the conventional hybrid-bicycle sense, the contextual works-collection reading of
+文学, short native grammatical particles, mild furniture-location ambiguity and the colloquial prank frame already
+accepted in the original trial. The sporting 克星 wording is less direct than 战胜者; the
+[Ministry of Education definition](https://dict.concised.moe.edu.tw/dictView.jsp?ID=18040&la=0&powerMode=0)
+describes someone able to overcome the other party, without requiring repeated victories. This review consequently
+accepts that single-match metaphor with a caveat; the dictionary does not establish an exclusive English translation.
+These are disclosed qualitative judgments, not a claim that every accepted wording is ideal.
+
+### Thinking evidence and interpretation
+
+All **150/150** outgoing requests recorded `reasoning_effort: "max"`. **149/150** responses supplied both nonempty
+`reasoning_content` and a positive `usage.completion_tokens_details.reasoning_tokens` count. One V5 replacement hybrid
+response supplied neither field and also omitted both focus markers. This is missing observable thinking evidence,
+not proof of the provider's internal execution mode. The thinking text itself is not retained; its length, hash and
+reported token usage are recorded alongside the original final content.
+
+Among responses reporting thinking usage, the median was 936 reasoning tokens for V5 and 611 for D; median request
+durations across all requests were 14.90 and 11.64 seconds. Other missing-marker outputs still reported positive thinking
+usage, including 289 and 363 tokens. Visible thinking does not guarantee valid markers or faithful language content.
+
+[MiniMax's API documentation](https://platform.minimax.cn/docs/api-reference/text-openai-api) states that omitting
+reasoning_effort defaults to max. The previous 150 relevant outputs are a historical unseeded sample, not a concurrent
+randomized omitted-versus-max control; they did not retain thinking-token counts. Timing, sampling and provider effects
+therefore cannot be separated from an explicit-parameter effect by this repeat.
+
+Decision: retain V5 in production. D remains a candidate for improving scope, but the repeated word-class/sense failures
+and missed stability/content gates do not justify promotion under the unchanged criteria. No production setting,
+prompt, authored explanation, saved example or learning progress was modified.
+
+The exact six run definitions, all 150 final outputs, request evidence, per-output reviews, CSV and comparison are private
+under `var/exports/scope-workflow-explicit-max-20261105/`. Thirteen provider/probe tests passed in the specified Python
+environment, and identity checks cover every primary request and verdict. This remains a selected, single-reviewer,
+unblinded language evaluation. Invented specialist facts, learner outcomes and speech/browser behavior were not tested.
