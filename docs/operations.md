@@ -103,6 +103,11 @@ The trusted administrator can use `/admin/` for Django user administration. Deck
 
 `ASR_*`, `JUDGE_*` and `GENERATOR_*` settings are independent. Both LLM defaults are `MiniMax-M3.1-Flash`; ASR defaults to native MiniMax `asr-1.0`. The full settings/defaults are in the specification and `.env.example`.
 
+The current Generator prompt is the original scope-workflow D, tracked as `lexical-pair-v6-d`. It is distinct from the
+earlier unpromoted experimental `lexical-pair-v6` and from D2. Judge remains `lexical-meaning-v3`; requests continue to omit
+`reasoning_effort`. New preparation and ordinary future rotations use D. Deploying the prompt does not refresh saved pairs,
+invalidate held questions or reset learning progress; the explicit refresh command below remains a separate operation.
+
 For another compatible provider, explicitly configure that task's full endpoint URL, model and API key. Select `ASR_PROTOCOL=openai` for the multipart transcription adapter, including its own `ASR_API_KEY`; the native MiniMax language header and transcription language form field are different contracts. The default MiniMax credential is never sent to another origin. Other protocols need an adapter, not a model-name-only change.
 
 Worker profiles are validated at startup, and production WSGI startup checks all three profiles without making paid requests. After changing Compose settings, recreate web/worker so their process environments reflect the changes:

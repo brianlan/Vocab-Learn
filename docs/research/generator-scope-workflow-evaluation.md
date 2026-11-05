@@ -3,11 +3,35 @@
 This experiment applies the user-provided writing-for-agents skill to the Generator prompt: information hierarchy,
 co-location, positive instructions, local completion criteria, pruning, and a shared leading term, Scope. It tests the
 five words selected by the user: swift, match, deterioration, germy, and hybrid. The [candidate text](generator-scope-workflow-candidate.txt)
-is an experimental prompt, not the deployed Generator. Production retains lexical-pair-v5.
+is the exact original D prompt.
 
-Decision, 2026-11-05: the candidate improves the selected scope/compactness outcome, but is **not promoted** because
+## Deployment decision, 2026-11-05
+
+After reviewing D2, the user explicitly selected the original D to replace V5. The Generator now uses
+`lexical-pair-v6-d`, with SHA-256 `f25e5e616a91eda36f6e3641521dd2d3d2bf69e1569dfc008415b25ac96a2b83`.
+This version is distinct from the earlier unapproved experimental `lexical-pair-v6`; it does not contain D2's changes.
+Judge, model settings, request parameters and validators are unchanged, and reasoning_effort remains omitted.
+Saved examples, held questions, schedules and learning history are retained; no bulk refresh accompanies deployment.
+
+D contains 750 whitespace-separated words versus V5's 1,044, a reduction of 28.16%, not half. Their lengths are 5,663 and
+7,343 Unicode characters. In the recorded matched 75-request explicit-max comparison, the full input-token totals were
+101,275 for D and 119,740 for V5, a reduction of 15.42% including identical card/previous-pair inputs. These recorded
+counts do not establish a fixed future token, cost or latency reduction.
+
+The deployment is the user's operational choice with the documented language-content tradeoff. It does not change the
+earlier benchmark findings or imply that D met the original promotion gates. The evaluation decisions below describe
+the earlier research stages, before this deployment choice; D2 remains unpromoted.
+
+Deployment verification: 19 provider/probe and generation/history-preservation checks passed in an isolated test database.
+The rebuilt web and worker both expose the exact D hash/version. One real worker-side Generator call returned a valid
+bilingual pair with reasoning_effort omitted; it did not save a card or pair. HTTPS health checks passed on both private
+listeners. Full-row fingerprints of Card, ExamplePair, Presentation, Attempt, ScoredReview and GenerationJob match across
+the restart. A cold backup and the previous application image were retained before deployment. Private evidence is under
+`var/exports/deploy-scope-d-20261105/`.
+
+Original evaluation decision, 2026-11-05: the candidate improves the selected scope/compactness outcome, but was **not promoted** because
 language quality and broader regression acceptance did not preserve the baseline. It remains a reviewable experiment;
-production retains v5 and saved examples remain as they were.
+production retained v5 and saved examples remained as they were during that experiment.
 
 The later [explicit-max V5/D repeat](#explicit-max-repeat-2026-11-05) reports another 150 primary requests with the prompts frozen.
 The subsequent [D2 diagnosis](#d2-diagnosis-and-unmeasured-proposal) proposes another revision; the later
@@ -237,7 +261,7 @@ reasoning_effort defaults to max. The previous 150 relevant outputs are a histor
 randomized omitted-versus-max control; they did not retain thinking-token counts. Timing, sampling and provider effects
 therefore cannot be separated from an explicit-parameter effect by this repeat.
 
-Decision: retain V5 in production. D remains a candidate for improving scope, but the repeated word-class/sense failures
+Repeat evaluation decision: retain V5 in production. D remained a candidate for improving scope, but the repeated word-class/sense failures
 and missed stability/content gates do not justify promotion under the unchanged criteria. No production setting,
 prompt, authored explanation, saved example or learning progress was modified.
 
@@ -251,7 +275,7 @@ unblinded language evaluation. Invented specialist facts, learner outcomes and s
 The user requested returning to omitted reasoning_effort and analyzing how D could be improved. Production never acquired
 the experimental max override: it existed only in the completed probe processes. A local mock transport in the running
 worker exercised generate, chat and HTTP request assembly and confirmed the four outgoing fields: model, stream,
-max_completion_tokens and messages. Neither reasoning_effort nor thinking was sent. Production remains lexical-pair-v5;
+max_completion_tokens and messages. Neither reasoning_effort nor thinking was sent. Production remained lexical-pair-v5 at that stage;
 this check made no paid generation request or learning-state write.
 
 The [D2 candidate](generator-d2-candidate.txt) was prepared as an unmeasured proposal based on the exact D prompt. Its

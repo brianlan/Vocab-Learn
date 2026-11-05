@@ -46,7 +46,7 @@ Evaluate Generator prompt changes with the [unedited-output regression workflow]
 
 The [full-corpus review and 31-case benchmark](docs/research/generator-corpus-benchmark.md) records that comparison. The [explanation sense review](docs/research/explanation-sense-review.md) separates common-meaning selection and source correctness from generation quality.
 
-The [scope-workflow experiment](docs/research/generator-scope-workflow-evaluation.md) applies writing-for-agents to five selected words and records the scope gains, language regressions and unpromoted prompt candidate.
+The [scope-workflow experiment](docs/research/generator-scope-workflow-evaluation.md) records scope gains and language tradeoffs. The original D prompt is deployed at the user's request as `lexical-pair-v6-d`; D2 remains experimental and unpromoted. Existing examples and learning progress are retained.
 
 ## Reference
 

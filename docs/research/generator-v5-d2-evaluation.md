@@ -1,7 +1,9 @@
 # V5 versus D2 generation experiment
 
 Decision, 2026-11-05: **D2 is not promoted.** It improved observed output-format compliance but did not outperform the
-fresh V5 control on scope, language content or end-to-end acceptance. Production remains lexical-pair-v5.
+fresh V5 control on scope, language content or end-to-end acceptance. Production remained lexical-pair-v5 throughout this experiment.
+The user subsequently selected the original D for deployment, as recorded in the
+[deployment decision](generator-scope-workflow-evaluation.md#deployment-decision-2026-11-05); D2 remains unpromoted.
 
 The user requested testing the [D2 candidate](generator-d2-candidate.txt) against V5, superseding the D/D2 comparison
 suggested in the [proposal analysis](generator-scope-workflow-evaluation.md#d2-diagnosis-and-unmeasured-proposal).
