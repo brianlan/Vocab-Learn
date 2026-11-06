@@ -2,6 +2,29 @@
 
 The [development specification](specs/v1.md) owns product rules. This guide describes the delivered application, account administration, model settings and cold-backup procedure. See the [acceptance record](implementation/v1-acceptance.md) for executed checks and remaining device-specific verification.
 
+## Development and production
+
+Since 2026-11-06, production runs on `rlan@192.168.71.97` in `/home/rlan/projects/Vocab-Learn`.
+Its private HTTPS listeners are `192.168.71.97:443` and `10.133.109.169:443`, both serving `vocab.home.arpa`.
+Clients should resolve that hostname to the address they can reach. The migrated Caddy CA is unchanged;
+clients that already trusted it do not need a replacement certificate. Update hosts entries that still point to the old server.
+
+This machine is development. Its private `.env` selects `COMPOSE_FILE=compose.yaml:compose.development.yaml`.
+The development override uses project `vocab-learn-dev`, image `vocab-learn:dev`, independent named volumes,
+and loopback HTTP at `http://127.0.0.1:8766`. Caddy is inactive in the default development profile.
+The same account passwords work in the copied development data; sessions are separate.
+
+```sh
+docker compose build web
+docker compose up -d
+docker compose ps
+```
+
+Make and verify application/schema changes in development. A production release is a separate, explicitly requested operation:
+back up production, deploy the reviewed commit/image, and migrate the live production database. Development data is never
+copied back over live production data. The retired local `vocab-learn` containers and volumes are retained stopped for rollback,
+with automatic restart disabled. [Migration evidence](implementation/production-move-20261106.md) records the initial move.
+
 ## Local development
 
 Use Python 3.11 and FFmpeg/FFprobe on PATH. The requested environment is `/home/rlan/anaconda3/envs/mykik_py311`.
