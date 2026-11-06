@@ -8,6 +8,8 @@ from django.views.decorators.csrf import csrf_exempt
 from . import api_keys, authoring, work
 from .models import Card, Deck
 
+REQUEST_LIMIT = 64 * 1024
+
 
 def authorized(method):
     def decorate(view):
@@ -47,10 +49,18 @@ def create_vocabulary(request, owner, deck_id):
     if request.content_type != "application/json":
         return JsonResponse({"error": "Use application/json."}, status=415)
     try:
-        body = request.body
+        length = int(request.META.get("CONTENT_LENGTH") or 0)
+        if length < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Supply a valid Content-Length."}, status=400)
+    try:
+        if length > REQUEST_LIMIT:
+            raise RequestDataTooBig
+        body = request.read(REQUEST_LIMIT + 1)
+        if len(body) > REQUEST_LIMIT:
+            raise RequestDataTooBig
     except RequestDataTooBig:
-        return JsonResponse({"error": "A Vocabulary request is limited to 64 KB."}, status=413)
-    if len(body) > 64 * 1024:
         return JsonResponse({"error": "A Vocabulary request is limited to 64 KB."}, status=413)
     try:
         data = json.loads(body.decode("utf-8"))

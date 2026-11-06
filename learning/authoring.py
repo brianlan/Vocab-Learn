@@ -94,10 +94,17 @@ def invalidate_cards(cards):
 
 
 @transaction.atomic
-def save_card(deck, kind, fields, card=None):
+def save_card(deck, kind, fields, card=None, *, expected_identity=None):
     deck = Deck.objects.get(pk=deck.pk)
     if deck.archived:
         raise ValidationError("Restore this deck before changing its sources.")
+    if card is not None:
+        expected_identity = card.identity if expected_identity is None else expected_identity
+        card = Card.objects.get(pk=card.pk)
+        if card.archived:
+            raise ValidationError("Restore this card before changing its source.")
+        if card.identity != expected_identity:
+            raise ValidationError("This source changed after you opened the form. Reload the page before saving.", code="stale_source")
     data = validate_source(kind, fields)
     key = identity(kind, data)
     existing = duplicate(deck, kind, data)
@@ -107,9 +114,6 @@ def save_card(deck, kind, fields, card=None):
         raise ValidationError("This source already exists in this deck, including archived cards.")
     if card is None:
         return create_prepared(deck, kind, data)
-    card = Card.objects.get(pk=card.pk)
-    if card.archived:
-        raise ValidationError("Restore this card before changing its source.")
     reset = key != card.identity
     if reset:
         invalidate_cards(Card.objects.filter(pk=card.pk))

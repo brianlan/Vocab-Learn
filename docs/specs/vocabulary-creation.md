@@ -48,6 +48,17 @@ The detail page distinguishes vocabulary completion, example preparation and Rea
 and exposes the existing explicit retry action. New review snapshots freeze that label with the explanation;
 old snapshots retain their original content.
 
+Edit forms carry the source identity displayed when the page was loaded. Saving compares that identity with the current
+card inside the authoring transaction; stale forms must reload and cannot overwrite completed preparation or reset newer
+learning progress. A source-version check alone does not detect initial completion, which intentionally keeps that version.
+A freshly loaded form still permits deliberate source edits and clearing an explanation, with the existing reset behavior.
+Trusted Python callers receive the same check against their supplied Card instance's identity by default.
+
+The compatibility formatter keeps pronunciation in its own paragraph, separated from the unchanged definition by a blank
+line, so Markdown headings, lists, quotes and code blocks retain their structure. Pronunciation labels escape delimiters,
+backslashes and line breaks on write; the parser also accepts existing balanced nested labels. Structured model labels
+remain unchanged in provenance.
+
 ## API keys and HTTP routes
 
 Deployer commands create, list and revoke keys bound to one active learner. Store only a SHA-256 digest of the random
@@ -64,6 +75,9 @@ fields and preparation state. The source persists immediately; the request does 
 `GET /api/v1/vocabulary-cards/{card_id}/` returns the caller's card and its preparation result, including safe error/retry
 information. Other users' or unavailable decks/cards return 404. Invalid credentials return 401; invalid source/JSON returns
 400, wrong content type 415, oversized requests 413, and unsupported methods 405. A single request is limited to 64 KB.
+Oversized declared Content-Length is rejected before reading the stream. Otherwise the handler reads at most 65,537 bytes
+and rejects bodies above 65,536 bytes, including requests without a reliable declared length. Invalid or negative declared
+lengths return 400. This per-route bound leaves the application's existing upload limits unchanged.
 
 This interface covers creation and queries. Retries/source corrections remain available in the existing private web pages.
 The current network exposure remains private; API callers must resolve the hostname and trust its private CA.

@@ -107,7 +107,7 @@ def card_edit(request, deck_id, card_id=None):
     if kind not in authoring.SCHEMAS:
         return JsonResponse({"error": "Unknown card type."}, status=400)
     initial = {k: getattr(card, k) for k in authoring.SCHEMAS[kind]} if card else {}
-    form = CardForm(request.POST or None, initial=initial, kind=kind)
+    form = CardForm(request.POST or None, initial=initial, kind=kind, source_identity=card.identity if card else None)
     if request.method == "POST" and form.is_valid():
         try:
             if deck.archived or (card and card.archived):
@@ -115,7 +115,8 @@ def card_edit(request, deck_id, card_id=None):
             if card is None and kind == "vocabulary":
                 saved, created = authoring.create_card(deck, kind, form.cleaned_data)
             else:
-                saved, created = authoring.save_card(deck, kind, form.cleaned_data, card), True
+                saved, created = authoring.save_card(deck, kind, form.cleaned_data, card,
+                    expected_identity=form.cleaned_data.get("source_identity")), True
             messages.success(request, "This card already exists in this deck. Its content and progress were kept." if not created else
                              "Card saved." if saved.ready else "Source saved. Vocabulary details and examples are preparing; you can leave this page.")
             return redirect("card", saved.pk)

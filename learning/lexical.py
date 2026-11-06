@@ -2,15 +2,51 @@
 import re
 
 
+def _read_label(text, start):
+    depth, cursor, result = 1, start + 1, []
+    escapes = {"\\": "\\", "(": "(", ")": ")", "n": "\n", "r": "\r"}
+    while cursor < len(text):
+        character = text[cursor]
+        if character == "\\" and cursor + 1 < len(text) and text[cursor + 1] in escapes:
+            result.append(escapes[text[cursor + 1]])
+            cursor += 2
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(result), cursor + 1
+        result.append(character)
+        cursor += 1
+    return None
+
+
+def _pronunciation_text(pronunciations):
+    readings = []
+    for pronunciation in pronunciations:
+        label = "; ".join(filter(None, [pronunciation["variety"], pronunciation["label"]]))
+        label = label.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").replace("\n", "\\n").replace("\r", "\\r")
+        readings.append(pronunciation["ipa"] + (" (" + label + ")" if label else ""))
+    return ", ".join(readings)
+
+
 def parts(explanation):
     definition = explanation
     pronunciations = []
-    reading = re.compile(r"/([^/\n]+)/\s*(\([^()\n]*\))?")
+    reading = re.compile(r"/([^/\n]+)/")
     cursor = 0
     text = explanation.lstrip()
     while match := reading.match(text, cursor):
-        pronunciations.append({"ipa": "/" + match[1] + "/", "label": (match[2] or "").strip("()"), "variety": ""})
-        cursor = match.end()
+        cursor = match.end() + re.match(r"\s*", text[match.end():]).end()
+        label = ""
+        if text[cursor:cursor + 1] == "(":
+            parsed = _read_label(text, cursor)
+            if parsed is None:
+                pronunciations = []
+                break
+            label, cursor = parsed
+        pronunciations.append({"ipa": "/" + match[1] + "/", "label": label, "variety": ""})
         next_start = re.match(r"[\s,;]*", text[cursor:]).end() + cursor
         if not reading.match(text, next_start):
             break
@@ -43,13 +79,9 @@ def combine(original, additions):
     supplied = parts(original)
     text = original if supplied["explanation"] else additions["explanation"]
     if "pronunciations" in additions:
-        readings = []
-        for pronunciation in additions["pronunciations"]:
-            label = "; ".join(filter(None, [pronunciation["variety"], pronunciation["label"]]))
-            readings.append(pronunciation["ipa"] + (" (" + label + ")" if label else ""))
-        text = ", ".join(readings) + ": " + text
+        text = _pronunciation_text(additions["pronunciations"]) + ":\n\n" + text
     elif not supplied["explanation"] and supplied["pronunciations"]:
-        text = ", ".join(p["ipa"] + (" (" + p["label"] + ")" if p["label"] else "") for p in supplied["pronunciations"]) + ": " + text
+        text = _pronunciation_text(supplied["pronunciations"]) + ":\n\n" + text
     if "synonyms" in additions:
         text += "\n\nSynonyms: " + ("; ".join(additions["synonyms"]) if additions["synonyms"] else "No close synonyms")
     elif not supplied["explanation"] and supplied["synonyms"] is not None:

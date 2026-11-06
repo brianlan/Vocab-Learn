@@ -6,11 +6,12 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command, CommandError
-from django.test import Client, TestCase, override_settings
+from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from learning import api_keys, authoring, lexical, providers, review, work
-from learning.models import AuthoringKey, Card, Deck, GenerationJob
+from learning import api, api_keys, authoring, lexical, providers, review, work
+from learning.models import AuthoringKey, Card, Deck, GenerationJob, ScoredReview
+from learning.rendering import render
 
 
 SOURCE = {"word": "absorb", "target_language": "English", "native_language": "Chinese", "explanation": ""}
@@ -21,6 +22,43 @@ PAIR = {"target_sentence": "The sponge <focus>absorbed</focus> the water.",
 
 
 class CompletionContractTests(UnitTestCase):
+    def test_pronunciation_labels_round_trip_through_completion(self):
+        p = providers.Profile("DEFINITION", "https://example.test/chat", "definition-model", "test-only", 10)
+        for label in ["verb (transitive)", "adjective (informal)", "verb (formal (rare))",
+                      "verb (unclosed", "noun) or verb (", "noun\\usage", "verb\n(transitive)"]:
+            result = {**DETAILS, "pronunciations": [{"ipa": "/əbˈzɔrb/", "variety": "US", "label": label}]}
+            with self.subTest(label=label), patch("learning.providers.chat", return_value=result):
+                text, metadata = providers.define(SOURCE, p)
+                self.assertEqual(lexical.missing(text), [])
+                self.assertEqual(lexical.parts(text)["pronunciations"][0]["label"], "US; " + label)
+                self.assertEqual(metadata["fields"]["pronunciations"][0]["label"], label)
+
+    def test_existing_balanced_nested_labels_are_already_complete(self):
+        text = "/x/ (noun (countable)), /y/ (verb (formal (rare))): A definition. [synonyms: ]"
+        with patch("learning.providers.chat") as chat:
+            completed, _ = providers.define({**SOURCE, "explanation": text})
+        self.assertEqual(completed, text)
+        self.assertEqual([p["label"] for p in lexical.parts(text)["pronunciations"]],
+                         ["noun (countable)", "verb (formal (rare))"])
+        chat.assert_not_called()
+
+    def test_completion_preserves_markdown_blocks_for_supplied_and_generated_definitions(self):
+        p = providers.Profile("DEFINITION", "https://example.test/chat", "definition-model", "test-only", 10)
+        blocks = [("## Intended meaning\n\nTake in liquid.", "<h2>"),
+                  ("- First point\n- Second point", "<li>"),
+                  ("> Take in liquid.", "<blockquote>"),
+                  ('    meaning = "take in"', "<pre>"),
+                  ('```text\nTake in liquid.\n```', "<pre>")]
+        for original, tag in blocks:
+            for supplied in [True, False]:
+                source_text = original if supplied else "/x/ (verb): [synonyms: ]"
+                result = {k: DETAILS[k] for k in ["pronunciations", "synonyms"]} if supplied else {"explanation": original}
+                with self.subTest(block=tag, supplied=supplied), patch("learning.providers.chat", return_value=result):
+                    text, _ = providers.define({**SOURCE, "explanation": source_text}, p)
+                    self.assertIn(original, text)
+                    self.assertEqual(render(text).html.count(tag), render(original).html.count(tag))
+                    self.assertEqual(lexical.missing(text), [])
+
     def test_supplied_meaning_is_kept_and_only_missing_details_are_requested(self):
         original = "**Verb**\n\nTake in liquid, including water."
         p = providers.Profile("DEFINITION", "https://example.test/chat", "definition-model", "test-only", 10)
@@ -96,6 +134,131 @@ class VocabularyCreationTests(TestCase):
         self.assertTrue(created)
         _, job_id, claim, _ = work.claim_work()
         return card, GenerationJob.objects.get(pk=job_id), claim
+
+    def complete(self, card, job, claim):
+        def reply(profile, system, payload):
+            return {name: DETAILS[name] for name in payload["requested_fields"]} if profile.task == "DEFINITION" else PAIR
+        with patch("learning.providers.chat", side_effect=reply):
+            work.process_generation(job.pk, claim)
+        card.refresh_from_db()
+        self.assertTrue(card.ready)
+
+    def edit_payload(self, client, card):
+        response = client.get(reverse("card_edit", args=[card.deck_id, card.pk]))
+        self.assertEqual(response.status_code, 200)
+        form = response.context["form"]
+        fields = {name: form[name].value() for name in authoring.SCHEMAS[card.kind]}
+        fields["source_identity"] = form["source_identity"].value() if "source_identity" in form.fields else card.identity
+        return fields
+
+    def stale_edit_case(self, explanation):
+        source = {**SOURCE, "explanation": explanation}
+        card, job, claim = self.claimed(source)
+        browser = Client(); browser.force_login(self.owner)
+        payload = self.edit_payload(browser, card)
+        self.complete(card, job, claim)
+        presentation = review.next_question(self.owner, self.deck)
+        review.submit(presentation, "forgot")
+        before = Card.objects.values().get(pk=card.pk)
+        self.assertEqual(before["collection"], "Forgot")
+        self.assertEqual(before["review_count"], 1)
+        history = list(ScoredReview.objects.filter(card=card).values())
+        jobs = list(card.generation_jobs.order_by("pk").values())
+        response = browser.post(reverse("card_edit", args=[self.deck.pk, card.pk]), payload)
+        self.assertEqual(Card.objects.values().get(pk=card.pk), before)
+        self.assertEqual(list(ScoredReview.objects.filter(card=card).values()), history)
+        self.assertEqual(list(card.generation_jobs.order_by("pk").values()), jobs)
+        self.assertContains(response, "Reload the page")
+
+    def test_stale_blank_edit_preserves_completed_content_and_forgot_review(self):
+        self.stale_edit_case("")
+
+    def test_stale_supplied_edit_preserves_completed_content_and_forgot_review(self):
+        self.stale_edit_case("Take in liquid.")
+
+    def test_authoring_rejects_stale_model_instances_after_completion(self):
+        card, job, claim = self.claimed()
+        stale = Card.objects.get(pk=card.pk)
+        self.complete(card, job, claim)
+        before = Card.objects.values().get(pk=card.pk)
+        with self.assertRaisesMessage(ValidationError, "Reload the page"):
+            authoring.save_card(self.deck, "vocabulary", SOURCE, stale)
+        self.assertEqual(Card.objects.values().get(pk=card.pk), before)
+
+    def test_fresh_edit_can_deliberately_clear_a_completed_explanation(self):
+        card, job, claim = self.claimed()
+        self.complete(card, job, claim)
+        browser = Client(); browser.force_login(self.owner)
+        payload = self.edit_payload(browser, card)
+        self.assertEqual(payload["source_identity"], card.identity)
+        payload["explanation"] = ""
+        response = browser.post(reverse("card_edit", args=[self.deck.pk, card.pk]), payload)
+        self.assertEqual(response.status_code, 302)
+        card.refresh_from_db()
+        self.assertEqual(card.explanation, "")
+        self.assertEqual(card.source_version, 2)
+        self.assertFalse(card.ready)
+        self.assertEqual(card.generation_jobs.filter(state="queued", source_version=2).count(), 1)
+
+    def test_edit_post_without_loaded_identity_is_rejected(self):
+        card, job, claim = self.claimed()
+        self.complete(card, job, claim)
+        browser = Client(); browser.force_login(self.owner)
+        before = Card.objects.values().get(pk=card.pk)
+        response = browser.post(reverse("card_edit", args=[self.deck.pk, card.pk]), SOURCE)
+        self.assertEqual(Card.objects.values().get(pk=card.pk), before)
+        self.assertContains(response, "Reload the page")
+
+    def streamed_request(self, body, length):
+        class CountedStream(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.read_sizes = []
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return super().read(size)
+        request = RequestFactory().post(self.url, data=body, content_type="application/json", **self.headers)
+        request._stream = CountedStream(body)
+        if length is None:
+            request.META.pop("CONTENT_LENGTH", None)
+        else:
+            request.META["CONTENT_LENGTH"] = length
+        return request
+
+    def test_api_rejects_declared_oversize_without_reading_stream(self):
+        request = self.streamed_request(b"x" * 1048576, "1048576")
+        response = api.create_vocabulary(request, deck_id=self.deck.pk)
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(request._stream.read_sizes, [])
+        self.assertFalse(Card.objects.exists())
+
+    def test_api_read_is_bounded_without_a_reliable_declared_length(self):
+        for length in [None, "", "1"]:
+            with self.subTest(length=length):
+                request = self.streamed_request(b"x" * 1048576, length)
+                response = api.create_vocabulary(request, deck_id=self.deck.pk)
+                self.assertEqual(response.status_code, 413)
+                self.assertEqual(request._stream.tell(), 65537)
+                self.assertFalse(hasattr(request, "_body"))
+        self.assertFalse(Card.objects.exists())
+
+    def test_api_accepts_exact_limit_and_rejects_one_extra_byte(self):
+        source = {**SOURCE, "word": "limit-boundary"}
+        source["explanation"] = "a" * (65536 - len(json.dumps(source).encode()))
+        body = json.dumps(source).encode()
+        self.assertEqual(len(body), 65536)
+        request = self.streamed_request(body, str(len(body)))
+        self.assertEqual(api.create_vocabulary(request, deck_id=self.deck.pk).status_code, 201)
+        request = self.streamed_request(body + b" ", "65537")
+        self.assertEqual(api.create_vocabulary(request, deck_id=self.deck.pk).status_code, 413)
+        self.assertEqual(Card.objects.count(), 1)
+
+    def test_api_rejects_invalid_declared_length_without_reading(self):
+        for length in ["invalid", "-1"]:
+            with self.subTest(length=length):
+                request = self.streamed_request(b"{}", length)
+                self.assertEqual(api.create_vocabulary(request, deck_id=self.deck.pk).status_code, 400)
+                self.assertEqual(request._stream.read_sizes, [])
 
     def test_create_is_async_and_blank_duplicates_are_scoped_to_deck_and_languages(self):
         with patch("learning.providers.define") as define, patch("learning.providers.generate") as generate:

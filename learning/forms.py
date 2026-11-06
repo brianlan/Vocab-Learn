@@ -17,7 +17,7 @@ class CardForm(forms.Form):
     target_language = forms.ChoiceField(required=False, choices=[("English", "English"), ("Spanish", "Spanish")])
     native_language = forms.ChoiceField(required=False, choices=[("Chinese", "Chinese"), ("Spanish", "Spanish")])
 
-    def __init__(self, *args, kind="generic", **kwargs):
+    def __init__(self, *args, kind="generic", source_identity=None, **kwargs):
         self.kind = kind
         super().__init__(*args, **kwargs)
         for name in (["word", "target_language", "native_language"] if kind == "generic" else ["question", "answer"]):
@@ -25,9 +25,18 @@ class CardForm(forms.Form):
         if kind == "vocabulary":
             self.fields["explanation"].required = False
             self.fields["explanation"].help_text = "Optional. Leave blank for an AI-generated learner definition. Missing pronunciation and synonyms are also prepared automatically."
+        if source_identity is not None:
+            self.fields["source_identity"] = forms.CharField(widget=forms.HiddenInput, initial=source_identity,
+                                                            required=False, max_length=64)
 
     def clean(self):
-        return validate_source(self.kind, super().clean())
+        cleaned = super().clean()
+        source = validate_source(self.kind, cleaned)
+        if "source_identity" in self.fields:
+            if not cleaned.get("source_identity"):
+                raise forms.ValidationError("This edit form is out of date. Reload the page before saving.")
+            source["source_identity"] = cleaned["source_identity"]
+        return source
 
 
 class ImportForm(forms.Form):
