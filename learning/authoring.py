@@ -4,6 +4,7 @@ import io
 import json
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from .models import Deck, Card, GenerationJob, Presentation, Attempt
 from .rendering import render
@@ -17,8 +18,16 @@ def validate_source(kind, fields):
     if kind not in SCHEMAS:
         raise ValidationError("Choose Generic or Vocabulary.")
     data = {k: fields.get(k, "") for k in SCHEMAS[kind]}
-    if any(not isinstance(v, str) or not v.strip() for v in data.values()):
-        raise ValidationError("Every source field is required.")
+    if kind == "vocabulary" and data["explanation"] is None:
+        data["explanation"] = ""
+    if any(not isinstance(v, str) or (not v.strip() and not (kind == "vocabulary" and key == "explanation"))
+           for key, v in data.items()):
+        raise ValidationError("Required source fields must contain text.")
+    try:
+        for value in data.values():
+            value.encode("utf-8")
+    except UnicodeError:
+        raise ValidationError("Source fields must contain valid Unicode text.") from None
     if kind == "vocabulary" and (data["target_language"], data["native_language"]) not in LANGUAGE_PAIRS:
         raise ValidationError("Choose different supported target and native languages.")
     return data
@@ -32,7 +41,48 @@ def identity(kind, data):
 
 def new_generation(card, mode="initial"):
     return GenerationJob.objects.create(card=card, source_version=card.source_version, mode=mode,
+        provenance=({"enrich_source": True, "input_identity": card.identity, "input_explanation": card.explanation}
+                    if mode == "initial" else {}),
         **({"token": card.rotation_token} if mode == "rotation" else {}))
+
+
+def initial_inputs(deck):
+    return GenerationJob.objects.filter(card__deck=deck, mode="initial", source_version=F("card__source_version"))
+
+
+def definition_generated(card):
+    return card.generation_jobs.filter(source_version=card.source_version, mode="initial",
+                                       provenance__definition_generated=True).exists()
+
+
+def duplicate(deck, kind, data):
+    cards = Card.objects.filter(deck=deck, kind=kind)
+    if kind == "vocabulary" and not data["explanation"].strip():
+        return cards.filter(word=data["word"], target_language=data["target_language"],
+                            native_language=data["native_language"]).order_by("pk").first()
+    key = identity(kind, data)
+    existing = cards.filter(identity=key).first()
+    if not existing and kind == "vocabulary":
+        job = initial_inputs(deck).filter(provenance__input_identity=key).select_related("card").first()
+        existing = job.card if job else None
+    return existing
+
+
+def create_prepared(deck, kind, data):
+    card = Card.objects.create(deck=deck, kind=kind, identity=identity(kind, data), ready=kind == "generic", **data)
+    if not card.ready:
+        new_generation(card)
+    return card
+
+
+@transaction.atomic
+def create_card(deck, kind, fields):
+    deck = Deck.objects.get(pk=deck.pk)
+    if deck.archived:
+        raise ValidationError("Restore this deck before changing its sources.")
+    data = validate_source(kind, fields)
+    existing = duplicate(deck, kind, data)
+    return (existing, False) if existing else (create_prepared(deck, kind, data), True)
 
 
 def invalidate_cards(cards):
@@ -50,14 +100,13 @@ def save_card(deck, kind, fields, card=None):
         raise ValidationError("Restore this deck before changing its sources.")
     data = validate_source(kind, fields)
     key = identity(kind, data)
-    existing = Card.objects.filter(deck=deck, identity=key).exclude(pk=card.pk if card else None).first()
+    existing = duplicate(deck, kind, data)
+    if existing and card and existing.pk == card.pk:
+        existing = None
     if existing:
         raise ValidationError("This source already exists in this deck, including archived cards.")
     if card is None:
-        card = Card.objects.create(deck=deck, kind=kind, identity=key, ready=kind == "generic", **data)
-        if not card.ready:
-            new_generation(card)
-        return card
+        return create_prepared(deck, kind, data)
     card = Card.objects.get(pk=card.pk)
     if card.archived:
         raise ValidationError("Restore this card before changing its source.")
@@ -86,8 +135,11 @@ def read_csv(content, kind):
         raise ValidationError("CSV imports are limited to 5 MB; split this file into smaller batches.")
     try:
         reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig"), newline=""), strict=True)
-        if len(reader.fieldnames or []) != len(SCHEMAS[kind]) or set(reader.fieldnames or []) != set(SCHEMAS[kind]):
-            raise ValidationError("Use exactly these unique headers: " + ", ".join(SCHEMAS[kind]) + ".")
+        headers = reader.fieldnames or []
+        required = set(SCHEMAS[kind]) - ({"explanation"} if kind == "vocabulary" else set())
+        if len(headers) != len(set(headers)) or not required <= set(headers) <= set(SCHEMAS[kind]):
+            raise ValidationError("Use unique source headers: " + ", ".join(SCHEMAS[kind]) +
+                                  (". Vocabulary explanation may be omitted." if kind == "vocabulary" else "."))
         rows = []
         for index, row in enumerate(reader, 2):
             if index > 10001:
@@ -112,15 +164,18 @@ def import_csv(deck, kind, content):
         if deck.archived:
             raise ValidationError("Restore this deck before importing.")
         keys = set(Card.objects.filter(deck=deck).values_list("identity", flat=True))
+        if kind == "vocabulary":
+            keys.update(key for key in initial_inputs(deck).values_list("provenance__input_identity", flat=True) if key)
+        expressions = set(Card.objects.filter(deck=deck, kind="vocabulary").values_list("word", "target_language", "native_language"))
         created, skipped = 0, 0
         for data, key in prepared:
-            if key in keys:
+            expression = (data.get("word"), data.get("target_language"), data.get("native_language"))
+            if key in keys or (kind == "vocabulary" and not data["explanation"].strip() and expression in expressions):
                 skipped += 1
                 continue
-            card = Card.objects.create(deck=deck, kind=kind, identity=key, ready=kind == "generic", **data)
-            if not card.ready:
-                new_generation(card)
+            create_prepared(deck, kind, data)
             keys.add(key)
+            expressions.add(expression)
             created += 1
     return created, skipped
 

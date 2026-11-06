@@ -24,8 +24,9 @@ class Command(BaseCommand):
         jobs = list(GenerationJob.objects.filter(pk=Subquery(latest), state="failed", mode="initial",
             card__deck__owner=user, card__deck__archived=False, card__archived=False, card__ready=False,
             source_version=F("card__source_version")).order_by("requested_at", "pk"))
-        self.stdout.write(f"Eligible failed initial tasks: {len(jobs)}; with prior dispatch metadata: {sum(bool(job.provenance) for job in jobs)}.")
+        dispatched = sum(bool(job.provenance.get("model") or job.provenance.get("definition", {}).get("model")) for job in jobs)
+        self.stdout.write(f"Eligible failed initial tasks: {len(jobs)}; with prior dispatch metadata: {dispatched}.")
         if options["dry_run"]:
             return
         requeued = sum(work.retry_generation(job).state == "queued" for job in jobs)
-        self.stdout.write(f"Requeued {requeued} tasks. The worker will prepare their examples as capacity becomes available.")
+        self.stdout.write(f"Requeued {requeued} tasks. The worker will complete vocabulary details and examples as capacity becomes available.")

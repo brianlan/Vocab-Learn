@@ -22,6 +22,9 @@ class CardForm(forms.Form):
         super().__init__(*args, **kwargs)
         for name in (["word", "target_language", "native_language"] if kind == "generic" else ["question", "answer"]):
             self.fields.pop(name)
+        if kind == "vocabulary":
+            self.fields["explanation"].required = False
+            self.fields["explanation"].help_text = "Optional. Leave blank for an AI-generated learner definition. Missing pronunciation and synonyms are also prepared automatically."
 
     def clean(self):
         return validate_source(self.kind, super().clean())

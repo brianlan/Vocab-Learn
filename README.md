@@ -2,7 +2,12 @@
 
 A browser application for continuous practice through flash cards, spoken answers and spaced repetition. V1 supports authored Generic Cards and Vocabulary Cards with AI-generated Recognition/Production examples.
 
-V1 is implemented and available for user acceptance. The application uses Django 5.2, SQLite, FSRS and a bounded background worker, with independent ASR/Judge/Generator profiles and MiniMax defaults.
+V1 is implemented and available for user acceptance. The application uses Django 5.2, SQLite, FSRS and a bounded background worker, with independently configured model tasks and MiniMax defaults.
+
+Production runs on the dedicated host `192.168.71.97`; this checkout is development. The
+[Vocabulary creation increment](docs/specs/vocabulary-creation.md) adds optional explanations, missing-detail completion
+and a user-key-authenticated creation/query interface. It is developed locally before a separately requested production release.
+Splitting existing explanations into new Card fields remains deferred.
 
 ![The Fieldnotes study interface](docs/implementation/previews/review-front.png)
 
@@ -10,7 +15,7 @@ Start with the [running and maintenance guide](docs/operations.md). The [V1 Deve
 
 ## Local start
 
-Use Python 3.11 with FFmpeg/FFprobe on PATH. The requested development environment is `/home/rlan/anaconda3/envs/mykik_py311`. Export `MINIMAX_API_KEY` or the three task-specific credentials in each application/worker environment.
+Use Python 3.11 with FFmpeg/FFprobe on PATH. The requested development environment is `/home/rlan/anaconda3/envs/mykik_py311`. Export `MINIMAX_API_KEY` or the four task-specific credentials in each application/worker environment.
 
 ```sh
 python -m pip install -r requirements.txt

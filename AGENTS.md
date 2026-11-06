@@ -11,6 +11,8 @@ Production owns live learning data; migrate its database in place during an appr
 
 Read [operations](docs/operations.md) when starting environments, changing model settings, backing up or restoring data,
 or preparing a release. Read [the domain glossary](CONTEXT.md) and [the specification](docs/specs/v1.md) before changing learning rules.
+Read [the creation increment](docs/specs/vocabulary-creation.md) for optional explanations, completion and authoring credentials;
+it supersedes V1's required-explanation rule for Vocabulary creation.
 
 Schema and source migrations must preserve existing learning progress, schedules, example revisions and frozen history
 unless the user explicitly requested a semantic source change. Keep private snapshots, credentials and backups in ignored directories.

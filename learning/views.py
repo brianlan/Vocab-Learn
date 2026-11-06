@@ -112,8 +112,12 @@ def card_edit(request, deck_id, card_id=None):
         try:
             if deck.archived or (card and card.archived):
                 raise ValidationError("Restore the deck/card before editing its source.")
-            saved = authoring.save_card(deck, kind, form.cleaned_data, card)
-            messages.success(request, "Card saved." if saved.ready else "Source saved. Examples are preparing; you can leave this page.")
+            if card is None and kind == "vocabulary":
+                saved, created = authoring.create_card(deck, kind, form.cleaned_data)
+            else:
+                saved, created = authoring.save_card(deck, kind, form.cleaned_data, card), True
+            messages.success(request, "This card already exists in this deck. Its content and progress were kept." if not created else
+                             "Card saved." if saved.ready else "Source saved. Vocabulary details and examples are preparing; you can leave this page.")
             return redirect("card", saved.pk)
         except ValidationError as e:
             form.add_error(None, e)
@@ -127,6 +131,7 @@ def card_view(request, card_id):
     work.expire_generations()
     job = card.generation_jobs.filter(source_version=card.source_version).order_by("-requested_at").first()
     return page(request, "learning/card.html", {"card": card, "job": job, "nav": "decks",
+        "definition_generated": card.kind == "vocabulary" and authoring.definition_generated(card),
         "question_html": render(card.question, card.answer, True).html,
         "explanation_html": render(card.explanation).html})
 
@@ -153,7 +158,7 @@ def csv_import(request, deck_id):
             if upload.size > 5*1024*1024:
                 raise ValidationError("CSV imports are limited to 5 MB.")
             created, skipped = authoring.import_csv(deck, form.cleaned_data["kind"], upload.read())
-            messages.success(request, f"{created} sources created; {skipped} duplicates skipped. Vocabulary examples prepare separately.")
+            messages.success(request, f"{created} sources created; {skipped} duplicates skipped. Vocabulary details and examples prepare separately.")
             return redirect("deck", deck.pk)
         except ValidationError as e:
             form.add_error(None, e)

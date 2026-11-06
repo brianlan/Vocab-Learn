@@ -122,9 +122,12 @@ docker compose exec web python manage.py createsuperuser
 
 The trusted administrator can use `/admin/` for Django user administration. Deck/Card admin views are read-only; learner-facing mutations apply source, history and scheduling rules. Password changes use Django's hashing and session invalidation. For noninteractive account creation, `createlearner NAME --password-env VARIABLE_NAME` reads a password from a named process environment variable without putting its value in command arguments.
 
-### Three independent model tasks
+### Four independent model tasks
 
-`ASR_*`, `JUDGE_*` and `GENERATOR_*` settings are independent. Both LLM defaults are `MiniMax-M3.1-Flash`; ASR defaults to native MiniMax `asr-1.0`. The full settings/defaults are in the specification and `.env.example`.
+`ASR_*`, `JUDGE_*`, `GENERATOR_*` and `DEFINITION_*` settings are independent. The three LLM defaults are
+`MiniMax-M3.1-Flash`; ASR defaults to native MiniMax `asr-1.0`. `DEFINITION_*` controls new Vocabulary teaching-detail
+completion, separately from example generation. The full settings/defaults are in `.env.example` and the
+[creation increment](specs/vocabulary-creation.md). These new creation capabilities are development-only until a production release.
 
 The current Generator prompt is the original scope-workflow D, tracked as `lexical-pair-v6-d`. It is distinct from the
 earlier unpromoted experimental `lexical-pair-v6` and from D2. Judge remains `lexical-meaning-v3`; requests continue to omit
@@ -133,7 +136,7 @@ invalidate held questions or reset learning progress; the explicit refresh comma
 
 For another compatible provider, explicitly configure that task's full endpoint URL, model and API key. Select `ASR_PROTOCOL=openai` for the multipart transcription adapter, including its own `ASR_API_KEY`; the native MiniMax language header and transcription language form field are different contracts. The default MiniMax credential is never sent to another origin. Other protocols need an adapter, not a model-name-only change.
 
-Worker profiles are validated at startup, and production WSGI startup checks all three profiles without making paid requests. After changing Compose settings, recreate web/worker so their process environments reflect the changes:
+Worker profiles are validated at startup, and production WSGI startup checks all four profiles without making paid requests. After changing Compose settings, recreate web/worker so their process environments reflect the changes:
 
 ```sh
 docker compose up -d --force-recreate web worker
@@ -143,7 +146,52 @@ Queued/new executions use settings at dispatch; already dispatched calls retain 
 
 ### Import and daily learning
 
-Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Samples and authoring syntax](examples/README.md) describe the exact schemas. Import is limited to 5 MB/10,000 source records and is all-or-nothing on validation failure; duplicates are skipped without overwriting/restoring them. Vocabulary sources become study-ready only after valid paired examples are saved. Refresh their detail page for preparation status; failures expose Retry.
+Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Samples and authoring syntax](examples/README.md) describe the exact schemas. Import is limited to 5 MB/10,000 source records and is all-or-nothing on validation failure; duplicates are skipped without overwriting/restoring them. Vocabulary explanations may be omitted; missing definitions, pronunciation and close synonyms prepare before examples. Sources become study-ready only after valid paired examples are saved. Refresh their detail page for preparation status; failures expose Retry. A completed definition survives an example-stage retry.
+
+### Vocabulary HTTP creation
+
+Create a user-bound application key from the deployer's terminal. Its secret appears once; keep it private.
+These commands run in the local development project until this increment is released to production.
+Password changes do not rotate application keys; revoke keys explicitly when replacing automation access.
+
+```sh
+docker compose exec web python manage.py vocabulary_api_key create torran --name "My script"
+docker compose exec web python manage.py vocabulary_api_key list torran
+docker compose exec web python manage.py vocabulary_api_key revoke torran --id KEY_ID
+```
+
+Put the secret in `VOCABULARY_API_KEY` in the caller's environment and use an existing owned deck ID.
+For local development:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8766/api/v1/decks/6/vocabulary-cards/ \
+  -H "Authorization: Bearer $VOCABULARY_API_KEY" \
+  -H 'Content-Type: application/json' \
+  --data '{"word":"absorb","target_language":"English","native_language":"Chinese"}'
+```
+
+The response returns `id`, `created`, `ready` and `status_url` immediately. GET that status URL with the same header
+to query preparation. A repeated explanation-less submission reuses an existing same-expression/language card in that
+deck, including an archived card; it does not restore or overwrite it. Supply an explanation to teach a specific other sense.
+
+Python callers can use the already-installed HTTP client:
+
+```python
+import os
+import httpx
+
+headers = {"Authorization": "Bearer " + os.environ["VOCABULARY_API_KEY"]}
+response = httpx.post("http://127.0.0.1:8766/api/v1/decks/6/vocabulary-cards/", headers=headers,
+                      json={"word": "absorb", "target_language": "English", "native_language": "Chinese"})
+response.raise_for_status()
+card = response.json()
+print(httpx.get("http://127.0.0.1:8766" + card["status_url"], headers=headers).json())
+```
+
+After an approved production release, LAN/private-network callers use `https://vocab.home.arpa` instead and trust its
+existing private CA (`curl --cacert PATH_TO_PUBLIC_ROOT`; `httpx` with an SSL context loading that root).
+The caller's hosts/DNS maps that hostname to `192.168.71.97` or `10.133.109.169`. A browser login is unnecessary.
+An API key authenticates only its owner and never substitutes for another user's ownership checks.
 
 Use **Practice** on the dashboard or **Study this deck** in a private deck. Practice is continuous: the same selected scope restores its current unfinished question, while future questions are selected as needed. There are no study runs to start, finish or resume. The dashboard remembers the latest displayed scope as its default selection.
 
@@ -214,7 +262,9 @@ Migration `0006_generation_execution_budget` adds nullable start times/deadlines
 
 ## Delivered cold backup and restore
 
-Use the provided host-side Python command from this repository. It uses the deployed application image and Docker CLI; no extra Python packages are required.
+Run the provided host-side Python command from the production checkout on `192.168.71.97`. It uses the deployed
+application image and Docker CLI; no extra Python packages are required. The loopback development profile has no active
+Caddy instance and is not the target of this production backup workflow.
 
 ```sh
 python ops/backup.py create backups/v1-snapshot

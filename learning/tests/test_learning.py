@@ -23,7 +23,7 @@ from learning.providers import StageError, PROMPT_VERSIONS
 from learning.rendering import render, recall_budget
 
 GENERIC = {"question": "What is two plus two?", "answer": "four", "explanation": "Two pairs make four."}
-VOCAB = {"word": "misunderstanding", "explanation": "A problem caused by people understanding each other incorrectly.",
+VOCAB = {"word": "misunderstanding", "explanation": "/ˌmɪsʌndərˈstændɪŋ/: A problem caused by people understanding each other incorrectly. [synonyms: miscommunication]",
          "target_language": "English", "native_language": "Chinese"}
 PAIR = {"target_sentence": "A small misunderstanding stopped the conversation.", "target_highlight": "misunderstanding",
         "target_highlight_start": 8, "native_sentence": "一个小小的误会打断了谈话。", "native_highlight": "误会",
@@ -218,7 +218,8 @@ class LearningTests(TestCase):
         for job in [first,newest]:
             job.refresh_from_db();self.assertEqual(job.state,"queued")
             self.assertEqual(job.execution,2);self.assertIsNone(job.started_at);self.assertIsNone(job.deadline)
-            self.assertEqual(job.provenance,{})
+            self.assertNotIn("model",job.provenance)
+            self.assertEqual(job.provenance.get("input_identity"),job.card.identity if job.pk==newest.pk else None)
         for job in [duplicate,busy,archived,foreign]:
             job.refresh_from_db();self.assertEqual(job.state,"failed")
         old.refresh_from_db();self.assertEqual(old.state,"cancelled")

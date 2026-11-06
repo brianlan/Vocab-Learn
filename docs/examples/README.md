@@ -18,12 +18,19 @@ All three fields must be nonblank. Preserve meaningful Markdown indentation and 
 
 ## Vocabulary Cards
 
-[vocabulary-cards.csv](vocabulary-cards.csv) contains source entries with four required columns: `word`, `explanation`, `native_language`, and `target_language`. Header order may vary. Supply one plaintext target expression and its authored meaning explanation; explanations support the same Markdown profile. The application derives example pairs and references rather than requiring them in this CSV.
+[vocabulary-cards.csv](vocabulary-cards.csv) contains the original four-column sources. In the development creation increment,
+the required columns are `word`, `native_language`, and `target_language`; `explanation` is optional and header order may vary.
+[vocabulary-auto.csv](vocabulary-auto.csv) demonstrates word-only content with explicit languages. Omit the explanation column
+or leave individual cells blank for automatic learner-definition, pronunciation and synonym preparation. Supply an explanation
+to specify an intended meaning; it supports the same Markdown profile and is preserved. The application prepares example pairs
+after the teaching details are complete. Production gains these capabilities only after a separately requested release.
 
 - `target_language` is `English` or `Spanish`.
 - `native_language` is `Chinese` or `Spanish`.
 - The languages must differ. Initial pairs are English/Chinese, English/Spanish, and Spanish/Chinese; a same-language entry fails validation.
 - Language values use the English names shown in the creation form. They describe learning content; the application interface remains English.
 - Both review directions share one card's progress. Changing a generated example does not create a second learning card.
+- Without an explanation, a same-expression/language card in the selected deck is skipped, including archived and not-ready
+  cards. Other decks are independent. With an explanation, different teaching senses remain separate cards.
 
-These examples illustrate English-to-Chinese, English-to-Spanish, and Spanish-to-Chinese vocabulary sources. Valid sources persist before asynchronous preparation of their example pairs. The [acceptance record](../implementation/v1-acceptance.md) documents the tested import, generation and language paths.
+These examples illustrate English-to-Chinese, English-to-Spanish, and Spanish-to-Chinese vocabulary sources. Valid sources persist before asynchronous completion and example preparation. The [acceptance record](../implementation/v1-acceptance.md) documents the original import, generation and language paths; the [creation increment](../specs/vocabulary-creation.md) owns the new behavior.
