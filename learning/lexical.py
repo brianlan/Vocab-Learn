@@ -81,6 +81,7 @@ def _parts(explanation):
     else:
         pronunciations = []
         pronunciation_source = ""
+    definition_start = len(explanation) - len(definition)
     synonyms = None
     synonym_source = ""
     footer = _footer(definition)
@@ -93,7 +94,8 @@ def _parts(explanation):
             synonyms = [item.strip() for item in re.split(r"[,;](?![^()]*\))", raw) if item.strip()]
         definition = definition[:cut]
     return ({"explanation": definition, "pronunciations": pronunciations, "synonyms": synonyms},
-            {"explanation": definition, "pronunciations": pronunciation_source, "synonyms": synonym_source})
+            {"explanation": definition, "pronunciations": pronunciation_source, "synonyms": synonym_source,
+             "definition_start": definition_start})
 
 
 def parts(explanation):
@@ -114,13 +116,12 @@ def edited_details(card, explanation):
                 body = _framed(explanation, prefix, footer)
                 if body is not None:
                     return {**saved, "explanation": body}
-                edit = re.fullmatch(r"(.*?)" + _literal(card.definition) + r"(.*)", explanation, re.S)
+                edit = _definition_frame(explanation, card.definition)
                 if edit:
-                    isolated = parts(edit[1] + "Entry." + edit[2])
-                    if isolated["explanation"] == "Entry.":
-                        return {**isolated, "explanation": card.definition,
-                                **({"pronunciations": card.pronunciations} if _same_lines(edit[1], prefix) else {}),
-                                **({"synonyms": card.synonyms} if _same_lines(edit[2], footer) else {})}
+                    before, after = edit
+                    return {**parts(before + "Entry." + after), "explanation": card.definition,
+                            **({"pronunciations": card.pronunciations} if _same_lines(before, prefix) else {}),
+                            **({"synonyms": card.synonyms} if _same_lines(after, footer) else {})}
                 if not changed["synonyms"] and not _footer_fits(explanation, _synonym_text([])):
                     raise ValueError("Close the Markdown fence before changing both the definition and metadata in this legacy source.")
                 original["synonyms"] = footer.strip()
@@ -163,9 +164,12 @@ def _framed(source, prefix, suffix):
 
 
 def _definition_frame(source, definition):
-    match = re.fullmatch(r"(.*?)" + _literal(definition) + r"(.*)", source, re.S)
-    if match and parts(match[1] + "Entry." + match[2])["explanation"] == "Entry.":
-        return match[1], match[2]
+    start = _parts(source)[1]["definition_start"]
+    match = re.match(_literal(definition), source[start:])
+    if match:
+        suffix = source[start + match.end():]
+        if parts("Entry." + suffix)["explanation"] == "Entry.":
+            return source[:start], suffix
     return None
 
 

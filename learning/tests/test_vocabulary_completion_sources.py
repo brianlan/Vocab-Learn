@@ -267,33 +267,51 @@ class CompletionSourceTests(TestCase):
 
 
 class CompletionRecoveryTests(TransactionTestCase):
-    def test_each_source_revision_recovers_after_actual_schema_rollback_and_fresh_export(self):
-        owner = get_user_model().objects.create_user("learner")
-        target = "0010_structured_vocabulary_details"
-        generated = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
+    def prepare(self, card, generated, pair=RIVER_PAIR):
+        _, job_id, claim, _ = work.claim_work()
+        def answer(profile, system, payload):
+            return ({name: generated[name] for name in payload["requested_fields"]}
+                    if profile.task == "DEFINITION" else pair)
+        with patch("learning.providers.chat", side_effect=answer):
+            work.process_generation(job_id, claim)
+        card.refresh_from_db()
+        self.assertTrue(card.ready)
 
-        def prepare(card):
-            _, job_id, claim, _ = work.claim_work()
-            def answer(profile, system, payload):
-                return ({name: generated[name] for name in payload["requested_fields"]}
-                        if profile.task == "DEFINITION" else RIVER_PAIR)
-            with patch("learning.providers.chat", side_effect=answer):
-                work.process_generation(job_id, claim)
-            card.refresh_from_db()
-            self.assertTrue(card.ready)
-
+    def assert_fresh_recovery(self, card):
         def snapshot():
             return {model.__name__: list(model.objects.order_by("pk").values())
                     for model in apps.get_app_config("learning").get_models()}
 
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+        before = snapshot()
+        target = "0010_structured_vocabulary_details"
+        with tempfile.TemporaryDirectory() as folder:
+            ordinary = Path(folder) / "ordinary.json"
+            call_command("vocabulary_fields", "export", str(ordinary), stdout=io.StringIO())
+            self.assertEqual(json.loads(ordinary.read_text())["cards"], [])
+            try:
+                call_command("migrate", "learning", "0009", verbosity=0, interactive=False)
+                call_command("migrate", "learning", target, verbosity=0, interactive=False)
+                path = Path(folder) / "fresh.json"
+                call_command("vocabulary_fields", "export", str(path), stdout=io.StringIO())
+                fields = json.loads(path.read_text())["cards"][0]["fields"]
+                self.assertEqual(fields, lexical.columns(lexical.details(card)))
+                call_command("vocabulary_fields", "apply", str(path), stdout=io.StringIO())
+                self.assertEqual(snapshot(), before)
+            finally:
+                call_command("migrate", "learning", target, verbosity=0, interactive=False)
+
+    def test_each_source_revision_recovers_after_actual_schema_rollback_and_fresh_export(self):
+        owner = get_user_model().objects.create_user("learner")
+        generated = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
+
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
             for stage in ["queued", "ready", "formatted", "legacy"]:
                 with self.subTest(stage=stage):
                     deck = Deck.objects.create(owner=owner, name=stage)
                     source = {**LANGUAGES, "word": "bank", "explanation": RIVER}
                     card, _ = authoring.create_card(deck, "vocabulary", source)
-                    prepare(card)
+                    self.prepare(card, generated)
                     self.assertNotIn("Synonyms:", card.explanation)
                     if stage == "legacy":
                         old_source = {**source, "explanation": PREFIX + RIVER + FOOTER}
@@ -308,25 +326,70 @@ class CompletionRecoveryTests(TransactionTestCase):
                     card.refresh_from_db()
                     self.assertEqual(card.source_version, 2)
                     if stage != "queued":
-                        prepare(card)
+                        self.prepare(card, generated)
                         review.submit(review.next_question(owner, deck), "forgot")
                         card.refresh_from_db()
                     if stage in ["formatted", "legacy"]:
                         authoring.save_card(deck, "vocabulary", {**source, "explanation": card.explanation.replace("ground", "**ground**")}, card)
                         card.refresh_from_db()
-                    before = snapshot()
-                    ordinary = Path(folder) / (stage + "-ordinary.json")
-                    call_command("vocabulary_fields", "export", str(ordinary), stdout=io.StringIO())
-                    self.assertEqual(json.loads(ordinary.read_text())["cards"], [])
                     try:
-                        call_command("migrate", "learning", "0009", verbosity=0, interactive=False)
-                        call_command("migrate", "learning", target, verbosity=0, interactive=False)
-                        path = Path(folder) / (stage + "-fresh.json")
-                        call_command("vocabulary_fields", "export", str(path), stdout=io.StringIO())
-                        fields = json.loads(path.read_text())["cards"][0]["fields"]
-                        self.assertEqual(fields, lexical.columns(lexical.details(card)))
-                        call_command("vocabulary_fields", "apply", str(path), stdout=io.StringIO())
-                        self.assertEqual(snapshot(), before)
+                        self.assert_fresh_recovery(card)
                     finally:
-                        call_command("migrate", "learning", target, verbosity=0, interactive=False)
+                        deck.delete()
+
+    def test_completed_revision_recovers_when_definition_occurs_in_pronunciation_label(self):
+        owner = get_user_model().objects.create_user("learner")
+        generated = {"explanation": "refusal", "synonyms": ["no, thank you"],
+                     "pronunciations": [{"ipa": "/aɪl pæs/", "variety": "US", "label": "expression (refusal)"}]}
+        pair = {"target_sentence": "Thanks, but <focus>I'll pass</focus> on the cake.",
+                "native_sentence": "谢谢，不过我<focus>就算了</focus>。"}
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+                "learning.providers.request", side_effect=AssertionError("No provider network calls")):
+            for newline in ["\n", "\r\n"]:
+                with self.subTest(newline=newline):
+                    deck = Deck.objects.create(owner=owner, name="Overlapping label")
+                    source = {**LANGUAGES, "word": "I'll pass", "explanation": "refusal"}
+                    card, _ = authoring.create_card(deck, "vocabulary", source)
+                    self.prepare(card, generated, pair)
+                    review.submit(review.next_question(owner, deck), "forgot")
+                    card.refresh_from_db()
+                    changed = card.explanation.replace("/aɪl pæs/", "/aɪl pɑs/").replace("\n", newline)
+                    authoring.save_card(deck, "vocabulary", {**source, "explanation": changed}, card)
+                    self.prepare(card, generated, pair)
+                    self.assertEqual(card.source_version, 2)
+                    self.assertEqual(card.synonyms, ["no, thank you"])
+                    job = card.generation_jobs.get(source_version=2)
+                    self.assertEqual(job.provenance["definition"], {"requested_fields": [], "origin": "provided"})
+                    self.assertEqual(job.provenance["teaching_details"], {"source": card.explanation, "details": lexical.details(card)})
+                    review.submit(review.next_question(owner, deck), "forgot")
+                    card.refresh_from_db()
+                    try:
+                        self.assert_fresh_recovery(card)
+                    finally:
+                        deck.delete()
+
+    def test_queued_revision_recovers_empty_definition_with_retained_metadata(self):
+        owner = get_user_model().objects.create_user("learner")
+        generated = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+                "learning.providers.request", side_effect=AssertionError("No provider network calls")):
+            for newline in ["\n", "\r\n"]:
+                with self.subTest(newline=newline):
+                    deck = Deck.objects.create(owner=owner, name="Empty definition")
+                    source = {**LANGUAGES, "word": "bank", "explanation": RIVER}
+                    card, _ = authoring.create_card(deck, "vocabulary", source)
+                    self.prepare(card, generated)
+                    review.submit(review.next_question(owner, deck), "forgot")
+                    card.refresh_from_db()
+                    changed = card.explanation.removesuffix(card.definition).replace("\n", newline)
+                    authoring.save_card(deck, "vocabulary", {**source, "explanation": changed}, card)
+                    card.refresh_from_db()
+                    self.assertEqual((card.source_version, card.ready), (2, False))
+                    self.assertEqual(lexical.details(card), {**generated, "explanation": ""})
+                    job = card.generation_jobs.get(source_version=2)
+                    self.assertEqual(job.state, "queued")
+                    self.assertEqual(job.provenance["teaching_details"], {"source": card.explanation, "details": lexical.details(card)})
+                    try:
+                        self.assert_fresh_recovery(card)
+                    finally:
                         deck.delete()

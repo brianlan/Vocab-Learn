@@ -62,6 +62,8 @@ normally; they are omitted from the compatibility source instead of becoming cod
 
 Edits of older unsafe compositions use the stored definition and the actual accepted source prefix/footer as boundaries,
 including comma-separated, bracketed and explicitly empty synonym footers. They do not reconstruct a footer from the list.
+The definition starts after the parsed pronunciation prefix, even when it is empty; matching text inside a pronunciation
+label cannot select that boundary. Both editing and complete-record recovery use this same component boundary.
 Definition-only and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
 saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
 

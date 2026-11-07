@@ -170,3 +170,30 @@ Private failure/test logs, rehearsal scripts, manifests and databases are under 
 These corrections add no schema, dependency, prompt or provider-setting change. Provider outputs were mocked; desktop
 browser and physical microphone tests were not repeated. Production was not updated. Older revisions that never recorded
 omitted metadata still require their retained reviewed plan or matching backup; the correction cannot invent that data.
+
+## PR #2 parsed definition boundary correction
+
+The [review of 0277fc9](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6704836751) verified the previous
+reproductions and reported one remaining P2 issue with two recovery examples. A definition repeated in a pronunciation
+label could select the wrong split; an empty definition selected the start of the entire source. Both discarded a valid,
+current complete record and lost metadata during fresh recovery. These values were recorded, so the older-unrecorded-data
+limitation did not apply.
+
+The source parser now retains the actual definition start after the pronunciation prefix, before footer extraction.
+Definition frames match at that component boundary, including zero-length definitions. Recovery and legacy metadata edits
+share this boundary logic. Existing source-identity, revision, footer and field-shape validation remains in place.
+
+Both added end-to-end tests failed on 0277fc9 with LF and CRLF. They perform authoring and mocked worker preparation,
+actual Forgot reviews, an IPA-only edit or definition-only removal, actual `0010 -> 0009 -> 0010` migrations and fresh
+export/apply. The Ready expression keeps `["no, thank you"]` as one synonym; the queued empty-definition card keeps its
+pronunciation and `["riverbank", "shore"]`. Every row/field of every learning model matches its pre-rollback snapshot.
+The existing migration round-trip assertions were shared by these tests rather than duplicated.
+
+The full **138-test suite passed** on Python 3.11. System, migration-drift and whitespace checks passed. Fresh local copies
+of the retained development/read-only-production snapshots again passed **1,660/1,648-card** extraction, preservation of
+original values across **17/16 tables**, idempotent application, rollback/upgrade, matching fresh manifests, SQLite integrity
+and foreign-key checks. No live production access was needed.
+
+Private logs and rehearsal artifacts are under ignored `var/exports/pr2-definition-boundary-fixes/`. No schema, dependency,
+prompt or provider configuration changed. Provider responses were mocked; desktop browser and physical microphone checks
+were not repeated, and production was not updated.
