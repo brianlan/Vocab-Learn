@@ -66,6 +66,10 @@ The definition starts after the parsed pronunciation prefix, even when it is emp
 label cannot select that boundary. Both editing and complete-record recovery use this same component boundary.
 A source-matching complete record can explicitly identify a blank definition when only a standalone metadata footer
 remains. That recorded interpretation takes precedence over source-only parsing; unrelated definition text cannot be dropped.
+While a known blank definition awaits preparation, edits to its retained metadata use that same interpretation. Changed
+metadata is parsed and unchanged components retain their typed values; the next preparation still requests the definition.
+Supplying a real definition returns to normal definition parsing without splitting unchanged comma-containing synonyms.
+A new standalone plain `Synonyms:` definition remains definition text when no existing footer establishes a metadata edit.
 Definition-only and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
 saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
 

@@ -228,3 +228,34 @@ production access was needed.
 Private logs and rehearsal artifacts are under ignored `var/exports/pr2-empty-footer-recovery/`. There are no schema,
 dependency, prompt or provider-setting changes. Provider responses were mocked; desktop browser and physical microphone
 checks were not repeated, and production was not updated.
+
+## PR #2 queued blank-definition metadata edits
+
+The [review of 806df95](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6708731794) verified the recovery fix
+and identified a P2 authoring failure before preparation: after clearing a legacy definition, another footer edit could
+turn the footer into the definition while retaining the old typed synonyms. The next worker incorrectly considered the
+definition supplied. Both new editing/preparation regressions failed on 806df95.
+
+Editing and complete-record recovery now share the interpretation of a known blank, metadata-only source. Authoring
+compares the actual metadata fragments, reparses edited fields and preserves untouched typed fields. A new revision's
+complete record therefore retains the blank definition and updated metadata, and preparation requests the definition.
+Supplying a real definition remains supported. A new standalone plain `Synonyms:` definition keeps its existing meaning
+when no retained footer establishes a metadata edit; real definition text followed by an actual footer is never treated
+as an entirely metadata-only source.
+
+The full **143-test suite passed** on Python 3.11. System, migration-drift and whitespace checks passed. New coverage uses
+worker-created historical layouts, CSRF-enforced edit forms with fresh identities, actual scored Forgot history and
+subsequent worker preparation. The **32-sequence** matrix covers both historical separators, LF/CRLF, empty/whitespace
+definitions, semicolon/comma synonym edits, explicit empty synonyms and footer removal. It verifies cancellation of the
+older queued revision, complete input records, requested definition fields, updated provider/Generator inputs and frozen
+history. Additional cases retain literal `none`, comma-containing phrases and empty lists through pronunciation edits and
+manual definition entry. A new empty card still accepts a standalone `Synonyms:` definition. Recovery's negative coverage
+also rejects clearing an actual `Synonyms:` definition followed by a real metadata footer.
+
+Fresh copies of the retained development/read-only-production snapshots passed **1,660/1,648-card** extraction, preservation
+across **17/16 original tables**, idempotency, rollback/upgrade, matching fresh manifests, SQLite integrity and foreign-key
+checks. No live production access was needed. Private logs and rehearsal artifacts are under ignored
+`var/exports/pr2-queued-metadata-edits/`.
+
+No schema, dependency, prompt or provider-setting changes were required. Provider outputs were mocked; desktop browser
+and physical microphone checks were not repeated, and production was not updated.

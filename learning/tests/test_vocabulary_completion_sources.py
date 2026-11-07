@@ -61,6 +61,18 @@ class CompletionSourceTests(TestCase):
         self.assertEqual(self.browser.post(url, payload).status_code, 302)
         card.refresh_from_db()
 
+    def historical_card(self, separator, newline, synonyms):
+        definition = RIVER.replace("\n", newline)
+        generated = {"explanation": definition, "pronunciations": READINGS, "synonyms": synonyms}
+        card, _ = authoring.create_card(self.deck(), "vocabulary", {**LANGUAGES, "word": "bank", "explanation": definition})
+        def historical_combine(original, additions):
+            prefix, body, footer = lexical._composition(original, additions)
+            prefix = prefix.removesuffix(":\n\n") + separator
+            return (prefix + body + footer).replace("\r\n", "\n").replace("\n", newline)
+        with patch("learning.lexical.combine", side_effect=historical_combine):
+            self.prepare(card, generated)
+        return card
+
     def legacy(self, original, generated, saved, typed=False):
         deck = self.deck()
         data = {**LANGUAGES, "word": "bank", "explanation": saved}
@@ -243,6 +255,73 @@ class CompletionSourceTests(TestCase):
                 self.assertEqual(Card.objects.values().get(pk=card.pk), before)
                 self.assertEqual(list(card.generation_jobs.values()), jobs)
                 self.assertEqual(list(ScoredReview.objects.filter(card=card).values()), history)
+
+    def test_queued_blank_footer_edits_update_metadata_and_still_request_definition(self):
+        footers = [("Synonyms: riverside; shore", ["riverside", "shore"]),
+                   ("Synonyms: riverside, shore", ["riverside", "shore"]),
+                   ("[synonyms: ]", []), ("", None)]
+        for separator, newline, blank, (footer, synonyms) in product(
+                [": ", ":\n\n"], ["\n", "\r\n"], ["", " \n"], footers):
+            with self.subTest(separator=separator, newline=newline, blank=blank, footer=footer):
+                card = self.historical_card(separator, newline, SYNONYMS)
+                try:
+                    review.submit(review.next_question(self.owner, card.deck), "forgot")
+                    card.refresh_from_db()
+                    history = list(ScoredReview.objects.filter(card=card).values())
+                    cleared = blank.replace("\n", newline)
+                    self.edit(card, card.explanation.replace(card.definition, cleared, 1))
+                    self.assertEqual(card.source_version, 2)
+                    self.assertEqual(lexical.details(card), {"explanation": cleared, "pronunciations": READINGS, "synonyms": SYNONYMS})
+                    self.edit(card, card.explanation.replace("Synonyms: riverbank; shore", footer))
+                    self.assertEqual((card.source_version, card.ready), (3, False))
+                    self.assertEqual(lexical.details(card), {"explanation": cleared, "pronunciations": READINGS, "synonyms": synonyms})
+                    self.assertEqual(card.generation_jobs.get(source_version=2).state, "cancelled")
+                    queued = card.generation_jobs.get(source_version=3)
+                    self.assertEqual(queued.state, "queued")
+                    self.assertEqual(queued.provenance["teaching_details"], {"source": card.explanation, "details": lexical.details(card)})
+                    wanted = ["explanation", "synonyms"] if synonyms is None else ["explanation"]
+                    self.assertEqual(lexical.missing(lexical.details(card)), wanted)
+                    completed = {"explanation": "A **bank** is the land beside a river.", "pronunciations": READINGS,
+                                 "synonyms": synonyms if synonyms is not None else ["riverbank"]}
+                    calls = self.prepare(card, completed)
+                    self.assertEqual(calls["DEFINITION"]["requested_fields"], wanted)
+                    self.assertEqual(calls["DEFINITION"]["explanation"], cleared)
+                    self.assertEqual(calls["DEFINITION"]["synonyms"], synonyms)
+                    self.assertEqual(calls["GENERATOR"]["explanation"], completed["explanation"])
+                    self.assertEqual(calls["GENERATOR"]["synonyms"], completed["synonyms"])
+                    self.assertEqual(lexical.details(card), completed)
+                    self.assertEqual(list(ScoredReview.objects.filter(card=card).values()), history)
+                finally:
+                    card.deck.delete()
+
+    def test_queued_blank_pronunciation_edits_and_supplied_definition_keep_typed_synonyms(self):
+        for synonyms in [["none"], ["no, thank you"], []]:
+            with self.subTest(synonyms=synonyms):
+                card = self.historical_card(":\n\n", "\n", synonyms)
+                try:
+                    self.edit(card, card.explanation.replace(card.definition, "", 1))
+                    self.edit(card, card.explanation.replace("/bæŋk/", "/test/"))
+                    readings = [{"ipa": "/test/", "variety": "US", "label": "noun"}]
+                    self.assertEqual(lexical.details(card), {"explanation": "", "pronunciations": readings, "synonyms": synonyms})
+                    self.assertEqual(lexical.missing(lexical.details(card)), ["explanation"])
+                    definition = ("Synonyms: words with similar meanings." if synonyms == ["no, thank you"]
+                                  else "A **bank** is land beside a river.")
+                    self.edit(card, card.explanation.replace(":\n\n", ":\n\n" + definition, 1))
+                    completed = {"explanation": definition, "pronunciations": readings, "synonyms": synonyms}
+                    self.assertEqual(lexical.details(card), completed)
+                    calls = self.prepare(card, completed)
+                    self.assertNotIn("DEFINITION", calls)
+                    self.assertEqual(calls["GENERATOR"]["synonyms"], synonyms)
+                finally:
+                    card.deck.delete()
+
+    def test_new_empty_card_accepts_a_supplied_standalone_synonyms_definition(self):
+        card, _ = authoring.create_card(self.deck(), "vocabulary", {**LANGUAGES, "word": "synonym", "explanation": ""})
+        definition = "Synonyms: words with similar meanings."
+        self.edit(card, definition)
+        self.assertEqual(card.definition, definition)
+        self.assertIsNone(card.synonyms)
+        self.assertEqual(lexical.missing(lexical.details(card)), ["pronunciations", "synonyms"])
 
     def test_ambiguous_legacy_edit_is_rejected_without_changing_data(self):
         card = self.legacy(RIVER, {"pronunciations": READINGS, "synonyms": SYNONYMS}, PREFIX + RIVER + FOOTER, typed=True)

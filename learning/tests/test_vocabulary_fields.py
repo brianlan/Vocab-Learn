@@ -144,6 +144,7 @@ class VocabularyFieldsTests(TestCase):
             ("missing", metadata), ("stale", metadata), ("different source", metadata),
             ("malformed", metadata), ("nonempty record", metadata), ("changed metadata", metadata),
             ("real meaning", "/x/ (US; noun):\n\nAn actual definition.\n\nSynonyms: first; second"),
+            ("synonyms meaning with footer", "/x/ (US; noun):\n\nSynonyms: words with similar meanings.\n\nSynonyms: first; second"),
             ("literal code", CODE_DEFINITION),
             ("sole synonyms definition", "Synonyms: words or phrases with similar meanings."),
         ]):

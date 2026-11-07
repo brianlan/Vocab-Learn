@@ -102,6 +102,20 @@ def parts(explanation):
     return _parts(explanation)[0]
 
 
+def _blank_parts(explanation):
+    """Interpret metadata-only text when a stored blank definition supplies its intent."""
+    values, fragments = _parts(explanation)
+    if values["explanation"].strip():
+        if values["synonyms"] is not None:
+            return None
+        footer, footer_fragments = _parts("Entry.\n\n" + values["explanation"])
+        if footer["explanation"] != "Entry.":
+            return None
+        values["synonyms"], fragments["synonyms"] = footer["synonyms"], footer_fragments["synonyms"]
+    values["explanation"] = fragments["explanation"] = ""
+    return values, fragments
+
+
 def edited_details(card, explanation):
     if not explanation.strip():
         return parts("")
@@ -109,7 +123,14 @@ def edited_details(card, explanation):
     if card.definition is not None:
         _, original = _parts(card.explanation)
         saved = details(card)
-        if not original["synonyms"] and card.synonyms is not None and card.definition:
+        if not card.definition.strip() and (blank_source := _blank_parts(card.explanation)):
+            _, original = blank_source
+            blank_edit = _blank_parts(explanation) if original["synonyms"] or not values["explanation"].strip() else None
+            if blank_edit:
+                values, changed = blank_edit
+                match = re.search(_literal(card.definition), explanation)
+                saved["explanation"] = match[0] if match else ""
+        elif not original["synonyms"] and card.synonyms is not None and card.definition:
             legacy = _definition_frame(card.explanation, card.definition)
             if legacy and legacy[1].strip():
                 prefix, footer = legacy
@@ -184,11 +205,8 @@ def recovered_checkpoint(checkpoint, source):
     try:
         if render(original).identity != render(source).identity:
             return None
-        if not values["explanation"].strip() and values["explanation"] in source:
-            remainder = parts(source)["explanation"]
-            # A recorded blank definition disambiguates a remaining standalone footer.
-            if not remainder.strip() or parts("Entry.\n\n" + remainder)["explanation"] == "Entry.":
-                return values
+        if not values["explanation"].strip() and values["explanation"] in source and _blank_parts(source):
+            return values
         frame = _definition_frame(original, values["explanation"])
         if frame:
             definition = _framed(source, *frame)
