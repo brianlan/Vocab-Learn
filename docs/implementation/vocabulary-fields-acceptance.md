@@ -100,3 +100,41 @@ the rebuilt code. Private regression/rehearsal logs, reports and browser artifac
 
 These checks used mocked provider responses. Live model quality and physical microphones were not retested, and no
 production deployment or source refresh is part of the corrections.
+
+## PR #2 follow-up boundary corrections
+
+The [follow-up review of adba67f](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6703728294) confirmed the original
+reported cases and found two further combinations: completion footers inside unfinished fences, and old provenance
+replayed under a changed footer grammar. Both were independently reproduced on temporary SQLite before the fixes.
+
+- Completion now decides which definition is supplied/generated from the actual completion fields. A synonym footer is
+  written to compatible source text only when it can be read wholly outside the authored Markdown. Otherwise its values
+  remain in the dedicated field/provenance and remain visible through the UI and typed API. Authored blocks are unchanged.
+- Explicit empty/whitespace clearing resets definition, pronunciations and synonyms together. Recompletion requests all
+  three; a different chosen sense cannot inherit the old synonyms through that clearing path.
+- Previously written unsafe layouts use the stored definition and known footer as component boundaries. Formatting,
+  metadata edits and clear operations are covered. An ambiguous simultaneous change in an unfinished legacy layout
+  returns a validation error with an atomic rollback; closing the fence or editing separately is supported.
+- Legacy extraction replays recorded composition boundaries, restores the supplied definition and generated fields,
+  supports both historical pronunciation separators, and preserves verified formatting differences. Incompatible or
+  malformed optional provenance falls back to validated source extraction; the card is still included in the batch.
+  A sole plain `Synonyms:` definition retains its original interpretation.
+
+Seven new tests failed against the prior implementation. The complete **132-test suite passed** on Python 3.11, with
+system and schema-drift checks passing. Coverage includes backtick/tilde fences, LF/CRLF, direct and post-format clearing,
+actual Forgot history, changing the chosen sense on recompletion, supplied/generated definitions, old unsafe sources,
+explicit legacy metadata edits, safe rollback of ambiguous edits, and complete-batch fallback for incompatible records.
+
+The earlier development/production-read-only snapshots were rechecked locally: all 1,660/1,648 sources retained their
+extracted values. Fresh local copies again passed backfill, preservation of all preexisting fields across 17/16 tables,
+repeat application, rollback/reapplication, integrity and foreign-key checks. No live production access was needed.
+
+Desktop Edge exercised new and historical unfinished-fence cards through actual Forgot, formatting saves and clearing.
+New completion into a financial-bank sense requested every teaching field and returned the new synonyms to Generator,
+the page and typed API. A real three-record legacy export/apply included an unsafe composition, the old `Synonyms:`
+definition and incompatible provenance; each retained its source/progress fields and received the expected teaching values.
+Temporary QA decks were archived and the API key revoked. No provider network calls or page errors occurred.
+
+Private logs, reports, snapshots and browser artifacts are under ignored `var/exports/pr2-boundary-fixes/`. Development
+web/worker use the rebuilt application. These corrections add no schema, dependency, prompt or provider-setting change.
+Live model quality and physical microphones were not retested, and production was not updated.

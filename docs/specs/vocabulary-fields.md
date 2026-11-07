@@ -34,6 +34,8 @@ its saved typed value, including a literal `none` synonym or a single phrase con
 edit updates its Markdown without reparsing the other components; an actual metadata edit uses the legacy input grammar.
 Browser CRLF submission alone retains the original source text; extraction supports both LF and CRLF block separators
 without leaving a carriage return attached to the definition or stripping meaningful code indentation.
+Clearing the complete explanation, including a whitespace-only submission, explicitly clears all three teaching values.
+The following completion must request a new definition, pronunciation and synonyms rather than inheriting an old sense.
 
 Example generation receives the definition and supporting pronunciation/synonym fields separately. New review snapshots
 freeze the same separate values. The Judge receives the definition and visible context; new pronunciation/synonym
@@ -47,6 +49,17 @@ they are never retroactively split. Unmigrated cards can still display/study thr
 Synonym footers are recognized only in the final top-level Markdown paragraph. Fenced and indented code, quotes and
 lists remain definition content, including literal `Synonyms:` or `[synonyms: ...]` examples. A real footer following a
 code block is still extracted. The existing inline trailing `[synonyms: ...]` source format remains supported.
+A plain `Synonyms:` paragraph with no preceding definition remains a definition, as in the original source grammar;
+the explicit bracket form can still supply metadata on its own.
+
+Completion composition uses the recorded generated fields to distinguish a generated definition from a supplied one.
+It appends a synonym footer only when the full footer can be read outside the authored Markdown. For an unfinished
+fence or another open block, synonyms remain in their dedicated column and provenance and are still displayed/returned
+normally; they are omitted from the compatibility source instead of becoming code content. Authored Markdown is unchanged.
+
+Edits of older unsafe compositions use the stored definition and known completion footer as boundaries. Definition-only
+and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
+saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
 
 ## Explicit legacy extraction
 
@@ -62,7 +75,10 @@ docker compose exec web python manage.py vocabulary_fields apply /data/migration
 Export includes all Vocabulary rows whose `definition` is null, including archived and unprepared cards. It never
 overwrites an existing file. The file has mode 0600 and its newly created directory has mode 0700. Keep plans and snapshots
 out of Git. A completed generation's structured fields are reused when its retained original input reproduces the current
-source exactly. Older/incomplete provenance falls back to saved source text; it is not trusted over different content.
+source, including the historical unsafe-footer and single-line pronunciation formats. Replay restores the original supplied
+definition as well as generated fields; it never derives that definition from an appended generated footer. Formatting-only
+differences may retain the saved source's Markdown when its existing canonical identity matches. Older, incompatible or
+invalid provenance falls back to validated saved source extraction, rather than aborting the batch or skipping the card.
 
 Review checks the actual source against its extracted definition, every pronunciation/label and each synonym. Definitions
 must be extracted verbatim. Missing source metadata remains missing; extraction neither invents synonyms nor silently turns

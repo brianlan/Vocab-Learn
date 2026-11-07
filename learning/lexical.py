@@ -1,6 +1,6 @@
 """Structured teaching details and the legacy source-text adapter; no database writes."""
 import re
-from .rendering import make_parser
+from .rendering import make_parser, render
 
 
 def _read_label(text, start):
@@ -42,7 +42,7 @@ def _footer(definition):
     end = lines[block.map[1]] if block.map[1] < len(lines) else len(definition)
     paragraph = definition[start:end]
     suffix = re.search(r"\s*\[synonyms\s*:\s*([^\[\]]*)\]\s*$", paragraph, re.I)
-    if not suffix:
+    if not suffix and definition[:start].strip():
         suffix = re.search(r"^[ \t]*(?:\*\*)?Synonyms:(?:\*\*)?\s*(.*?)\s*$", paragraph, re.I | re.S)
     if suffix is None:
         return None
@@ -101,12 +101,32 @@ def parts(explanation):
 
 
 def edited_details(card, explanation):
+    if not explanation.strip():
+        return parts("")
     values, changed = _parts(explanation)
     if card.definition is not None:
         _, original = _parts(card.explanation)
         saved = details(card)
+        if not original["synonyms"] and card.synonyms is not None and card.definition:
+            footer = _synonym_text(card.synonyms)
+            legacy = re.fullmatch(r"(.*?)" + _literal(card.definition) + _literal(footer), card.explanation, re.S)
+            if legacy and parts(legacy[1] + "Entry.")["explanation"] == "Entry.":
+                prefix = legacy[1]
+                body = _framed(explanation, prefix, footer)
+                if body is not None:
+                    return {**saved, "explanation": body}
+                edit = re.fullmatch(r"(.*?)" + _literal(card.definition) + r"(.*)", explanation, re.S)
+                if edit:
+                    isolated = parts(edit[1] + "Entry." + edit[2])
+                    if isolated["explanation"] == "Entry.":
+                        return {**isolated, "explanation": card.definition,
+                                **({"pronunciations": card.pronunciations} if _same_lines(edit[1], prefix) else {}),
+                                **({"synonyms": card.synonyms} if _same_lines(edit[2], footer) else {})}
+                if not changed["synonyms"] and not _footer_fits(explanation, _synonym_text([])):
+                    raise ValueError("Close the Markdown fence before changing both the definition and metadata in this legacy source.")
+                original["synonyms"] = footer.strip()
         for name in values:
-            if original[name].replace("\r\n", "\n") == changed[name].replace("\r\n", "\n"):
+            if _same_lines(original[name], changed[name]):
                 values[name] = saved[name]
     return values
 
@@ -130,16 +150,60 @@ def missing(values):
             (name == "pronunciations" and not value)]
 
 
-def combine(original, additions):
-    """Append missing teaching details without rewriting a supplied definition."""
+def _same_lines(left, right):
+    return left.replace("\r\n", "\n") == right.replace("\r\n", "\n")
+
+
+def _literal(text):
+    return re.escape(text.replace("\r\n", "\n")).replace("\\\n", r"\r?\n")
+
+
+def _framed(source, prefix, suffix):
+    match = re.fullmatch(_literal(prefix) + r"(.*?)" + _literal(suffix), source, re.S)
+    return match[1] if match else None
+
+
+def _synonym_text(synonyms):
+    return "\n\nSynonyms: " + ("; ".join(synonyms) if synonyms else "No close synonyms")
+
+
+def _composition(original, additions):
     supplied = parts(original)
-    text = original if supplied["explanation"].strip() else additions["explanation"]
-    if "pronunciations" in additions:
-        text = _pronunciation_text(additions["pronunciations"]) + ":\n\n" + text
-    elif not supplied["explanation"].strip() and supplied["pronunciations"]:
-        text = _pronunciation_text(supplied["pronunciations"]) + ":\n\n" + text
-    if "synonyms" in additions:
-        text += "\n\nSynonyms: " + ("; ".join(additions["synonyms"]) if additions["synonyms"] else "No close synonyms")
-    elif not supplied["explanation"].strip() and supplied["synonyms"] is not None:
-        text += "\n\nSynonyms: " + ("; ".join(supplied["synonyms"]) if supplied["synonyms"] else "No close synonyms")
-    return text
+    generated_definition = "explanation" in additions
+    body = additions["explanation"] if generated_definition else original
+    readings = additions.get("pronunciations", supplied["pronunciations"] if generated_definition else None)
+    synonyms = additions.get("synonyms", supplied["synonyms"] if generated_definition else None)
+    prefix = _pronunciation_text(readings) + ":\n\n" if readings else ""
+    return prefix, body, _synonym_text(synonyms) if synonyms is not None else ""
+
+
+def _footer_fits(body, footer):
+    candidate = body + footer
+    parsed = _footer(candidate)
+    return parsed is not None and candidate[parsed[0]:].strip() == footer.strip()
+
+
+def combine(original, additions):
+    """Keep generated metadata out of the authored Markdown's open blocks."""
+    prefix, body, footer = _composition(original, additions)
+    source = prefix + body
+    return source + footer if footer and _footer_fits(source, footer) else source
+
+
+def recovered_details(original, additions, source):
+    """Replay known completion layouts; an incompatible record falls back to source extraction."""
+    if not isinstance(original, str) or not isinstance(additions, dict):
+        return None
+    try:
+        prefix, body, footer = _composition(original, additions)
+        prefixes = [prefix, prefix[:-2] + " "] if prefix.endswith(":\n\n") else [prefix]
+        for before in prefixes:
+            footers = [footer] if not footer or _footer_fits(before + body, footer) else [footer, ""]
+            for after in footers:
+                current = _framed(source, before, after)
+                if current is not None and render(before + body + after).identity == render(source).identity:
+                    definition = current if "explanation" in additions else parts(current)["explanation"]
+                    return {**parts(original), **additions, "explanation": definition}
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None

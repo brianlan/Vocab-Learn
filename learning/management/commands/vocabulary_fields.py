@@ -61,10 +61,17 @@ class Command(BaseCommand):
             details = lexical.parts(card.explanation)
             job = completions.get(card.pk)
             if job and job.source_version == card.source_version and "input_explanation" in job.provenance:
-                generated = job.provenance.get("definition", {}).get("fields", {})
+                definition = job.provenance.get("definition")
+                generated = definition.get("fields") if isinstance(definition, dict) else None
                 original = job.provenance.get("input_explanation", "")
-                if lexical.combine(original, generated) == card.explanation:
-                    details.update(generated)
+                recovered = lexical.recovered_details(original, generated, card.explanation)
+                if recovered is not None:
+                    try:
+                        validate_fields(lexical.columns(recovered), card.explanation)
+                    except (CommandError, UnicodeError):
+                        pass
+                    else:
+                        details = recovered
             fields = lexical.columns(details)
             validate_fields(fields, card.explanation)
             records.append({"id": card.pk, "deck_id": card.deck_id, "word": card.word,
