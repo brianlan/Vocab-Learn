@@ -9,7 +9,7 @@ from django.db.models import Case, When, Value, IntegerField, Q
 from django.db.models.functions import Coalesce, Greatest, Random
 from django.utils import timezone
 from fsrs import Card as MemoryCard, Rating, Scheduler, State
-from .authoring import new_generation
+from .authoring import new_generation, definition_generated
 from .models import Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render, recall_budget, highlight
 
@@ -44,6 +44,7 @@ def snapshot(card):
     sentence, expression = ((pair.target_sentence, pair.target_highlight) if recognition else (pair.native_sentence, pair.native_highlight))
     start = pair.target_highlight_start if recognition else pair.native_highlight_start
     return {**base, "question_html": highlight(sentence, expression, start), "question_text": sentence,
+            "definition_generated": definition_generated(card),
             "highlight_start": start,
             "reference": card.word, "word": card.word,
             "units": 1, "reading_count": sum(not c.isspace() for c in sentence), "direction": card.cue_direction,
