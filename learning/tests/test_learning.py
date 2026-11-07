@@ -306,7 +306,9 @@ class LearningTests(TestCase):
         self.assertNotIn("gloss",p.snapshot)
         self.assertEqual(p.budget,recall_budget(1,p.snapshot["reading_count"],PAIR["native_highlight"]))
         # Display old frozen reviews consistently without rewriting their historical input.
-        p.snapshot.update(reference="A legacy generated native definition",gloss="A legacy generated native definition")
+        p.snapshot.update(reference="A legacy generated native definition",gloss="A legacy generated native definition",
+                          explanation=card.explanation)
+        p.snapshot.pop("pronunciations");p.snapshot.pop("synonyms")
         p.save(update_fields=["snapshot"])
         review.submit(p,"skip")
         html=self.client.get(reverse("status",args=[p.pk])).json()["back_html"]

@@ -8,6 +8,7 @@ from django.db.models import F
 from django.utils import timezone
 from .models import Deck, Card, GenerationJob, Presentation, Attempt
 from .rendering import render
+from . import lexical
 
 SCHEMAS = {"generic": ("question", "answer", "explanation"),
            "vocabulary": ("word", "explanation", "native_language", "target_language")}
@@ -69,7 +70,8 @@ def duplicate(deck, kind, data):
 
 
 def create_prepared(deck, kind, data):
-    card = Card.objects.create(deck=deck, kind=kind, identity=identity(kind, data), ready=kind == "generic", **data)
+    details = lexical.columns(lexical.parts(data["explanation"])) if kind == "vocabulary" else {}
+    card = Card.objects.create(deck=deck, kind=kind, identity=identity(kind, data), ready=kind == "generic", **data, **details)
     if not card.ready:
         new_generation(card)
     return card
@@ -106,6 +108,9 @@ def save_card(deck, kind, fields, card=None, *, expected_identity=None):
         if card.identity != expected_identity:
             raise ValidationError("This source changed after you opened the form. Reload the page before saving.", code="stale_source")
     data = validate_source(kind, fields)
+    # Browser textareas submit CRLF even when the displayed source has not changed.
+    if card is not None and kind == "vocabulary" and data["explanation"].replace("\r\n", "\n") == card.explanation.replace("\r\n", "\n"):
+        data["explanation"] = card.explanation
     key = identity(kind, data)
     existing = duplicate(deck, kind, data)
     if existing and card and existing.pk == card.pk:
@@ -125,7 +130,9 @@ def save_card(deck, kind, fields, card=None, *, expected_identity=None):
         card.active_pair = card.cue_pair = None
         card.cue_direction, card.direction_block, card.direction_index = "", [], 0
         card.rotation_token, card.ready = None, kind == "generic"
-    for k, v in data.items():
+    details = (lexical.columns(lexical.parts(data["explanation"])) if kind == "vocabulary" and
+               (card.definition is None or card.explanation != data["explanation"]) else {})
+    for k, v in {**data, **details}.items():
         setattr(card, k, v)
     card.identity = key
     card.save()

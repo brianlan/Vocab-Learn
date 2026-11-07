@@ -11,6 +11,53 @@ from fsrs import Card as MemoryCard, Rating, Scheduler
 
 
 class ContinuousPracticeMigrationTests(TestCase):
+    def test_structured_fields_upgrade_and_reverse_preserve_all_legacy_rows(self):
+        alias = "vocabulary_fields_migration_test"
+        with tempfile.TemporaryDirectory() as folder:
+            config = copy.deepcopy(connections["default"].settings_dict)
+            config["NAME"] = str(Path(folder) / "legacy.sqlite3")
+            connections.databases[alias] = config
+            connection = connections[alias]
+            try:
+                old_target = [("learning", "0009_authoring_key")]
+                executor = MigrationExecutor(connection); executor.migrate(old_target)
+                old = executor.loader.project_state(old_target).apps
+                user = old.get_model("auth", "User").objects.using(alias).create(username="learner", password="!")
+                deck = old.get_model("learning", "Deck").objects.using(alias).create(owner_id=user.pk, name="Private")
+                explanation = "/x/ (verb): A **definition**. [synonyms: example]"
+                card = old.get_model("learning", "Card").objects.using(alias).create(deck_id=deck.pk,
+                    kind="vocabulary", word="absorb", explanation=explanation, identity="original-identity",
+                    collection="Forgot", fsrs={"unchanged": "memory"}, review_count=3, progress_version=3,
+                    direction_block=["recognition", "production"], cue_direction="recognition")
+                frozen = {"kind": "vocabulary", "explanation": explanation, "reference": "old reference"}
+                presentation = old.get_model("learning", "Presentation").objects.using(alias).create(
+                    user_id=user.pk, card_id=card.pk, source_version=1, progress_version=3, snapshot=frozen, budget=12)
+                attempt = old.get_model("learning", "Attempt").objects.using(alias).create(
+                    presentation_id=presentation.pk, action="speak", state="failed", transcript="fixed transcript")
+                old.get_model("learning", "ScoredReview").objects.using(alias).create(
+                    attempt_id=attempt.pk, card_id=card.pk, user_id=user.pk, grade="E", reviewed_at=timezone.now(),
+                    next_due=card.due, snapshot=frozen, fsrs_log={"original": True}, budget=12)
+                old.get_model("learning", "GenerationJob").objects.using(alias).create(
+                    card_id=card.pk, source_version=1, state="failed", provenance={"original": True})
+                names = ["Card", "Deck", "Presentation", "Attempt", "ScoredReview", "GenerationJob"]
+                before = {name: list(old.get_model("learning", name).objects.using(alias).order_by("pk").values()) for name in names}
+                target = [("learning", "0010_structured_vocabulary_details")]
+                for state in [target, old_target, target]:
+                    executor = MigrationExecutor(connection); executor.migrate(state)
+                    apps = executor.loader.project_state(state).apps
+                    for name in names:
+                        rows = list(apps.get_model("learning", name).objects.using(alias).order_by("pk").values())
+                        if name == "Card" and state == target:
+                            self.assertIsNone(rows[0].pop("definition"))
+                            self.assertEqual(rows[0].pop("pronunciations"), [])
+                            self.assertIsNone(rows[0].pop("synonyms"))
+                        self.assertEqual(rows, before[name])
+                with connection.cursor() as cursor:
+                    self.assertEqual(cursor.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                    self.assertEqual(cursor.execute("PRAGMA foreign_key_check").fetchall(), [])
+            finally:
+                connection.close(); del connections[alias]; del connections.databases[alias]
+
     def test_highlight_positions_upgrade_preserves_examples_progress_and_frozen_history(self):
         alias="highlight_migration_test"
         with tempfile.TemporaryDirectory() as folder:

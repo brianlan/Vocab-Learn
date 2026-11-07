@@ -11,7 +11,16 @@ An authored learning card with a question, one reference answer, and an explanat
 A Generic Card with one or more blanks in its Markdown question. Distinct authored cards remain separate learning units, including cards that target the same vocabulary in different contexts.
 
 **Vocabulary Card**:
-A vocabulary-focused learning card containing a target expression, its teaching explanation, a Target Language, and a Native Language. The explanation may be supplied by the learner or prepared automatically; it defines the intended sense and remains stable across example changes. Recognition and Production are alternative ways to review the same card.
+A vocabulary-focused learning card containing a target expression, a Learner Definition, Pronunciations, Close Synonyms, a Target Language, and a Native Language. Recognition and Production are alternative ways to review the same card.
+
+**Learner Definition**:
+A simple target-language explanation of the card's intended sense, supplied by the learner or prepared automatically. It remains stable across example changes and does not include pronunciation or synonym lists.
+
+**Pronunciations**:
+Labelled IPA readings of the target expression, including variety and word-class or usage information when provided.
+
+**Close Synonyms**:
+Target-language expressions near the selected sense, offered as supporting study material. An explicit absence of suitable synonyms differs from information that has not been supplied.
 
 **Vocabulary Completion**:
 Preparation of a new card's missing teaching definition, pronunciation and close synonyms. A supplied definition establishes the intended meaning; an omitted definition calls for one broadly useful learner sense.
