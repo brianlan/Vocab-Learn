@@ -68,3 +68,35 @@ Provider responses were mocked for runtime tests; live model quality, physical m
 DNS/certificate setup were not rechecked. Task profile defaults and prompt text are unchanged. A separately requested
 production release must take a fresh cold backup and migrate/backfill the live database in place. These development
 databases and reviewed plans must not replace production data.
+
+## PR #2 review corrections
+
+The [review of 903fd2e](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6701547333) found two content-preservation
+defects not covered by the initial 119 tests. Both were independently reproduced with isolated SQLite and mocked providers.
+
+- Edits now compare the source of each teaching component and retain the stored typed value when its component is
+  unchanged. Definition formatting keeps literal `none` and comma-containing synonym phrases intact, including browser
+  CRLF submissions. Actual pronunciation/synonym edits still take effect; `none` to `No close synonyms` explicitly yields
+  an empty list. Definition Markdown and unrelated metadata are updated independently.
+- Footer extraction uses the existing Markdown parser's final top-level paragraph. Code blocks, quotes and lists are
+  preserved as definition content. A real footer after code and the legacy inline bracket format still work. Tests cover
+  backtick/tilde fences, unfinished fences, indented code, LF/CRLF, code whitespace, rendering, new Judge inputs and real
+  manifest export/apply.
+
+The six added regression tests failed on the previous implementation; the corrected full **125-test suite passed** on
+Python 3.11. Django system and migration-drift checks passed. No schema, prompt or provider-setting changes were needed.
+
+The previous development and production-read-only snapshots were rechecked locally: all 1,660/1,648 existing Vocabulary
+sources produced the same extracted values as 903fd2e. Fresh copies passed migration, backfill, exact preservation of old
+fields across 17/16 tables, idempotency, rollback/reapplication, SQLite integrity and foreign-key checks. No existing card
+in those snapshots needed a correction for these findings; no live production access or update was required for this follow-up.
+
+Desktop Edge verified the two reported phrases after actual completion and scored Forgot reviews, followed by formatting
+edits and typed API queries. Only source/definition formatting changed; all metadata, progress, jobs and frozen history
+matched. A third card kept its complete code example through editing/rendering, and a legacy fixture passed real
+export/apply and browser rendering without extracting its example's synonyms. No page errors or horizontal overflow.
+The temporary QA key was revoked and the fixture decks archived; no learner deck was changed. Development web/worker use
+the rebuilt code. Private regression/rehearsal logs, reports and browser artifacts are in ignored `var/exports/pr2-review-fixes/`.
+
+These checks used mocked provider responses. Live model quality and physical microphones were not retested, and no
+production deployment or source refresh is part of the corrections.

@@ -1,13 +1,15 @@
 import io
 import json
+import os
 from pathlib import Path
+import re
 import tempfile
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.management import call_command, CommandError
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import reverse
-from learning import api, authoring, lexical, providers, review
+from learning import api, authoring, lexical, providers, review, work
 from learning.models import Card, Deck, ExamplePair, GenerationJob, Presentation, Attempt, ScoredReview
 from learning.rendering import render
 
@@ -16,6 +18,7 @@ SOURCE = {"word": "absorb", "explanation": "/əbˈzɔrb/ (US; verb (transitive))
           "target_language": "English", "native_language": "Chinese"}
 PAIR = {"target_sentence": "The sponge <focus>absorbed</focus> the water.",
         "native_sentence": "海绵<focus>吸收</focus>了水。"}
+CODE_DEFINITION = "A **thesaurus** stores words with similar meanings.\n\n```text\nEntry: car\n\nSynonyms: automobile, motorcar\n```"
 
 
 class VocabularyFieldsTests(TestCase):
@@ -216,3 +219,119 @@ class VocabularyFieldsTests(TestCase):
         posted = {**SOURCE, "explanation": SOURCE["explanation"].replace("\n", "\r\n")}
         authoring.save_card(self.deck, "vocabulary", posted, card)
         self.assertEqual(self.snapshot(), before)
+
+    def test_definition_formatting_keeps_typed_metadata_and_scored_history(self):
+        cases = [
+            ("not a single one", ["none"], "Used to say that there are zero members left in a group.",
+             "There was <focus>not a single one</focus> left.", "这里<focus>一个也没有</focus>。"),
+            ("I'll pass", ["no, thank you"], "Used to refuse an offer politely.",
+             "Thanks, but <focus>I'll pass</focus> on the cake.", "谢谢，不过我<focus>就算了</focus>。"),
+        ]
+        for word, synonyms, definition, target, native in cases:
+            with self.subTest(word=word), patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+                    "learning.providers.request", side_effect=AssertionError("No provider requests")):
+                deck = Deck.objects.create(owner=self.user, name=word)
+                card, _ = authoring.create_card(deck, "vocabulary", {**SOURCE, "word": word, "explanation": ""})
+                _, job_id, claim, _ = work.claim_work()
+                generated = {"explanation": definition, "pronunciations": [
+                    {"ipa": "/test/", "variety": "US", "label": "expression (informal)"}], "synonyms": synonyms}
+                def reply(profile, system, payload):
+                    return ({name: generated[name] for name in payload["requested_fields"]} if profile.task == "DEFINITION"
+                            else {"target_sentence": target, "native_sentence": native})
+                with patch("learning.providers.chat", side_effect=reply):
+                    work.process_generation(job_id, claim)
+                card.refresh_from_db()
+                self.assertTrue(card.ready)
+                self.assertEqual(card.synonyms, synonyms)
+                review.submit(review.next_question(self.user, deck), "forgot")
+                before = self.snapshot()
+                browser = Client(enforce_csrf_checks=True); browser.force_login(self.user)
+                url = reverse("card_edit", args=[deck.pk, card.pk])
+                response = browser.get(url)
+                form = response.context["form"]
+                payload = {name: form[name].value() for name in authoring.SCHEMAS["vocabulary"]}
+                payload["source_identity"] = form["source_identity"].value()
+                payload["csrfmiddlewaretoken"] = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', response.content.decode())[1]
+                payload["explanation"] = payload["explanation"].replace("Used", "**Used**", 1).replace("\n", "\r\n")
+                self.assertEqual(browser.post(url, payload).status_code, 302)
+                for row in before["Card"]:
+                    if row["id"] == card.pk:
+                        row.update(explanation=payload["explanation"], definition=definition.replace("Used", "**Used**", 1))
+                self.assertEqual(self.snapshot(), before)
+                card.refresh_from_db()
+                self.assertEqual(api.representation(card)["synonyms"], synonyms)
+                self.assertEqual(card.pronunciations, generated["pronunciations"])
+
+    def test_explicit_metadata_edits_change_only_their_teaching_component(self):
+        generated = {"explanation": "Used to refuse politely.\n",
+                     "pronunciations": [{"ipa": "/x/", "variety": "US", "label": "expression"}], "synonyms": ["none"]}
+        for index, (old, new, changed) in enumerate([
+            ("Synonyms: none", "Synonyms: No close synonyms", {"synonyms": []}),
+            ("Synonyms: none", "Synonyms: nobody", {"synonyms": ["nobody"]}),
+            ("/x/ (US; expression)", "/y/ (UK; noun)", {"pronunciations": [{"ipa": "/y/", "variety": "UK", "label": "noun"}]}),
+        ]):
+            with self.subTest(changed=changed):
+                card = self.legacy(word=f"variant {index}", explanation=lexical.combine("", generated))
+                Card.objects.filter(pk=card.pk).update(**lexical.columns(generated)); card.refresh_from_db()
+                source = {**SOURCE, "word": card.word, "explanation": card.explanation.replace(old, new)}
+                authoring.save_card(self.deck, "vocabulary", source, card)
+                card.refresh_from_db()
+                self.assertEqual(lexical.details(card), {**generated, **changed})
+                self.assertEqual(card.source_version, 2)
+
+    def test_code_and_nested_examples_are_not_metadata_footers(self):
+        examples = [CODE_DEFINITION, CODE_DEFINITION.replace("```", "~~~"),
+                    CODE_DEFINITION.rsplit("\n```", 1)[0],
+                    "A definition.\n\n    Entry: car\n\n    [synonyms: automobile, motorcar]",
+                    "A definition.\n\n> [synonyms: example]", "A definition.\n\n- [synonyms: example]"]
+        for definition in examples:
+            for prefix in ["", "/x/ (noun):\n\n"]:
+                for newline in ["\n", "\r\n"]:
+                    with self.subTest(definition=definition, prefix=prefix, newline=newline):
+                        text = (prefix + definition).replace("\n", newline)
+                        values = lexical.parts(text)
+                        self.assertEqual(values["explanation"], definition.replace("\n", newline))
+                        self.assertIsNone(values["synonyms"])
+                        self.assertEqual(render(values["explanation"]).html, render(definition).html)
+
+    def test_real_footer_after_code_and_legacy_inline_footer_still_work(self):
+        for definition in [CODE_DEFINITION, "A definition.\n\n    Literal code  "]:
+            for footer in ["Synonyms: reference book", "[synonyms: reference book]"]:
+                with self.subTest(definition=definition, footer=footer):
+                    values = lexical.parts(definition + "\n\n" + footer)
+                    self.assertEqual(values["explanation"], definition)
+                    self.assertEqual(values["synonyms"], ["reference book"])
+        self.assertEqual(lexical.parts("A definition. [synonyms: first, second]"), {
+            "explanation": "A definition.", "pronunciations": [], "synonyms": ["first", "second"]})
+
+    def test_authoring_rendering_and_judge_keep_the_whole_code_example(self):
+        card, _ = authoring.create_card(self.deck, "vocabulary", {
+            **SOURCE, "word": "thesaurus", "explanation": CODE_DEFINITION})
+        self.assertEqual(card.definition, CODE_DEFINITION)
+        self.assertIsNone(card.synonyms)
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("card", args=[card.pk]))
+        self.assertContains(response, render(CODE_DEFINITION).html, html=True)
+        pair = ExamplePair.objects.create(card=card, source_version=1, **providers.validate_pair({
+            "target_sentence": "Keep a <focus>thesaurus</focus> on the desk.",
+            "native_sentence": "桌上放一本<focus>同义词词典</focus>。"}, "thesaurus", "Chinese"))
+        card.cue_pair, card.cue_direction = pair, "recognition"
+        frozen = review.snapshot(card)
+        p = providers.Profile("JUDGE", "https://example.test/chat", "test-model", "test-only", 10)
+        with patch("learning.providers.chat", return_value={"units": [{"id": 1, "outcome": "complete", "reason": "Test response."}]}) as chat:
+            providers.assess(frozen, "同义词词典", p)
+        self.assertEqual(chat.call_args.args[2]["explanation"], CODE_DEFINITION)
+
+    def test_legacy_export_apply_preserves_code_contents_without_synonyms(self):
+        card = self.legacy(word="thesaurus", explanation=CODE_DEFINITION)
+        before = self.snapshot()
+        plan = self.export()
+        self.assertEqual(plan["cards"][0]["fields"], {
+            "definition": CODE_DEFINITION, "pronunciations": [], "synonyms": None})
+        with patch("learning.providers.request", side_effect=AssertionError("No model calls")):
+            self.apply()
+        before["Card"][0].update(plan["cards"][0]["fields"])
+        self.assertEqual(self.snapshot(), before)
+        card.refresh_from_db()
+        self.assertEqual(api.representation(card)["definition"], CODE_DEFINITION)
+        self.assertIsNone(api.representation(card)["synonyms"])

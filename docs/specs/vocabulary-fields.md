@@ -29,6 +29,9 @@ Generic cards keep their existing explanation and are excluded from extraction.
 details once. Completion consumes and returns structured values, fills only missing information, and preserves raw
 provider fields in provenance. Its checkpoint writes the separate columns before examples can activate a card.
 An unchanged edit preserves the saved structured values instead of reparsing their compatibility text.
+Edits compare the definition, pronunciation prefix and synonym footer separately. An unchanged source component keeps
+its saved typed value, including a literal `none` synonym or a single phrase containing a comma. A definition formatting
+edit updates its Markdown without reparsing the other components; an actual metadata edit uses the legacy input grammar.
 Browser CRLF submission alone retains the original source text; extraction supports both LF and CRLF block separators
 without leaving a carriage return attached to the definition or stripping meaningful code indentation.
 
@@ -40,6 +43,10 @@ Task profiles and prompt text do not change.
 Card detail and new review backs show pronunciation, rendered definition and synonyms separately, with ordinary escaping
 for metadata and the existing safe Markdown renderer for definitions. Old snapshots render their original explanation;
 they are never retroactively split. Unmigrated cards can still display/study through the legacy-text adapter.
+
+Synonym footers are recognized only in the final top-level Markdown paragraph. Fenced and indented code, quotes and
+lists remain definition content, including literal `Synonyms:` or `[synonyms: ...]` examples. A real footer following a
+code block is still extracted. The existing inline trailing `[synonyms: ...]` source format remains supported.
 
 ## Explicit legacy extraction
 

@@ -130,7 +130,7 @@ def save_card(deck, kind, fields, card=None, *, expected_identity=None):
         card.active_pair = card.cue_pair = None
         card.cue_direction, card.direction_block, card.direction_index = "", [], 0
         card.rotation_token, card.ready = None, kind == "generic"
-    details = (lexical.columns(lexical.parts(data["explanation"])) if kind == "vocabulary" and
+    details = (lexical.columns(lexical.edited_details(card, data["explanation"])) if kind == "vocabulary" and
                (card.definition is None or card.explanation != data["explanation"]) else {})
     for k, v in {**data, **details}.items():
         setattr(card, k, v)
