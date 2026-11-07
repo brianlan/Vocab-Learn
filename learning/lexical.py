@@ -130,6 +130,22 @@ def edited_details(card, explanation):
                 values, changed = blank_edit
                 match = re.search(_literal(card.definition), explanation)
                 saved["explanation"] = match[0] if match else ""
+            elif original["synonyms"]:
+                frames = []
+                legacy = re.fullmatch(r"(.*?)" + _literal(card.definition) + r"((?:\r?\n[ \t]*){2}" +
+                                      _literal(original["synonyms"]) + r"\s*)", card.explanation, re.S)
+                if legacy and parts(legacy[1] + "Entry.")["explanation"] == "Entry.":
+                    frames.append(legacy.groups())
+                prefix = explanation[:changed["definition_start"]]
+                legacy = re.fullmatch(_literal(prefix) + _literal(card.definition) + r"(.*)", card.explanation, re.S)
+                if legacy and parts("Entry." + legacy[1])["explanation"] == "Entry.":
+                    frames.append((prefix, legacy[1]))
+                for prefix, footer in frames:
+                    body = _framed(explanation, prefix, footer)
+                    if body is not None:
+                        return {**saved, "explanation": body}
+                if not changed["synonyms"] and not _footer_fits(explanation, _synonym_text([])):
+                    raise ValueError("Close the Markdown fence before changing both the definition and metadata in this legacy source.")
         elif not original["synonyms"] and card.synonyms is not None and card.definition:
             legacy = _definition_frame(card.explanation, card.definition)
             if legacy and legacy[1].strip():

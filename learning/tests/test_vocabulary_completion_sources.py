@@ -323,6 +323,89 @@ class CompletionSourceTests(TestCase):
         self.assertIsNone(card.synonyms)
         self.assertEqual(lexical.missing(lexical.details(card)), ["pronunciations", "synonyms"])
 
+    def test_queued_blank_definition_accepts_open_markdown_with_unchanged_metadata(self):
+        definitions = ["A bank is land beside a river.\n\n" + opening + "\nThe river is deep."
+                       for opening in ["```text", "~~~text", "<script>"]]
+        definitions += ["    A literal code example.", "\n\n" + definitions[0]]
+        for separator, newline, blank, content, synonyms in product(
+                [": ", ":\n\n"], ["\n", "\r\n"], ["", " \n"],
+                definitions, [["no, thank you"], ["none"], []]):
+            with self.subTest(separator=separator, newline=newline, blank=blank, definition=content, synonyms=synonyms):
+                card = self.historical_card(separator, newline, synonyms)
+                try:
+                    original, previous = card.explanation, card.definition
+                    review.submit(review.next_question(self.owner, card.deck), "forgot")
+                    history = list(ScoredReview.objects.filter(card=card).values())
+                    self.edit(card, original.replace(previous, blank.replace("\n", newline), 1))
+                    self.assertEqual(card.source_version, 2)
+                    definition = content.replace("\n", newline)
+                    supplied = original.replace(previous, definition, 1)
+                    self.edit(card, supplied)
+                    expected = {"explanation": definition, "pronunciations": READINGS, "synonyms": synonyms}
+                    self.assertEqual(lexical.details(card), expected)
+                    self.assertEqual((card.source_version, card.ready), (3, False))
+                    self.assertEqual(card.explanation, supplied)
+                    self.assertEqual(card.generation_jobs.get(source_version=2).state, "cancelled")
+                    queued = card.generation_jobs.get(source_version=3)
+                    self.assertEqual(queued.provenance["teaching_details"], {"source": supplied, "details": expected})
+                    self.assertEqual(lexical.missing(lexical.details(card)), [])
+                    calls = self.prepare(card, {**expected, "synonyms": ["unwanted replacement"]})
+                    self.assertNotIn("DEFINITION", calls)
+                    self.assertEqual(calls["GENERATOR"]["explanation"], definition)
+                    self.assertEqual(calls["GENERATOR"]["synonyms"], synonyms)
+                    self.assertEqual(lexical.details(card), expected)
+                    self.assertEqual(list(ScoredReview.objects.filter(card=card).values()), history)
+                finally:
+                    card.deck.delete()
+
+    def test_queued_open_definition_with_metadata_changes_rolls_back_until_closed(self):
+        for separator, newline, component in product([": ", ":\n\n"], ["\n", "\r\n"], ["synonyms", "pronunciations"]):
+            with self.subTest(separator=separator, newline=newline, component=component):
+                card = self.historical_card(separator, newline, ["no, thank you"])
+                try:
+                    original, previous = card.explanation, card.definition
+                    review.submit(review.next_question(self.owner, card.deck), "forgot")
+                    self.edit(card, original.replace(previous, "", 1))
+                    definition = "A bank is land beside a river.\n\n```text\nA steep bank."
+                    changed = original.replace(previous, definition.replace("\n", newline), 1)
+                    if component == "synonyms":
+                        changed = changed.replace("Synonyms: no, thank you", "Synonyms: riverside; shore")
+                    else:
+                        changed = changed.replace("/bæŋk/", "/updated/")
+                    before = {model.__name__: list(model.objects.order_by("pk").values())
+                              for model in apps.get_app_config("learning").get_models()}
+                    with self.assertRaisesMessage(ValidationError, "Markdown fence"):
+                        authoring.save_card(card.deck, "vocabulary", {**LANGUAGES, "word": card.word, "explanation": changed}, card)
+                    after = {model.__name__: list(model.objects.order_by("pk").values())
+                             for model in apps.get_app_config("learning").get_models()}
+                    self.assertEqual(after, before)
+                    closed = definition + "\n```"
+                    self.edit(card, changed.replace(definition.replace("\n", newline), closed.replace("\n", newline), 1))
+                    self.assertEqual(card.definition, closed.replace("\n", newline))
+                    self.assertEqual(card.synonyms, ["riverside", "shore"] if component == "synonyms" else ["no, thank you"])
+                finally:
+                    card.deck.delete()
+
+    def test_queued_open_definition_preserves_inline_and_extended_footers(self):
+        for footer, newline in product(["[synonyms: riverbank]", "\n\n\nSynonyms: riverbank"], ["\n", "\r\n"]):
+            with self.subTest(footer=footer, newline=newline):
+                card = self.historical_card(": ", newline, ["riverbank"])
+                try:
+                    self.edit(card, card.explanation.replace(card.definition, "", 1))
+                    prefix = "/bæŋk/ (US; noun): "
+                    pending = (prefix + footer).replace("\n", newline)
+                    self.edit(card, pending)
+                    self.assertEqual(card.definition, "")
+                    definition = "A bank is land beside a river.\n\n```text\nAn open example.".replace("\n", newline)
+                    self.edit(card, prefix + definition + footer.replace("\n", newline))
+                    expected = {"explanation": definition, "pronunciations": READINGS, "synonyms": ["riverbank"]}
+                    self.assertEqual(lexical.details(card), expected)
+                    calls = self.prepare(card, expected)
+                    self.assertNotIn("DEFINITION", calls)
+                    self.assertEqual(calls["GENERATOR"]["synonyms"], ["riverbank"])
+                finally:
+                    card.deck.delete()
+
     def test_ambiguous_legacy_edit_is_rejected_without_changing_data(self):
         card = self.legacy(RIVER, {"pronunciations": READINGS, "synonyms": SYNONYMS}, PREFIX + RIVER + FOOTER, typed=True)
         before = Card.objects.values().get(pk=card.pk)
@@ -380,6 +463,36 @@ class CompletionRecoveryTests(TransactionTestCase):
                 self.assertEqual(snapshot(), before)
             finally:
                 call_command("migrate", "learning", target, verbosity=0, interactive=False)
+
+    def test_refilled_open_definition_survives_fresh_schema_recovery(self):
+        owner = get_user_model().objects.create_user("learner")
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+                "learning.providers.request", side_effect=AssertionError("No provider network calls")):
+            for separator, newline in product([": ", ":\n\n"], ["\n", "\r\n"]):
+                with self.subTest(separator=separator, newline=newline):
+                    deck = Deck.objects.create(owner=owner, name="Refilled Markdown")
+                    try:
+                        original = RIVER.replace("\n", newline)
+                        source = {**LANGUAGES, "word": "bank", "explanation": original}
+                        generated = {"explanation": original, "pronunciations": READINGS, "synonyms": ["no, thank you"]}
+                        card, _ = authoring.create_card(deck, "vocabulary", source)
+                        def historical_combine(original, additions):
+                            prefix, body, footer = lexical._composition(original, additions)
+                            return (prefix.removesuffix(":\n\n") + separator + body + footer).replace("\r\n", "\n").replace("\n", newline)
+                        with patch("learning.lexical.combine", side_effect=historical_combine):
+                            self.prepare(card, generated)
+                        saved = card.explanation
+                        review.submit(review.next_question(owner, deck), "forgot")
+                        card.refresh_from_db()
+                        card = authoring.save_card(deck, "vocabulary", {**source, "explanation": saved.replace(original, "", 1)}, card)
+                        definition = "A bank is land beside a river.\n\n```text\nAn open example.".replace("\n", newline)
+                        card = authoring.save_card(deck, "vocabulary", {**source, "explanation": saved.replace(original, definition, 1)}, card)
+                        card.refresh_from_db()
+                        self.assertEqual(lexical.details(card), {**generated, "explanation": definition})
+                        self.prepare(card, generated)
+                        self.assert_fresh_recovery(card)
+                    finally:
+                        deck.delete()
 
     def test_each_source_revision_recovers_after_actual_schema_rollback_and_fresh_export(self):
         owner = get_user_model().objects.create_user("learner")

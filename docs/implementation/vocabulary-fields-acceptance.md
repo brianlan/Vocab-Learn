@@ -259,3 +259,37 @@ checks. No live production access was needed. Private logs and rehearsal artifac
 
 No schema, dependency, prompt or provider-setting changes were required. Provider outputs were mocked; desktop browser
 and physical microphone checks were not repeated, and production was not updated.
+
+## PR #2 supplied Markdown after definition clearing
+
+The [review of e1e61c6](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6709120367) confirmed the queued
+metadata-edit fix and found a P2 regression when the learner subsequently supplied an unfinished Markdown definition.
+Source-only parsing hid the unchanged footer inside the new block and inferred that the synonyms had been removed.
+This could send a replacement-synonym request even though those fields were never edited.
+
+When a known blank source receives a real definition, authoring now tests its established prefix/footer frames against
+the edited source. The actual retained footer spelling and typed values are preserved, and only the supplied definition
+is extracted between the unchanged boundaries. Historical paragraph layouts are tried before parsed-prefix layouts,
+preserving meaningful leading whitespace and supporting inline/extended footer forms. No footer is reconstructed from
+the synonym list. If the new block hides a simultaneously changed metadata component and no frame matches, saving follows
+the existing validation-error policy and atomically rolls back; closing the block permits the unambiguous edit.
+
+The full **147-test suite passed** on Python 3.11. System, migration-drift and whitespace checks passed. New editing and
+atomic-rejection regressions failed against e1e61c6. Coverage includes a **120-case** successful-edit matrix using worker-created
+historical sources, actual scored Forgot reviews, CSRF-enforced forms with fresh identities and subsequent preparation:
+both historical separators, LF/CRLF, empty/whitespace prior definitions, open backtick/tilde/HTML blocks, indented code,
+leading blank lines, literal `none`, comma-containing phrases and explicit empty synonyms. The supplied definition,
+unchanged metadata, queued checkpoint and Generator inputs match exactly; DEFINITION makes no replacement request.
+
+Eight simultaneous-change cases verify rollback of every learning-model row/field and successful saving after closing the
+fence. Four inline/extended-footer cases exercise the alternate frame. A separate four-case test performs actual schema
+rollback/upgrade and fresh export/apply after the refilled open definition is prepared; all learning-model values and
+idempotent reapplication are preserved.
+
+Retained development/read-only-production snapshots passed **1,660/1,648-card** extraction, preservation across **17/16
+original tables**, idempotency, rollback/upgrade, matching fresh manifests, SQLite integrity and foreign-key checks. No live
+production access was needed. Private logs and rehearsal artifacts are under ignored
+`var/exports/pr2-supplied-markdown-boundaries/`.
+
+No schema, dependency, prompt or provider-setting changes were needed. Provider responses were mocked; desktop browser
+and physical microphone checks were not repeated, and production was not updated.

@@ -69,6 +69,8 @@ remains. That recorded interpretation takes precedence over source-only parsing;
 While a known blank definition awaits preparation, edits to its retained metadata use that same interpretation. Changed
 metadata is parsed and unchanged components retain their typed values; the next preparation still requests the definition.
 Supplying a real definition returns to normal definition parsing without splitting unchanged comma-containing synonyms.
+When filling a blank definition, unchanged source prefix/footer boundaries isolate the supplied Markdown even if a new
+open block hides the footer from source-only parsing. Its typed metadata stays supplied; preparation does not replace it.
 A new standalone plain `Synonyms:` definition remains definition text when no existing footer establishes a metadata edit.
 Definition-only and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
 saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
