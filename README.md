@@ -7,6 +7,8 @@ V1 is implemented and available for user acceptance. The application uses Django
 Production runs on the dedicated host `192.168.71.97`; this checkout is development. The
 [Vocabulary creation increment](docs/specs/vocabulary-creation.md) adds optional explanations, missing-detail completion
 and a user-key-authenticated creation/query interface. It is developed locally before a separately requested production release.
+The [structured-field follow-up](docs/specs/vocabulary-fields.md) separates definition, pronunciation and synonyms while
+preserving original sources, re-import behavior and frozen learning history.
 Splitting existing explanations into new Card fields remains deferred.
 
 ![The Fieldnotes study interface](docs/implementation/previews/review-front.png)

@@ -1,0 +1,130 @@
+# Structured Vocabulary teaching details
+
+This is step 4 following the merged Vocabulary creation increment. It separates teaching information in development;
+production promotion remains a separate release. The [creation contract](vocabulary-creation.md) still owns input,
+deduplication and preparation rules. Learning, grading and example-rotation rules are unchanged.
+
+## Stored meaning and compatibility source
+
+Vocabulary cards have three dedicated properties:
+
+| Property | Representation | Meaning |
+| --- | --- | --- |
+| `definition` | Markdown text | The selected sense in simple target-language words, without pronunciation/synonym wrappers. `null` identifies a legacy row awaiting extraction; an empty string is a new card awaiting definition completion. |
+| `pronunciations` | List of `{ipa, variety, label}` objects | Available labelled IPA readings. An empty list means pronunciation has not been supplied. Do not infer a variety from an unlabelled legacy reading. |
+| `synonyms` | List of strings, or `null` | `null` means not supplied; `[]` means explicitly no suitable close synonyms. Both differ from a populated list. |
+
+The existing `Card.explanation` remains the compatibility source for input identity, old CSV re-imports, the existing
+source-edit form and the HTTP `explanation` response key. Backfill does not rewrite it or recompute identity. New writes
+persist both that compatible representation and the three structured values atomically. This retention is deliberate;
+see [ADR 0006](../adr/0006-structured-vocabulary-details.md).
+
+Creation and CSV inputs retain their current four-field contract. The HTTP response additionally exposes `definition`,
+`pronunciations` and `synonyms`, so callers can consume typed teaching information without parsing `explanation`.
+Generic cards keep their existing explanation and are excluded from extraction.
+
+## Runtime behavior
+
+`learning.lexical` owns the legacy-text adapter and the structured teaching representation. Authoring extracts supplied
+details once. Completion consumes and returns structured values, fills only missing information, and preserves raw
+provider fields in provenance. Its checkpoint writes the separate columns before examples can activate a card.
+Each initial preparation records the complete structured input together with its compatibility source; successful
+completion atomically replaces that record with the complete saved result, including supplied or carried-forward fields.
+Retry retains the record independently of the provider's generated-field metadata.
+An unchanged edit preserves the saved structured values instead of reparsing their compatibility text.
+Edits compare the definition, pronunciation prefix and synonym footer separately. An unchanged source component keeps
+its saved typed value, including a literal `none` synonym or a single phrase containing a comma. A definition formatting
+edit updates its Markdown without reparsing the other components; an actual metadata edit uses the legacy input grammar.
+Browser CRLF submission alone retains the original source text; extraction supports both LF and CRLF block separators
+without leaving a carriage return attached to the definition or stripping meaningful code indentation.
+Clearing the complete explanation, including a whitespace-only submission, explicitly clears all three teaching values.
+The following completion must request a new definition, pronunciation and synonyms rather than inheriting an old sense.
+
+Example generation receives the definition and supporting pronunciation/synonym fields separately. New review snapshots
+freeze the same separate values. The Judge receives the definition and visible context; new pronunciation/synonym
+properties are not forwarded as answer criteria. Synonyms remain study material, never an automatic answer whitelist.
+Task profiles and prompt text do not change.
+
+Card detail and new review backs show pronunciation, rendered definition and synonyms separately, with ordinary escaping
+for metadata and the existing safe Markdown renderer for definitions. Old snapshots render their original explanation;
+they are never retroactively split. Unmigrated cards can still display/study through the legacy-text adapter.
+
+Synonym footers are recognized only in the final top-level Markdown paragraph. Fenced and indented code, quotes and
+lists remain definition content, including literal `Synonyms:` or `[synonyms: ...]` examples. A real footer following a
+code block is still extracted. The existing inline trailing `[synonyms: ...]` source format remains supported.
+A plain `Synonyms:` paragraph with no preceding definition remains a definition, as in the original source grammar;
+the explicit bracket form can still supply metadata on its own.
+
+Completion composition uses the recorded generated fields to distinguish a generated definition from a supplied one.
+It appends a synonym footer only when the full footer can be read outside the authored Markdown. For an unfinished
+fence or another open block, synonyms remain in their dedicated column and provenance and are still displayed/returned
+normally; they are omitted from the compatibility source instead of becoming code content. Authored Markdown is unchanged.
+
+Edits of older unsafe compositions use the stored definition and the actual accepted source prefix/footer as boundaries,
+including comma-separated, bracketed and explicitly empty synonym footers. They do not reconstruct a footer from the list.
+The definition starts after the parsed pronunciation prefix, even when it is empty; matching text inside a pronunciation
+label cannot select that boundary. Both editing and complete-record recovery use this same component boundary.
+A source-matching complete record can explicitly identify a blank definition when only a standalone metadata footer
+remains. That recorded interpretation takes precedence over source-only parsing; unrelated definition text cannot be dropped.
+While a known blank definition awaits preparation, edits to its retained metadata use that same interpretation. Changed
+metadata is parsed and unchanged components retain their typed values; the next preparation still requests the definition.
+Supplying a real definition returns to normal definition parsing without splitting unchanged comma-containing synonyms.
+When filling a blank definition, unchanged source prefix/footer boundaries isolate the supplied Markdown even if a new
+open block hides the footer from source-only parsing. Its typed metadata stays supplied; preparation does not replace it.
+A new standalone plain `Synonyms:` definition remains definition text when no existing footer establishes a metadata edit.
+Definition-only and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
+saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
+
+## Explicit legacy extraction
+
+Migration `0010_structured_vocabulary_details` only adds the three columns. It performs no model calls or source writes.
+The separate operator command exports a private, reviewable plan, then applies that reviewed plan:
+
+```sh
+docker compose exec web python manage.py vocabulary_fields export /data/migrations/vocabulary-fields.json
+# Copy/read this private manifest and review the extracted fields before applying it.
+docker compose exec web python manage.py vocabulary_fields apply /data/migrations/vocabulary-fields.json
+```
+
+Export includes all Vocabulary rows whose `definition` is null, including archived and unprepared cards. It never
+overwrites an existing file. The file has mode 0600 and its newly created directory has mode 0700. Keep plans and snapshots
+out of Git. A current revision's complete preparation record is preferred when its recorded source and boundaries match
+the current source, including formatting-only definition edits. This also covers queued preparation and values omitted
+from compatibility text. Each candidate is validated before use; an invalid record can fall back to historical replay.
+A completed generation's structured fields are reused when its retained original input reproduces the current
+source, including the historical unsafe-footer and single-line pronunciation formats. Replay restores the original supplied
+definition as well as generated fields; it never derives that definition from an appended generated footer. Formatting-only
+differences may retain the saved source's Markdown when its existing canonical identity matches. Older, incompatible or
+invalid provenance falls back to validated saved source extraction, rather than aborting the batch or skipping the card.
+
+Review checks the actual source against its extracted definition, every pronunciation/label and each synonym. Definitions
+must be extracted verbatim. Missing source metadata remains missing; extraction neither invents synonyms nor silently turns
+unknown data into an explicit empty list. This operation does not audit or change the underlying linguistic claims.
+
+Apply checks a digest of each current source/revision and validates field shapes. Changed/unavailable sources, duplicate
+IDs, invalid records and different already-populated details abort the entire transaction. Matching previously applied
+records are skipped, so repeating a plan is safe. Updates name only the three new columns: identity, source/progress
+versions, Ready, FSRS, due, collection, streak, direction locks, examples, jobs and frozen history remain unchanged.
+New reviews between export and apply do not invalidate a plan or lose their progress.
+When a blank definition conflicts with source-only parsing, both export and apply require the complete fields to match
+a verified current-revision checkpoint from the database. A manifest cannot grant itself permission to clear a definition;
+missing, stale, incompatible or different teaching records do not authorize that operation. The standalone plain
+`Synonyms:` definition keeps its source-only interpretation when no verified blank record exists.
+
+Existing Ready cards remain Ready even when their old source omitted metadata. They are not queued for automatic
+completion or example regeneration. New cards still need complete teaching details and paired examples before study.
+
+## Release and rollback
+
+The [operations guide](../operations.md#vocabulary-field-extraction) describes the development procedure. A production
+release must take a current cold backup with its matching application image, migrate the live production database,
+export/review its own plan and verify preservation before service resumes. A development database or plan must never
+replace production data. Migration 0009 from the earlier creation increment is also required if production has not
+received that increment yet.
+
+Reversing to 0009 removes only these three properties. The compatibility source and all existing learning/history fields
+remain, allowing a subsequent upgrade and reapplication of the same reviewed plan. Use the application image matching the
+selected schema; the original cold backup remains the recovery reference.
+Revisions prepared by the complete-checkpoint implementation can also be recovered with a fresh export after upgrade,
+including synonyms omitted from unfinished Markdown blocks. Older records without such a checkpoint still require the
+retained reviewed plan or matching backup to recover metadata absent from both source and provenance.

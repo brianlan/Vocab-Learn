@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
-from learning import providers, work
+from learning import lexical, providers, work
 from learning.models import Card
 
 
@@ -30,7 +30,7 @@ class Command(BaseCommand):
             raise CommandError(str(error)) from None
 
         def generate(card):
-            source = {key: getattr(card, key) for key in ["word", "explanation", "target_language", "native_language"]}
+            source = lexical.source(card)
             try:
                 data, provenance = providers.generate(source, profile)
                 return data, provenance, ""

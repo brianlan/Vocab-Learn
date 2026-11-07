@@ -164,7 +164,7 @@ def save_pair(job_id, claim, data, provenance):
         return job.result
     if job.state != "processing" or job.claim != claim or job.deadline <= timezone.now() or not current_generation(job, job.card):
         return None
-    if job.mode == "initial" and not job.card.explanation.strip():
+    if job.mode == "initial" and not lexical.details(job.card)["explanation"].strip():
         return None
     pair = ExamplePair.objects.create(card=job.card, source_version=job.source_version, provenance=provenance, **data)
     if job.mode == "initial":
@@ -191,18 +191,20 @@ def save_corrected_pair(card_id, source_version, previous_pair_id, data, provena
 
 
 @transaction.atomic
-def save_definition(job_id, claim, explanation, provenance):
+def save_definition(job_id, claim, details, provenance):
     from .authoring import identity
     job = GenerationJob.objects.select_related("card__deck").get(pk=job_id)
     if (job.state != "processing" or job.claim != claim or job.deadline <= timezone.now() or
             job.mode != "initial" or not current_generation(job, job.card)):
         return False
     source = {key: getattr(job.card, key) for key in ["word", "target_language", "native_language"]}
+    explanation = lexical.combine(job.card.explanation, provenance.get("fields", {}))
     key = identity("vocabulary", {**source, "explanation": explanation})
     if Card.objects.filter(deck=job.card.deck, identity=key).exclude(pk=job.card_id).exists():
         raise providers.StageError("DEFINITION", "The completed source already exists in this deck. Update this card's intended meaning.", "content")
-    Card.objects.filter(pk=job.card_id).update(explanation=explanation, identity=key)
+    Card.objects.filter(pk=job.card_id).update(explanation=explanation, identity=key, **lexical.columns(details))
     job.provenance = {**job.provenance, "definition": provenance, "definition_completed": True,
+                      "teaching_details": {"source": explanation, "details": details},
                       "definition_generated": "explanation" in provenance["requested_fields"], "phase": "examples"}
     job.save(update_fields=["provenance"])
     return True
@@ -213,18 +215,18 @@ def process_generation(job_id, claim):
     if job.state != "processing" or job.claim != claim or not current_generation(job, job.card):
         return
     if job.mode == "initial" and job.provenance.get("enrich_source") and not job.provenance.get("definition_completed"):
-        source = {key: getattr(job.card, key) for key in ["word", "explanation", "target_language", "native_language"]}
-        p = bounded_profile("DEFINITION", job.deadline) if lexical.missing(job.card.explanation) else None
+        source = lexical.source(job.card)
+        p = bounded_profile("DEFINITION", job.deadline) if lexical.missing(lexical.details(job.card)) else None
         provenance = {**job.provenance, "phase": "definition"}
         if p:
             provenance["definition"] = p.metadata()
         if not GenerationJob.objects.filter(pk=job_id, claim=claim, state="processing", deadline__gt=timezone.now()).update(provenance=provenance):
             return
-        explanation, provenance = providers.define(source, p)
-        if not save_definition(job_id, claim, explanation, provenance):
+        details, provenance = providers.define(source, p)
+        if not save_definition(job_id, claim, details, provenance):
             return
         job = GenerationJob.objects.select_related("card__deck").get(pk=job_id)
-    source = {key: getattr(job.card, key) for key in ["word", "explanation", "target_language", "native_language"]}
+    source = lexical.source(job.card)
     if job.mode == "rotation" and job.card.active_pair_id:
         pair = job.card.active_pair
         source["previous_pair"] = {"target_sentence": pair.target_sentence, "native_sentence": pair.native_sentence}
@@ -254,7 +256,7 @@ def retry_generation(job):
     job.requested_at = timezone.now()
     job.started_at, job.deadline = None, None
     job.provenance = {key: value for key, value in job.provenance.items() if key in
-                      {"enrich_source", "input_identity", "input_explanation", "definition", "definition_completed", "definition_generated"}}
+                      {"enrich_source", "input_identity", "input_explanation", "definition", "definition_completed", "definition_generated", "teaching_details"}}
     job.save(update_fields=["execution", "state", "claim", "error", "error_category", "retryable", "requested_at", "started_at", "deadline", "provenance"])
     return job
 

@@ -53,6 +53,9 @@ The worker is required for ASR, judgment and Vocabulary preparation. Sources and
 
 Migration `0008_example_highlight_positions` adds and backfills the selected positions for saved example pairs. Stop web/worker for the upgrade. Original sentence/highlight strings, progress, schedules, direction locks and frozen history are preserved. Existing failed tasks require explicit Retry; migration does not call a model or retry them. Use a matching cold backup/image for an exact rollback.
 
+Migration `0010_structured_vocabulary_details` adds three Vocabulary teaching properties. It does not rewrite sources
+or backfill content automatically. Apply the reviewed [field extraction](#vocabulary-field-extraction) separately.
+
 ## Docker Compose and private LAN HTTPS
 
 ```sh
@@ -147,6 +150,36 @@ Queued/new executions use settings at dispatch; already dispatched calls retain 
 ### Import and daily learning
 
 Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Samples and authoring syntax](examples/README.md) describe the exact schemas. Import is limited to 5 MB/10,000 source records and is all-or-nothing on validation failure; duplicates are skipped without overwriting/restoring them. Vocabulary explanations may be omitted; missing definitions, pronunciation and close synonyms prepare before examples. Sources become study-ready only after valid paired examples are saved. Refresh their detail page for preparation status; failures expose Retry. A completed definition survives an example-stage retry.
+
+### Vocabulary field extraction
+
+The [field specification](specs/vocabulary-fields.md) owns the structured representation and preservation guarantees.
+These commands target the development project. A production release remains separately authorized and must use its
+live database and a current matching cold backup. Do not copy a development database or manifest onto production.
+
+After migration 0010, export a plan, copy it to an ignored private directory for review, then apply that same plan:
+
+```sh
+docker compose exec web python manage.py vocabulary_fields export /data/migrations/vocabulary-fields.json
+mkdir -m 700 -p var/exports/vocabulary-fields
+docker compose cp web:/data/migrations/vocabulary-fields.json var/exports/vocabulary-fields/reviewed.json
+# Review the private JSON before running the following command.
+docker compose exec -T web python manage.py vocabulary_fields apply /dev/stdin < var/exports/vocabulary-fields/reviewed.json
+```
+
+The plan copies available definition, pronunciation and synonym information without model calls. Unknown synonyms stay
+`null`; an explicitly empty list stays `[]`. No existing Ready card becomes unprepared because legacy metadata was absent.
+Apply is atomic and source-fenced; repeat application skips matching rows, and a changed source requires a freshly
+exported/reviewed plan. Standard input lets the command apply the actual reviewed file, including review edits.
+
+Old `Card.explanation` text remains for source editing, input identity and old re-imports. Runtime teaching uses
+`definition`, `pronunciations` and `synonyms`; new HTTP responses expose those properties alongside compatible `explanation`.
+Each new initial preparation retains its complete structured input/result, including provided metadata omitted from
+compatibility text. Export can reuse that record only for the current source revision and matching source boundaries;
+retry preserves it. Fresh export after reversing/reapplying 0010 can recover those recorded values. Keep reviewed plans
+and matching backups for older revisions whose source and provenance never recorded the missing metadata.
+Frozen historical reviews keep their original content. See the [acceptance record](implementation/vocabulary-fields-acceptance.md)
+for the executed development and production-copy rehearsal.
 
 ### Vocabulary HTTP creation
 

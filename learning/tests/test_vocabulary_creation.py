@@ -24,20 +24,23 @@ PAIR = {"target_sentence": "The sponge <focus>absorbed</focus> the water.",
 class CompletionContractTests(UnitTestCase):
     def test_pronunciation_labels_round_trip_through_completion(self):
         p = providers.Profile("DEFINITION", "https://example.test/chat", "definition-model", "test-only", 10)
-        for label in ["verb (transitive)", "adjective (informal)", "verb (formal (rare))",
+        for label in ["", "verb (transitive)", "adjective (informal)", "verb (formal (rare))",
                       "verb (unclosed", "noun) or verb (", "noun\\usage", "verb\n(transitive)"]:
             result = {**DETAILS, "pronunciations": [{"ipa": "/əbˈzɔrb/", "variety": "US", "label": label}]}
             with self.subTest(label=label), patch("learning.providers.chat", return_value=result):
-                text, metadata = providers.define(SOURCE, p)
-                self.assertEqual(lexical.missing(text), [])
-                self.assertEqual(lexical.parts(text)["pronunciations"][0]["label"], "US; " + label)
+                details, metadata = providers.define(SOURCE, p)
+                self.assertEqual(lexical.missing(details), [])
+                self.assertEqual(details["pronunciations"][0]["label"], label)
+                compatible = lexical.parts(lexical.combine("", metadata["fields"]))
+                self.assertEqual(compatible["pronunciations"], details["pronunciations"])
+                self.assertEqual(lexical.missing(compatible), [])
                 self.assertEqual(metadata["fields"]["pronunciations"][0]["label"], label)
 
     def test_existing_balanced_nested_labels_are_already_complete(self):
         text = "/x/ (noun (countable)), /y/ (verb (formal (rare))): A definition. [synonyms: ]"
         with patch("learning.providers.chat") as chat:
-            completed, _ = providers.define({**SOURCE, "explanation": text})
-        self.assertEqual(completed, text)
+            completed, _ = providers.define({**SOURCE, **lexical.parts(text)})
+        self.assertEqual(completed, lexical.parts(text))
         self.assertEqual([p["label"] for p in lexical.parts(text)["pronunciations"]],
                          ["noun (countable)", "verb (formal (rare))"])
         chat.assert_not_called()
@@ -54,28 +57,30 @@ class CompletionContractTests(UnitTestCase):
                 source_text = original if supplied else "/x/ (verb): [synonyms: ]"
                 result = {k: DETAILS[k] for k in ["pronunciations", "synonyms"]} if supplied else {"explanation": original}
                 with self.subTest(block=tag, supplied=supplied), patch("learning.providers.chat", return_value=result):
-                    text, _ = providers.define({**SOURCE, "explanation": source_text}, p)
-                    self.assertIn(original, text)
-                    self.assertEqual(render(text).html.count(tag), render(original).html.count(tag))
-                    self.assertEqual(lexical.missing(text), [])
+                    details, metadata = providers.define({**SOURCE, **lexical.parts(source_text)}, p)
+                    self.assertEqual(details["explanation"], original)
+                    self.assertEqual(render(details["explanation"]).html, render(original).html)
+                    compatible = lexical.combine(source_text, metadata["fields"])
+                    self.assertEqual(render(compatible).html.count(tag), render(original).html.count(tag))
+                    self.assertEqual(lexical.missing(details), [])
 
     def test_supplied_meaning_is_kept_and_only_missing_details_are_requested(self):
         original = "**Verb**\n\nTake in liquid, including water."
         p = providers.Profile("DEFINITION", "https://example.test/chat", "definition-model", "test-only", 10)
         result = {key: DETAILS[key] for key in ["pronunciations", "synonyms"]}
         with patch("learning.providers.chat", return_value=result) as chat:
-            text, metadata = providers.define({**SOURCE, "explanation": original}, p)
-        self.assertIn(original, text)
+            details, metadata = providers.define({**SOURCE, **lexical.parts(original)}, p)
+        self.assertEqual(details["explanation"], original)
         self.assertEqual(chat.call_args.args[2]["requested_fields"], ["pronunciations", "synonyms"])
         self.assertEqual(metadata["model"], "definition-model")
-        self.assertEqual(lexical.missing(text), [])
+        self.assertEqual(lexical.missing(details), [])
 
     def test_complete_legacy_format_skips_call_and_preserves_text(self):
         for prefix in ["/ˈɑbdʒɛkt/ (noun), /əbˈdʒɛkt/ (verb)", "/ˈprɛzənt/ (adj./n.) /prɪˈzɛnt/ (v.)"]:
             original = prefix + ": An **object** is a thing. [synonyms: ]"
             with patch("learning.providers.chat") as chat:
-                text, metadata = providers.define({**SOURCE, "explanation": original})
-            self.assertEqual(text, original)
+                details, metadata = providers.define({**SOURCE, **lexical.parts(original)})
+            self.assertEqual(details, lexical.parts(original))
             self.assertEqual(metadata["origin"], "provided")
             chat.assert_not_called()
         self.assertEqual(lexical.parts("A definition: with a meaningful colon.")["explanation"], "A definition: with a meaningful colon.")
@@ -107,9 +112,10 @@ class CompletionContractTests(UnitTestCase):
         result = {"explanation": "Si **aprovechas** algo, lo usas para obtener algo bueno.",
                   "pronunciations": [{"ipa": "/apɾoβeˈtʃaɾ/", "variety": "Spain", "label": "verb"}], "synonyms": []}
         with patch("learning.providers.chat", return_value=result):
-            text, _ = providers.define({**SOURCE, "word": "aprovechar", "target_language": "Spanish"}, p)
-        self.assertIn("No close synonyms", text)
-        self.assertEqual(lexical.missing(text), [])
+            details, metadata = providers.define({**SOURCE, "word": "aprovechar", "target_language": "Spanish"}, p)
+        self.assertEqual(details["synonyms"], [])
+        self.assertIn("No close synonyms", lexical.combine("", metadata["fields"]))
+        self.assertEqual(lexical.missing(details), [])
 
 
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
@@ -296,14 +302,17 @@ class VocabularyCreationTests(TestCase):
             calls.append(p.task)
             if p.task == "DEFINITION":
                 return {key: DETAILS[key] for key in payload["requested_fields"]}
-            self.assertIn(source["explanation"], payload["explanation"])
-            self.assertIn("soak up", payload["explanation"])
+            self.assertEqual(source["explanation"], payload["explanation"])
+            self.assertEqual(payload["synonyms"], DETAILS["synonyms"])
             return PAIR
         with patch("learning.providers.chat", side_effect=answer):
             work.process_generation(job.pk, claim)
         card.refresh_from_db();job.refresh_from_db()
         self.assertEqual(calls, ["DEFINITION", "GENERATOR"])
         self.assertTrue(card.ready)
+        self.assertEqual(card.definition, source["explanation"])
+        self.assertEqual(card.pronunciations, DETAILS["pronunciations"])
+        self.assertEqual(card.synonyms, DETAILS["synonyms"])
         self.assertEqual((card.review_count, card.progress_version, card.source_version), (0, 0, 1))
         self.assertEqual(job.state, "done")
         self.assertTrue(job.provenance["definition_completed"])
@@ -311,6 +320,14 @@ class VocabularyCreationTests(TestCase):
         self.assertEqual(authoring.create_card(self.deck, "vocabulary", source), (card, False))
         self.assertEqual(self.post(SOURCE).json()["id"], card.pk)
         self.assertEqual(GenerationJob.objects.count(), 1)
+
+    def test_whitespace_only_definition_completes_without_losing_generated_content(self):
+        card, job, claim = self.claimed({**SOURCE, "explanation": " \t\n "})
+        self.complete(card, job, claim)
+        self.assertEqual(card.definition, DETAILS["explanation"])
+        self.assertIn(DETAILS["explanation"], card.explanation)
+        self.assertEqual(card.pronunciations, DETAILS["pronunciations"])
+        self.assertEqual(card.synonyms, DETAILS["synonyms"])
 
     def test_example_failure_retry_preserves_completion_and_does_not_pay_twice(self):
         card, job, claim = self.claimed()
@@ -326,6 +343,8 @@ class VocabularyCreationTests(TestCase):
         self.assertFalse(card.ready)
         self.assertFalse(review.available(self.owner).exists())
         retried = work.retry_generation(job)
+        self.assertEqual(retried.provenance["teaching_details"], {
+            "source": card.explanation, "details": lexical.details(card)})
         status = self.client.get(reverse("api_vocabulary", args=[card.pk]), **self.headers).json()
         self.assertEqual(status["preparation"]["phase"], "examples")
         _, _, second_claim, _ = work.claim_work()
@@ -342,7 +361,7 @@ class VocabularyCreationTests(TestCase):
         replacement = "/x/: A deliberately chosen meaning. [synonyms: ]"
         def complete(*args):
             authoring.save_card(self.deck, "vocabulary", {**SOURCE, "explanation": replacement}, card)
-            return lexical.combine("", DETAILS), {"requested_fields": list(DETAILS)}
+            return DETAILS, {"requested_fields": list(DETAILS), "fields": DETAILS}
         with patch("learning.providers.define", side_effect=complete), patch("learning.providers.generate") as generate:
             work.process_generation(job.pk, claim)
         card.refresh_from_db(); job.refresh_from_db()

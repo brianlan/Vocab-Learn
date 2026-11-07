@@ -1,8 +1,9 @@
 # Vocabulary creation and completion
 
 This development increment adds optional Vocabulary explanations and a private, key-authenticated HTTP creation interface.
-Production remains on the migration baseline until a separately requested release. Card schema changes and splitting
-existing explanations have been deferred at the user's request; existing card content and learning history remain unchanged.
+Production remains on the migration baseline until a separately requested release. The subsequent
+[structured-field increment](vocabulary-fields.md) separates teaching details in development while preserving existing
+source content and learning history.
 
 ## Creation contract
 
@@ -14,8 +15,9 @@ The supported language combinations remain English/Chinese, English/Spanish and 
 Missing teaching details are prepared asynchronously: one useful learner sense, its pronunciation and its close synonyms,
 then an aligned bilingual example pair. Supplied definitions establish the intended meaning and are preserved.
 The completion task returns structured missing fields; its exact structured output and non-secret profile/prompt provenance
-are saved in the preparation record. During this compatibility phase the display content is assembled into the existing
-`Card.explanation` field. A later field migration can use the retained structured output without regenerating it.
+are saved in the preparation record. The structured-field increment saves the definition, pronunciations and synonyms
+in dedicated Card properties. `Card.explanation` retains the compatible source text for existing imports and identity;
+legacy extraction can reuse the retained structured output without regenerating it.
 
 Definitions use familiar target-language words, an appropriate full-sentence learner-dictionary frame and a clear word
 class/construction. They teach one contemporary, broadly useful sense without claiming a statistical frequency ranking.
@@ -71,7 +73,8 @@ routes. Development accepts its existing loopback HTTP origin. Browser authoring
 
 `POST /api/v1/decks/{deck_id}/vocabulary-cards/` accepts one JSON object containing only the four Vocabulary source fields.
 Return 201 for a created card and 200 for a skipped duplicate, including `created`, `id`, `status_url`, current source
-fields and preparation state. The source persists immediately; the request does not wait for paid model calls.
+fields and preparation state. Responses also expose `definition`, `pronunciations` and `synonyms` separately; the existing
+`explanation` key remains compatible source text. The source persists immediately; the request does not wait for paid model calls.
 `GET /api/v1/vocabulary-cards/{card_id}/` returns the caller's card and its preparation result, including safe error/retry
 information. Other users' or unavailable decks/cards return 404. Invalid credentials return 401; invalid source/JSON returns
 400, wrong content type 415, oversized requests 413, and unsupported methods 405. A single request is limited to 64 KB.

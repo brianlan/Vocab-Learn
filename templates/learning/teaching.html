@@ -1,0 +1,3 @@
+{% if teaching.pronunciations %}<div class="vocabulary-pronunciations"><h3>Pronunciation</h3>{% for reading in teaching.pronunciations %}<p><span class="pronunciation">{{ reading.ipa }}</span>{% if reading.variety %} <span class="pill">{{ reading.variety }}</span>{% endif %}{% if reading.label %} <span class="quiet small">{{ reading.label }}</span>{% endif %}</p>{% endfor %}</div>{% endif %}
+<div class="prose explanation">{{ explanation_html|safe }}</div>
+{% if teaching.synonyms != None %}<div class="vocabulary-synonyms"><h3>Synonyms</h3><p>{% for synonym in teaching.synonyms %}{{ synonym }}{% if not forloop.last %}; {% endif %}{% empty %}<span class="quiet">No close synonyms</span>{% endfor %}</p></div>{% endif %}
