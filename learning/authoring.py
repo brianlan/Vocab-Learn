@@ -42,7 +42,8 @@ def identity(kind, data):
 
 def new_generation(card, mode="initial"):
     return GenerationJob.objects.create(card=card, source_version=card.source_version, mode=mode,
-        provenance=({"enrich_source": True, "input_identity": card.identity, "input_explanation": card.explanation}
+        provenance=({"enrich_source": True, "input_identity": card.identity, "input_explanation": card.explanation,
+                     "teaching_details": {"source": card.explanation, "details": lexical.details(card)}}
                     if mode == "initial" else {}),
         **({"token": card.rotation_token} if mode == "rotation" else {}))
 

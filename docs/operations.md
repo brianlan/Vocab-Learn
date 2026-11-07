@@ -174,6 +174,10 @@ exported/reviewed plan. Standard input lets the command apply the actual reviewe
 
 Old `Card.explanation` text remains for source editing, input identity and old re-imports. Runtime teaching uses
 `definition`, `pronunciations` and `synonyms`; new HTTP responses expose those properties alongside compatible `explanation`.
+Each new initial preparation retains its complete structured input/result, including provided metadata omitted from
+compatibility text. Export can reuse that record only for the current source revision and matching source boundaries;
+retry preserves it. Fresh export after reversing/reapplying 0010 can recover those recorded values. Keep reviewed plans
+and matching backups for older revisions whose source and provenance never recorded the missing metadata.
 Frozen historical reviews keep their original content. See the [acceptance record](implementation/vocabulary-fields-acceptance.md)
 for the executed development and production-copy rehearsal.
 

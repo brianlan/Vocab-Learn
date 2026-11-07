@@ -108,10 +108,9 @@ def edited_details(card, explanation):
         _, original = _parts(card.explanation)
         saved = details(card)
         if not original["synonyms"] and card.synonyms is not None and card.definition:
-            footer = _synonym_text(card.synonyms)
-            legacy = re.fullmatch(r"(.*?)" + _literal(card.definition) + _literal(footer), card.explanation, re.S)
-            if legacy and parts(legacy[1] + "Entry.")["explanation"] == "Entry.":
-                prefix = legacy[1]
+            legacy = _definition_frame(card.explanation, card.definition)
+            if legacy and legacy[1].strip():
+                prefix, footer = legacy
                 body = _framed(explanation, prefix, footer)
                 if body is not None:
                     return {**saved, "explanation": body}
@@ -161,6 +160,32 @@ def _literal(text):
 def _framed(source, prefix, suffix):
     match = re.fullmatch(_literal(prefix) + r"(.*?)" + _literal(suffix), source, re.S)
     return match[1] if match else None
+
+
+def _definition_frame(source, definition):
+    match = re.fullmatch(r"(.*?)" + _literal(definition) + r"(.*)", source, re.S)
+    if match and parts(match[1] + "Entry." + match[2])["explanation"] == "Entry.":
+        return match[1], match[2]
+    return None
+
+
+def recovered_checkpoint(checkpoint, source):
+    """Restore complete teaching values only within their recorded source boundaries."""
+    if not isinstance(checkpoint, dict):
+        return None
+    original, values = checkpoint.get("source"), checkpoint.get("details")
+    if (not isinstance(original, str) or not isinstance(values, dict) or
+            set(values) != {"explanation", "pronunciations", "synonyms"} or not isinstance(values["explanation"], str)):
+        return None
+    try:
+        frame = _definition_frame(original, values["explanation"])
+        if frame and render(original).identity == render(source).identity:
+            definition = _framed(source, *frame)
+            if definition is not None:
+                return {**values, "explanation": definition}
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def _synonym_text(synonyms):

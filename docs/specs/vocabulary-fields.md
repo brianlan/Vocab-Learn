@@ -28,6 +28,9 @@ Generic cards keep their existing explanation and are excluded from extraction.
 `learning.lexical` owns the legacy-text adapter and the structured teaching representation. Authoring extracts supplied
 details once. Completion consumes and returns structured values, fills only missing information, and preserves raw
 provider fields in provenance. Its checkpoint writes the separate columns before examples can activate a card.
+Each initial preparation records the complete structured input together with its compatibility source; successful
+completion atomically replaces that record with the complete saved result, including supplied or carried-forward fields.
+Retry retains the record independently of the provider's generated-field metadata.
 An unchanged edit preserves the saved structured values instead of reparsing their compatibility text.
 Edits compare the definition, pronunciation prefix and synonym footer separately. An unchanged source component keeps
 its saved typed value, including a literal `none` synonym or a single phrase containing a comma. A definition formatting
@@ -57,8 +60,9 @@ It appends a synonym footer only when the full footer can be read outside the au
 fence or another open block, synonyms remain in their dedicated column and provenance and are still displayed/returned
 normally; they are omitted from the compatibility source instead of becoming code content. Authored Markdown is unchanged.
 
-Edits of older unsafe compositions use the stored definition and known completion footer as boundaries. Definition-only
-and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
+Edits of older unsafe compositions use the stored definition and the actual accepted source prefix/footer as boundaries,
+including comma-separated, bracketed and explicitly empty synonym footers. They do not reconstruct a footer from the list.
+Definition-only and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
 saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
 
 ## Explicit legacy extraction
@@ -74,7 +78,10 @@ docker compose exec web python manage.py vocabulary_fields apply /data/migration
 
 Export includes all Vocabulary rows whose `definition` is null, including archived and unprepared cards. It never
 overwrites an existing file. The file has mode 0600 and its newly created directory has mode 0700. Keep plans and snapshots
-out of Git. A completed generation's structured fields are reused when its retained original input reproduces the current
+out of Git. A current revision's complete preparation record is preferred when its recorded source and boundaries match
+the current source, including formatting-only definition edits. This also covers queued preparation and values omitted
+from compatibility text. Each candidate is validated before use; an invalid record can fall back to historical replay.
+A completed generation's structured fields are reused when its retained original input reproduces the current
 source, including the historical unsafe-footer and single-line pronunciation formats. Replay restores the original supplied
 definition as well as generated fields; it never derives that definition from an appended generated footer. Formatting-only
 differences may retain the saved source's Markdown when its existing canonical identity matches. Older, incompatible or
@@ -104,3 +111,6 @@ received that increment yet.
 Reversing to 0009 removes only these three properties. The compatibility source and all existing learning/history fields
 remain, allowing a subsequent upgrade and reapplication of the same reviewed plan. Use the application image matching the
 selected schema; the original cold backup remains the recovery reference.
+Revisions prepared by the complete-checkpoint implementation can also be recovered with a fresh export after upgrade,
+including synonyms omitted from unfinished Markdown blocks. Older records without such a checkpoint still require the
+retained reviewed plan or matching backup to recover metadata absent from both source and provenance.

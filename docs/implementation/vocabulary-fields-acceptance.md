@@ -138,3 +138,35 @@ Temporary QA decks were archived and the API key revoked. No provider network ca
 Private logs, reports, snapshots and browser artifacts are under ignored `var/exports/pr2-boundary-fixes/`. Development
 web/worker use the rebuilt application. These corrections add no schema, dependency, prompt or provider-setting change.
 Live model quality and physical microphones were not retested, and production was not updated.
+
+## PR #2 consecutive-edit and recovery corrections
+
+The [review of c08d6d8](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6704236865) identified two further
+preservation failures. Both sequences failed in isolated regression tests before the correction.
+
+- Older unsafe source layouts now recognize the actual saved prefix/footer around the stored definition, rather than
+  rebuilding the footer with semicolons. A comma-separated, bracketed or explicitly empty metadata edit can be prepared
+  and followed by a definition formatting edit without absorbing the footer into that definition.
+- Every new initial preparation records its complete structured input with its compatibility source. Completion saves
+  the complete result atomically with the fields, including provided/carried-forward values when no definition request
+  was needed. Retry retains this record; the provider's generated-field provenance remains unchanged.
+- Export prefers a current-revision complete record only when source identity, definition boundaries and field validation
+  pass. Formatting-only definition changes retain current Markdown. Invalid records fall back to historical replay or
+  validated source extraction, and another source revision cannot supply the values.
+
+The full **136-test suite passed** on Python 3.11. Django system, migration-drift and whitespace checks passed.
+Four added tests cover CSRF-enforced consecutive edits across both fence types and LF/CRLF; complete-record recovery
+including unknown/empty/literal/comma-containing synonyms; invalid/stale records; and actual schema rollback/upgrade
+followed by a fresh export/apply. The migration regression covers queued, completed, formatted and historical unsafe
+revisions, and compares every row/field of every learning model, including scored history. The existing example-failure
+retry regression now also verifies retention of the complete record.
+
+Fresh local copies of the retained development and read-only production snapshots again passed extraction of
+**1,660/1,648 Vocabulary cards**, preservation of all original values across **17/16 tables**, idempotent application,
+actual rollback/upgrade and fresh export/apply. Fresh manifests matched the original plans; SQLite integrity and
+foreign-key checks passed. The snapshots were already local; no live production access was needed.
+
+Private failure/test logs, rehearsal scripts, manifests and databases are under ignored `var/exports/pr2-preservation-fixes/`.
+These corrections add no schema, dependency, prompt or provider-setting change. Provider outputs were mocked; desktop
+browser and physical microphone tests were not repeated. Production was not updated. Older revisions that never recorded
+omitted metadata still require their retained reviewed plan or matching backup; the correction cannot invent that data.

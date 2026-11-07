@@ -5,12 +5,13 @@ from itertools import product
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.test import Client, TestCase
+from django.test import Client, TestCase, TransactionTestCase
 from django.urls import reverse
-from learning import authoring, lexical, providers, review, work
+from learning import api, authoring, lexical, providers, review, work
 from learning.models import Card, Deck, GenerationJob, ScoredReview
 
 
@@ -160,6 +161,48 @@ class CompletionSourceTests(TestCase):
             self.assertEqual(card.definition, "The current definition.")
             self.assertEqual(card.synonyms, ["current"])
 
+    def test_checkpoint_keeps_explicit_empty_and_unserialized_metadata(self):
+        cards = []
+        for synonyms in [None, [], ["none"], ["no, thank you"]]:
+            card = self.legacy(RIVER, {}, PREFIX + RIVER)
+            details = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": synonyms}
+            job = card.generation_jobs.get()
+            job.provenance["teaching_details"] = {"source": card.explanation, "details": details}
+            job.save(update_fields=["provenance"])
+            cards.append((card, details))
+        self.manifest()
+        for card, details in cards:
+            card.refresh_from_db()
+            self.assertEqual(lexical.details(card), details)
+
+    def test_invalid_or_stale_checkpoints_fall_back_without_overriding_sources(self):
+        details = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
+        checkpoint = {"source": PREFIX + RIVER, "details": details}
+        variants = [None, "old format", {}, {**checkpoint, "source": None},
+                    {**checkpoint, "source": PREFIX + RIVER.replace("river", "lake")},
+                    {**checkpoint, "details": {**details, "explanation": "Invented definition."}},
+                    {**checkpoint, "details": {**details, "synonyms": 42}},
+                    {**checkpoint, "details": {**details, "pronunciations": None}}]
+        cards = []
+        for value in variants:
+            card = self.legacy(RIVER, {"pronunciations": READINGS, "synonyms": SYNONYMS}, PREFIX + RIVER)
+            job = card.generation_jobs.get()
+            job.provenance["teaching_details"] = value
+            job.save(update_fields=["provenance"])
+            cards.append(card)
+        stale = self.legacy(RIVER, {}, PREFIX + RIVER)
+        job = stale.generation_jobs.get()
+        job.source_version = 2
+        job.provenance["teaching_details"] = checkpoint
+        job.save(update_fields=["source_version", "provenance"])
+        self.manifest()
+        for card in cards:
+            card.refresh_from_db()
+            self.assertEqual(lexical.details(card), details)
+        stale.refresh_from_db()
+        self.assertEqual(stale.definition, RIVER)
+        self.assertIsNone(stale.synonyms)
+
     def test_legacy_unclosed_edits_keep_known_component_boundaries(self):
         variants = [("ground", "**ground**", {"explanation": RIVER.replace("ground", "**ground**")}),
                     ("Synonyms: riverbank; shore", "Synonyms: riverside", {"synonyms": ["riverside"]}),
@@ -170,6 +213,36 @@ class CompletionSourceTests(TestCase):
                 card = self.legacy(RIVER, {"pronunciations": READINGS, "synonyms": SYNONYMS}, PREFIX + RIVER + FOOTER, typed=True)
                 self.edit(card, card.explanation.replace(old, new))
                 self.assertEqual(lexical.details(card), {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS, **updated})
+
+    def test_consecutive_legacy_metadata_and_formatting_edits_keep_actual_boundaries(self):
+        variants = [("Synonyms: riverside, shore", ["riverside", "shore"]),
+                    ("[synonyms: riverside, shore]", ["riverside", "shore"]),
+                    ("[synonyms: ]", [])]
+        for (footer, synonyms), fence, newline in product(variants, ["```", "~~~"], ["\n", "\r\n"]):
+            with self.subTest(footer=footer, fence=fence, newline=newline):
+                original = RIVER.replace("```", fence).replace("\n", newline)
+                saved = (PREFIX + RIVER + FOOTER).replace("```", fence).replace("\n", newline)
+                card = self.legacy(original, {"pronunciations": READINGS, "synonyms": SYNONYMS}, saved, typed=True)
+                Card.objects.filter(pk=card.pk).update(definition=original)
+                card.refresh_from_db()
+                self.edit(card, (PREFIX + original + "\n\n" + footer).replace("\r\n", "\n").replace("\n", newline))
+                expected = {"explanation": original, "pronunciations": READINGS, "synonyms": synonyms}
+                self.assertEqual(lexical.details(card), expected)
+                calls = self.prepare(card, expected)
+                self.assertNotIn("DEFINITION", calls)
+                review.submit(review.next_question(self.owner, card.deck), "forgot")
+                card.refresh_from_db()
+                before = Card.objects.values().get(pk=card.pk)
+                jobs = list(card.generation_jobs.values())
+                history = list(ScoredReview.objects.filter(card=card).values())
+                self.edit(card, card.explanation.replace("ground", "**ground**"))
+                expected["explanation"] = original.replace("ground", "**ground**")
+                self.assertEqual(lexical.details(card), expected)
+                self.assertEqual(api.representation(card)["definition"], expected["explanation"])
+                before.update(explanation=card.explanation, definition=card.definition)
+                self.assertEqual(Card.objects.values().get(pk=card.pk), before)
+                self.assertEqual(list(card.generation_jobs.values()), jobs)
+                self.assertEqual(list(ScoredReview.objects.filter(card=card).values()), history)
 
     def test_ambiguous_legacy_edit_is_rejected_without_changing_data(self):
         card = self.legacy(RIVER, {"pronunciations": READINGS, "synonyms": SYNONYMS}, PREFIX + RIVER + FOOTER, typed=True)
@@ -191,3 +264,69 @@ class CompletionSourceTests(TestCase):
                     text = lexical.combine(definition if supplied else "", fields)
                     self.assertEqual(lexical.parts(text)["explanation"], definition)
                     self.assertNotIn("Synonyms: riverbank", text)
+
+
+class CompletionRecoveryTests(TransactionTestCase):
+    def test_each_source_revision_recovers_after_actual_schema_rollback_and_fresh_export(self):
+        owner = get_user_model().objects.create_user("learner")
+        target = "0010_structured_vocabulary_details"
+        generated = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
+
+        def prepare(card):
+            _, job_id, claim, _ = work.claim_work()
+            def answer(profile, system, payload):
+                return ({name: generated[name] for name in payload["requested_fields"]}
+                        if profile.task == "DEFINITION" else RIVER_PAIR)
+            with patch("learning.providers.chat", side_effect=answer):
+                work.process_generation(job_id, claim)
+            card.refresh_from_db()
+            self.assertTrue(card.ready)
+
+        def snapshot():
+            return {model.__name__: list(model.objects.order_by("pk").values())
+                    for model in apps.get_app_config("learning").get_models()}
+
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+                "learning.providers.request", side_effect=AssertionError("No provider network calls")):
+            for stage in ["queued", "ready", "formatted", "legacy"]:
+                with self.subTest(stage=stage):
+                    deck = Deck.objects.create(owner=owner, name=stage)
+                    source = {**LANGUAGES, "word": "bank", "explanation": RIVER}
+                    card, _ = authoring.create_card(deck, "vocabulary", source)
+                    prepare(card)
+                    self.assertNotIn("Synonyms:", card.explanation)
+                    if stage == "legacy":
+                        old_source = {**source, "explanation": PREFIX + RIVER + FOOTER}
+                        Card.objects.filter(pk=card.pk).update(explanation=old_source["explanation"],
+                            identity=authoring.identity("vocabulary", old_source))
+                        card.refresh_from_db()
+                    review.submit(review.next_question(owner, deck), "forgot")
+                    card.refresh_from_db()
+                    changed = (card.explanation.replace("riverbank; shore", "riverside, shore") if stage == "legacy"
+                               else card.explanation.replace("muddy", "grassy"))
+                    authoring.save_card(deck, "vocabulary", {**source, "explanation": changed}, card)
+                    card.refresh_from_db()
+                    self.assertEqual(card.source_version, 2)
+                    if stage != "queued":
+                        prepare(card)
+                        review.submit(review.next_question(owner, deck), "forgot")
+                        card.refresh_from_db()
+                    if stage in ["formatted", "legacy"]:
+                        authoring.save_card(deck, "vocabulary", {**source, "explanation": card.explanation.replace("ground", "**ground**")}, card)
+                        card.refresh_from_db()
+                    before = snapshot()
+                    ordinary = Path(folder) / (stage + "-ordinary.json")
+                    call_command("vocabulary_fields", "export", str(ordinary), stdout=io.StringIO())
+                    self.assertEqual(json.loads(ordinary.read_text())["cards"], [])
+                    try:
+                        call_command("migrate", "learning", "0009", verbosity=0, interactive=False)
+                        call_command("migrate", "learning", target, verbosity=0, interactive=False)
+                        path = Path(folder) / (stage + "-fresh.json")
+                        call_command("vocabulary_fields", "export", str(path), stdout=io.StringIO())
+                        fields = json.loads(path.read_text())["cards"][0]["fields"]
+                        self.assertEqual(fields, lexical.columns(lexical.details(card)))
+                        call_command("vocabulary_fields", "apply", str(path), stdout=io.StringIO())
+                        self.assertEqual(snapshot(), before)
+                    finally:
+                        call_command("migrate", "learning", target, verbosity=0, interactive=False)
+                        deck.delete()

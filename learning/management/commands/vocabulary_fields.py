@@ -54,24 +54,27 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def export(self, path):
-        completions = {job.card_id: job for job in GenerationJob.objects.filter(
-            mode="initial", provenance__definition_completed=True).order_by("requested_at")}
+        completions = {job.card_id: job for job in GenerationJob.objects.filter(mode="initial").order_by("requested_at", "pk")
+                       if job.provenance.get("definition_completed") or "teaching_details" in job.provenance}
         records = []
         for card in Card.objects.filter(kind="vocabulary", definition__isnull=True).order_by("pk"):
             details = lexical.parts(card.explanation)
             job = completions.get(card.pk)
-            if job and job.source_version == card.source_version and "input_explanation" in job.provenance:
+            if job and job.source_version == card.source_version:
                 definition = job.provenance.get("definition")
                 generated = definition.get("fields") if isinstance(definition, dict) else None
-                original = job.provenance.get("input_explanation", "")
-                recovered = lexical.recovered_details(original, generated, card.explanation)
-                if recovered is not None:
+                candidates = [lexical.recovered_checkpoint(job.provenance.get("teaching_details"), card.explanation),
+                              lexical.recovered_details(job.provenance.get("input_explanation"), generated, card.explanation)]
+                for recovered in candidates:
+                    if recovered is None:
+                        continue
                     try:
                         validate_fields(lexical.columns(recovered), card.explanation)
                     except (CommandError, UnicodeError):
                         pass
                     else:
                         details = recovered
+                        break
             fields = lexical.columns(details)
             validate_fields(fields, card.explanation)
             records.append({"id": card.pk, "deck_id": card.deck_id, "word": card.word,

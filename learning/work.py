@@ -204,6 +204,7 @@ def save_definition(job_id, claim, details, provenance):
         raise providers.StageError("DEFINITION", "The completed source already exists in this deck. Update this card's intended meaning.", "content")
     Card.objects.filter(pk=job.card_id).update(explanation=explanation, identity=key, **lexical.columns(details))
     job.provenance = {**job.provenance, "definition": provenance, "definition_completed": True,
+                      "teaching_details": {"source": explanation, "details": details},
                       "definition_generated": "explanation" in provenance["requested_fields"], "phase": "examples"}
     job.save(update_fields=["provenance"])
     return True
@@ -255,7 +256,7 @@ def retry_generation(job):
     job.requested_at = timezone.now()
     job.started_at, job.deadline = None, None
     job.provenance = {key: value for key, value in job.provenance.items() if key in
-                      {"enrich_source", "input_identity", "input_explanation", "definition", "definition_completed", "definition_generated"}}
+                      {"enrich_source", "input_identity", "input_explanation", "definition", "definition_completed", "definition_generated", "teaching_details"}}
     job.save(update_fields=["execution", "state", "claim", "error", "error_category", "retryable", "requested_at", "started_at", "deadline", "provenance"])
     return job
 

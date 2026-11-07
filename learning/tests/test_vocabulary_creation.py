@@ -343,6 +343,8 @@ class VocabularyCreationTests(TestCase):
         self.assertFalse(card.ready)
         self.assertFalse(review.available(self.owner).exists())
         retried = work.retry_generation(job)
+        self.assertEqual(retried.provenance["teaching_details"], {
+            "source": card.explanation, "details": lexical.details(card)})
         status = self.client.get(reverse("api_vocabulary", args=[card.pk]), **self.headers).json()
         self.assertEqual(status["preparation"]["phase"], "examples")
         _, _, second_claim, _ = work.claim_work()
