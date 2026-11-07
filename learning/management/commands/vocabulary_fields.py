@@ -16,13 +16,18 @@ def source_digest(card):
     return hashlib.sha256(json.dumps(source, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def validate_fields(fields, original):
+def validate_fields(fields, card):
+    original = card.explanation
     if not isinstance(fields, dict) or set(fields) != {"definition", "pronunciations", "synonyms"}:
         raise CommandError("Each record must supply exactly definition, pronunciations and synonyms.")
     if not isinstance(fields["definition"], str) or fields["definition"] not in original:
         raise CommandError("The definition must be extracted verbatim from the original source.")
     if not fields["definition"].strip() and lexical.parts(original)["explanation"].strip():
-        raise CommandError("An existing definition cannot be discarded during field migration.")
+        job = card.generation_jobs.filter(mode="initial", source_version=card.source_version,
+            provenance__has_key="teaching_details").order_by("-requested_at", "-pk").first()
+        recorded = lexical.recovered_checkpoint(job.provenance.get("teaching_details"), original) if job else None
+        if recorded is None or fields != lexical.columns(recorded):
+            raise CommandError("An existing definition cannot be discarded during field migration.")
     readings = fields["pronunciations"]
     if not isinstance(readings, list) or any(
         not isinstance(item, dict) or set(item) != {"ipa", "variety", "label"} or
@@ -69,14 +74,14 @@ class Command(BaseCommand):
                     if recovered is None:
                         continue
                     try:
-                        validate_fields(lexical.columns(recovered), card.explanation)
+                        validate_fields(lexical.columns(recovered), card)
                     except (CommandError, UnicodeError):
                         pass
                     else:
                         details = recovered
                         break
             fields = lexical.columns(details)
-            validate_fields(fields, card.explanation)
+            validate_fields(fields, card)
             records.append({"id": card.pk, "deck_id": card.deck_id, "word": card.word,
                             "source_sha256": source_digest(card), "fields": fields})
         plan = {"format": "vocabulary-fields-v1", "cards": records}
@@ -101,7 +106,7 @@ class Command(BaseCommand):
             if card is None or record.get("source_sha256") != source_digest(card):
                 raise CommandError(f"Card {record['id']}: source changed or unavailable. Export and review a fresh plan.")
             fields = record["fields"]
-            validate_fields(fields, card.explanation)
+            validate_fields(fields, card)
             if card.definition is not None:
                 if fields != lexical.columns(lexical.details(card)):
                     raise CommandError(f"Card {card.pk}: structured details already differ. Nothing was overwritten.")

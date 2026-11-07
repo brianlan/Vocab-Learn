@@ -136,6 +136,41 @@ class VocabularyFieldsTests(TestCase):
             self.export()
         self.assertEqual(self.path.read_bytes(), content)
 
+    def test_blank_manifest_needs_a_matching_current_checkpoint_and_metadata_only_source(self):
+        metadata = "/x/ (US; noun):\n\n\n\nSynonyms: first; second"
+        proposed = {"definition": "", "pronunciations": [{"ipa": "/x/", "variety": "US", "label": "noun"}],
+                    "synonyms": ["first", "second"]}
+        for index, (name, source) in enumerate([
+            ("missing", metadata), ("stale", metadata), ("different source", metadata),
+            ("malformed", metadata), ("nonempty record", metadata), ("changed metadata", metadata),
+            ("real meaning", "/x/ (US; noun):\n\nAn actual definition.\n\nSynonyms: first; second"),
+            ("literal code", CODE_DEFINITION),
+            ("sole synonyms definition", "Synonyms: words or phrases with similar meanings."),
+        ]):
+            with self.subTest(name=name):
+                self.path.unlink(missing_ok=True)
+                card = self.legacy(word=f"guard {index}", explanation=source)
+                if name not in {"missing", "sole synonyms definition"}:
+                    checkpoint = {"source": source, "details": {"explanation": "", "pronunciations": proposed["pronunciations"],
+                                                               "synonyms": proposed["synonyms"]}}
+                    if name == "different source":
+                        checkpoint["source"] = "An older meaning."
+                    elif name == "malformed":
+                        checkpoint["details"] = None
+                    elif name == "nonempty record":
+                        checkpoint["details"]["explanation"] = lexical.parts(source)["explanation"]
+                    elif name == "changed metadata":
+                        checkpoint["details"]["synonyms"] = ["first"]
+                    GenerationJob.objects.create(card=card, source_version=2 if name == "stale" else 1,
+                                                 provenance={"teaching_details": checkpoint})
+                plan = self.export()
+                record = next(row for row in plan["cards"] if row["id"] == card.pk)
+                record["fields"] = proposed
+                before = self.snapshot()
+                with self.assertRaisesMessage(CommandError, "cannot be discarded"):
+                    self.apply({"format": plan["format"], "cards": [record]})
+                self.assertEqual(self.snapshot(), before)
+
     def test_completed_structured_provenance_is_used_without_reserializing_its_labels(self):
         generated = {"explanation": "Take in liquid.",
                      "pronunciations": [{"ipa": "/x/", "variety": "US", "label": "verb\n(transitive)"}],

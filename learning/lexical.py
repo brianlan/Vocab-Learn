@@ -182,8 +182,15 @@ def recovered_checkpoint(checkpoint, source):
             set(values) != {"explanation", "pronunciations", "synonyms"} or not isinstance(values["explanation"], str)):
         return None
     try:
+        if render(original).identity != render(source).identity:
+            return None
+        if not values["explanation"].strip() and values["explanation"] in source:
+            remainder = parts(source)["explanation"]
+            # A recorded blank definition disambiguates a remaining standalone footer.
+            if not remainder.strip() or parts("Entry.\n\n" + remainder)["explanation"] == "Entry.":
+                return values
         frame = _definition_frame(original, values["explanation"])
-        if frame and render(original).identity == render(source).identity:
+        if frame:
             definition = _framed(source, *frame)
             if definition is not None:
                 return {**values, "explanation": definition}

@@ -297,6 +297,8 @@ class CompletionRecoveryTests(TransactionTestCase):
                 self.assertEqual(fields, lexical.columns(lexical.details(card)))
                 call_command("vocabulary_fields", "apply", str(path), stdout=io.StringIO())
                 self.assertEqual(snapshot(), before)
+                call_command("vocabulary_fields", "apply", str(path), stdout=io.StringIO())
+                self.assertEqual(snapshot(), before)
             finally:
                 call_command("migrate", "learning", target, verbosity=0, interactive=False)
 
@@ -389,6 +391,42 @@ class CompletionRecoveryTests(TransactionTestCase):
                     job = card.generation_jobs.get(source_version=2)
                     self.assertEqual(job.state, "queued")
                     self.assertEqual(job.provenance["teaching_details"], {"source": card.explanation, "details": lexical.details(card)})
+                    try:
+                        self.assert_fresh_recovery(card)
+                    finally:
+                        deck.delete()
+
+    def test_queued_blank_definition_with_legacy_plain_footer_recovers_both_prefixes(self):
+        owner = get_user_model().objects.create_user("learner")
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+                "learning.providers.request", side_effect=AssertionError("No provider network calls")):
+            for separator, newline, blank in product([": ", ":\n\n"], ["\n", "\r\n"], ["", " ", "\n", "\n\n"]):
+                with self.subTest(separator=separator, newline=newline, blank=blank):
+                    deck = Deck.objects.create(owner=owner, name="Legacy metadata-only source")
+                    definition = RIVER.replace("\n", newline)
+                    generated = {"explanation": definition, "pronunciations": READINGS, "synonyms": SYNONYMS}
+                    source = {**LANGUAGES, "word": "bank", "explanation": definition}
+                    card, _ = authoring.create_card(deck, "vocabulary", source)
+
+                    def historical_combine(original, additions):
+                        prefix, body, footer = lexical._composition(original, additions)
+                        prefix = prefix.removesuffix(":\n\n") + separator
+                        return (prefix + body + footer).replace("\r\n", "\n").replace("\n", newline)
+
+                    with patch("learning.lexical.combine", side_effect=historical_combine):
+                        self.prepare(card, generated)
+                    self.assertTrue(card.explanation.endswith(FOOTER.replace("\n", newline)))
+                    review.submit(review.next_question(owner, deck), "forgot")
+                    card.refresh_from_db()
+                    cleared = blank.replace("\n", newline)
+                    changed = card.explanation.replace(card.definition, cleared, 1)
+                    authoring.save_card(deck, "vocabulary", {**source, "explanation": changed}, card)
+                    card.refresh_from_db()
+                    self.assertEqual((card.source_version, card.ready), (2, False))
+                    self.assertEqual(lexical.details(card), {**generated, "explanation": cleared})
+                    job = card.generation_jobs.get(source_version=2)
+                    self.assertEqual(job.state, "queued")
+                    self.assertEqual(job.provenance["teaching_details"], {"source": changed, "details": lexical.details(card)})
                     try:
                         self.assert_fresh_recovery(card)
                     finally:

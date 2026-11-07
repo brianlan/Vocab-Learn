@@ -64,6 +64,8 @@ Edits of older unsafe compositions use the stored definition and the actual acce
 including comma-separated, bracketed and explicitly empty synonym footers. They do not reconstruct a footer from the list.
 The definition starts after the parsed pronunciation prefix, even when it is empty; matching text inside a pronunciation
 label cannot select that boundary. Both editing and complete-record recovery use this same component boundary.
+A source-matching complete record can explicitly identify a blank definition when only a standalone metadata footer
+remains. That recorded interpretation takes precedence over source-only parsing; unrelated definition text cannot be dropped.
 Definition-only and metadata-only edits remain supported. If both are changed in an unfinished legacy block and no reliable split exists,
 saving reports a validation error and rolls back; closing the Markdown fence or making the edits separately resolves it.
 
@@ -98,6 +100,10 @@ IDs, invalid records and different already-populated details abort the entire tr
 records are skipped, so repeating a plan is safe. Updates name only the three new columns: identity, source/progress
 versions, Ready, FSRS, due, collection, streak, direction locks, examples, jobs and frozen history remain unchanged.
 New reviews between export and apply do not invalidate a plan or lose their progress.
+When a blank definition conflicts with source-only parsing, both export and apply require the complete fields to match
+a verified current-revision checkpoint from the database. A manifest cannot grant itself permission to clear a definition;
+missing, stale, incompatible or different teaching records do not authorize that operation. The standalone plain
+`Synonyms:` definition keeps its source-only interpretation when no verified blank record exists.
 
 Existing Ready cards remain Ready even when their old source omitted metadata. They are not queued for automatic
 completion or example regeneration. New cards still need complete teaching details and paired examples before study.

@@ -197,3 +197,34 @@ and foreign-key checks. No live production access was needed.
 Private logs and rehearsal artifacts are under ignored `var/exports/pr2-definition-boundary-fixes/`. No schema, dependency,
 prompt or provider configuration changed. Provider responses were mocked; desktop browser and physical microphone checks
 were not repeated, and production was not updated.
+
+## PR #2 checkpoint-backed blank definition recovery
+
+The [review of 90dfddf](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6705124793) confirmed the preceding
+reproductions and found a remaining P2 variant: clearing only the definition of an unsafe legacy composition can leave
+a plain synonym footer. The current complete record correctly identifies the definition as blank, but source-only parsing
+sees a standalone `Synonyms:` paragraph as definition text. Framing or migration validation then rejected the recorded
+interpretation and exported the fallback, contaminating the definition and losing synonyms.
+
+- Complete-record recovery now honors its explicit blank definition only after checking source identity and confirming
+  that the remaining body is empty or consists entirely of a recognized metadata footer. The saved blank text is preserved
+  verbatim; unrelated prose and literal code cannot take that path. Source-only parsing retains its existing grammar.
+- Export and apply share the same database-backed validation. When a proposed blank definition conflicts with source-only
+  parsing, all proposed fields must match a verified complete record for that card's current source revision. The manifest
+  has no bypass flag. Missing, stale, malformed, incompatible or different records cannot authorize clearing a definition.
+
+The new end-to-end migration regression failed on 90dfddf in all **16 combinations**: both historical pronunciation
+separators, LF/CRLF, and empty/space/newline/blank-line definitions. It uses actual worker execution with the historical
+composer, an actual Forgot review and definition-only edit, actual `0010 -> 0009 -> 0010` migrations, fresh export/apply
+and idempotent reapplication. All learning-model rows/fields match their pre-migration snapshots. A second regression
+covers nine refusal cases, including a standalone `Synonyms:` definition, real prose, literal code, stale or malformed
+records and attempted metadata changes; rejected applies preserve all saved values.
+
+The full **140-test suite passed** on Python 3.11. System, migration-drift and whitespace checks passed. Retained local
+development/read-only-production snapshots passed **1,660/1,648-card** extraction, preservation across **17/16 original
+tables**, idempotency, rollback/upgrade, matching fresh manifests, SQLite integrity and foreign-key checks. No live
+production access was needed.
+
+Private logs and rehearsal artifacts are under ignored `var/exports/pr2-empty-footer-recovery/`. There are no schema,
+dependency, prompt or provider-setting changes. Provider responses were mocked; desktop browser and physical microphone
+checks were not repeated, and production was not updated.
