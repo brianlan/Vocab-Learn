@@ -24,6 +24,8 @@ the required columns are `word`, `native_language`, and `target_language`; `expl
 or leave individual cells blank for automatic learner-definition, pronunciation and synonym preparation. Supply an explanation
 to specify an intended meaning; it supports the same Markdown profile and is preserved. The application prepares example pairs
 after the teaching details are complete. Production gains these capabilities only after a separately requested release.
+The [structured-field increment](../specs/vocabulary-fields.md) stores the definition, pronunciation and synonyms separately;
+these CSV columns and old combined explanation sources remain supported.
 
 - `target_language` is `English` or `Spanish`.
 - `native_language` is `Chinese` or `Spanish`.

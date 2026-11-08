@@ -18,7 +18,7 @@ from django.utils import timezone
 from django.urls import reverse
 from urllib.parse import urlencode
 from django.views.decorators.http import require_POST, require_GET
-from . import authoring, review, work
+from . import authoring, lexical, review, work
 from .forms import DeckForm, CardForm, ImportForm
 from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render
@@ -131,10 +131,11 @@ def card_view(request, card_id):
     card = get_object_or_404(Card.objects.select_related("deck", "active_pair"), pk=card_id, deck__owner=request.user)
     work.expire_generations()
     job = card.generation_jobs.filter(source_version=card.source_version).order_by("-requested_at").first()
+    teaching = lexical.details(card) if card.kind == "vocabulary" else {"explanation": card.explanation}
     return page(request, "learning/card.html", {"card": card, "job": job, "nav": "decks",
         "definition_generated": card.kind == "vocabulary" and authoring.definition_generated(card),
         "question_html": render(card.question, card.answer, True).html,
-        "explanation_html": render(card.explanation).html})
+        "teaching": teaching, "explanation_html": render(teaching["explanation"]).html})
 
 
 @login_required

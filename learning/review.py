@@ -12,6 +12,7 @@ from fsrs import Card as MemoryCard, Rating, Scheduler, State
 from .authoring import new_generation, definition_generated
 from .models import Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render, recall_budget, highlight
+from . import lexical
 
 LABELS = {"A": "Needs a refresh", "B": "Needs practice", "C": "Partial recall", "D": "Correct recall", "E": "Quick recall"}
 TERMINAL = {"assessed", "skipped", "closed_unassessed"}
@@ -43,7 +44,7 @@ def snapshot(card):
     recognition = card.cue_direction == "recognition"
     sentence, expression = ((pair.target_sentence, pair.target_highlight) if recognition else (pair.native_sentence, pair.native_highlight))
     start = pair.target_highlight_start if recognition else pair.native_highlight_start
-    return {**base, "question_html": highlight(sentence, expression, start), "question_text": sentence,
+    return {**base, **lexical.details(card), "question_html": highlight(sentence, expression, start), "question_text": sentence,
             "definition_generated": definition_generated(card),
             "highlight_start": start,
             "reference": card.word, "word": card.word,
