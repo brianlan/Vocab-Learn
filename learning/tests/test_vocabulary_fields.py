@@ -228,6 +228,41 @@ class VocabularyFieldsTests(TestCase):
         self.assertContains(response, "&lt;script&gt;alert(1)&lt;/script&gt;")
         self.assertNotContains(response, "<script>alert(1)</script>")
 
+    def test_vocabulary_details_and_review_back_label_the_explanation_separately(self):
+        card = self.legacy(explanation="/əbˈzɔrb/: Take in **liquid**. [synonyms: soak up]")
+        self.export(); self.apply()
+        card.refresh_from_db()
+        self.client.force_login(self.user)
+        detail = self.client.get(reverse("card", args=[card.pk]))
+        self.assertContains(detail, "<h2>Word details</h2>", html=True)
+        held = review.next_question(self.user, self.deck)
+        review.submit(held, "skip")
+        frozen = held.snapshot.copy()
+        back = self.client.get(reverse("status", args=[held.pk])).json()["back_html"]
+        for page, html in [("detail", detail.content.decode()), ("review", back)]:
+            with self.subTest(page=page):
+                self.assertInHTML(
+                    '<div class="teaching-explanation"><h3>Explanation</h3>'
+                    '<div class="prose explanation"><p>Take in <strong>liquid</strong>.</p></div></div>', html)
+                self.assertLess(html.index("<h3>Pronunciation</h3>"), html.index("<h3>Explanation</h3>"))
+                self.assertLess(html.index("<h3>Explanation</h3>"), html.index("<h3>Synonyms</h3>"))
+        held.refresh_from_db()
+        self.assertEqual(held.snapshot, frozen)
+
+    def test_generic_details_and_review_back_do_not_gain_duplicate_explanation_headings(self):
+        card, _ = authoring.create_card(self.deck, "generic", {
+            "question": "What is two plus two?", "answer": "four", "explanation": "Two pairs make four."})
+        self.client.force_login(self.user)
+        detail = self.client.get(reverse("card", args=[card.pk]))
+        self.assertContains(detail, "<h2>Explanation</h2>", count=1, html=True)
+        held = review.next_question(self.user, self.deck)
+        review.submit(held, "skip")
+        back = self.client.get(reverse("status", args=[held.pk])).json()["back_html"]
+        for html in [detail.content.decode(), back]:
+            self.assertInHTML("<p>Two pairs make four.</p>", html)
+            self.assertNotIn("<h3>Explanation</h3>", html)
+            self.assertNotIn("Word details", html)
+
     def test_legacy_parser_keeps_definition_block_indentation(self):
         for definition in ["    meaning = 'take in'", "## Meaning\n\nTake in liquid.", "> Take in liquid."]:
             for prefix in ["", "/x/ (US; verb):\n\n"]:
