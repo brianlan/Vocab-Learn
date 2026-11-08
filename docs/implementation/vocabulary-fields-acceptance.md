@@ -293,3 +293,31 @@ production access was needed. Private logs and rehearsal artifacts are under ign
 
 No schema, dependency, prompt or provider-setting changes were needed. Provider responses were mocked; desktop browser
 and physical microphone checks were not repeated, and production was not updated.
+
+## PR #2 recovery of leading definition whitespace
+
+The [review of 5568d81](https://github.com/brianlan/Vocab-Learn/pull/2#issuecomment-6709737805) verified the authoring fix
+and found a P2 recovery gap: for a historical single-line pronunciation separator, source parsing could consume whitespace
+that belonged to the saved definition. The complete checkpoint was then rejected, so fallback extraction could absorb the
+footer and split or discard typed synonyms.
+
+Definition framing now matches the recorded value within the pronunciation separator's trailing whitespace when needed.
+The adjustment can only rewind up to the parser's existing boundary; it cannot advance into the body or scan pronunciation
+labels. The full saved definition, footer validation, source identity and current-revision checks remain required. No
+definition whitespace is stripped or invented.
+
+The expanded schema-recovery test runs **24 combinations**: both historical separators, LF/CRLF and six definitions
+covering controls, one/two leading blank lines, space/Tab-indented code and leading-whitespace text repeated in a label.
+It performs actual authoring, worker execution, scored Forgot history, schema rollback/upgrade, fresh export/apply and
+idempotent reapplication, comparing the exact fields and every learning-model row. **Eight combinations failed on
+5568d81**; all pass with the correction. A new negative test rejects matches inside multiline labels, later body text,
+unprefixed content and whitespace beyond the allowed boundary.
+
+The full **148-test suite passed locally** on the requested Python 3.11 environment. System, migration-drift and whitespace
+checks passed. Retained development/read-only-production snapshots passed **1,660/1,648-card** extraction, preservation
+across **17/16 original tables**, idempotency, rollback/upgrade, matching fresh manifests, SQLite integrity and foreign-key
+checks. No live production access was needed. Private logs and rehearsal artifacts are under ignored
+`var/exports/pr2-leading-definition-recovery/`.
+
+No schema, dependency, prompt or provider-setting changes were needed. Provider responses were mocked; desktop browser
+and physical microphone checks were not repeated, and production was not updated.

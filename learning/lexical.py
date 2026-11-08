@@ -202,6 +202,11 @@ def _framed(source, prefix, suffix):
 
 def _definition_frame(source, definition):
     start = _parts(source)[1]["definition_start"]
+    if start and definition[:1].isspace():
+        boundary = re.search(r"\s*$", source[:start]).start()
+        match = re.match(r"(\s*?)" + _literal(definition), source[boundary:])
+        if match and boundary + len(match[1]) <= start:
+            start = boundary + len(match[1])
     match = re.match(_literal(definition), source[start:])
     if match:
         suffix = source[start + match.end():]

@@ -62,8 +62,10 @@ normally; they are omitted from the compatibility source instead of becoming cod
 
 Edits of older unsafe compositions use the stored definition and the actual accepted source prefix/footer as boundaries,
 including comma-separated, bracketed and explicitly empty synonym footers. They do not reconstruct a footer from the list.
-The definition starts after the parsed pronunciation prefix, even when it is empty; matching text inside a pronunciation
-label cannot select that boundary. Both editing and complete-record recovery use this same component boundary.
+Definition framing uses the pronunciation prefix and the recorded definition together. If separator parsing consumed
+leading definition whitespace, framing can rewind within that separator's whitespace to match the complete saved value.
+It cannot scan pronunciation labels, advance into the definition or skip unrelated body text. Both editing and
+complete-record recovery use this same component boundary.
 A source-matching complete record can explicitly identify a blank definition when only a standalone metadata footer
 remains. That recorded interpretation takes precedence over source-only parsing; unrelated definition text cannot be dropped.
 While a known blank definition awaits preparation, edits to its retained metadata use that same interpretation. Changed

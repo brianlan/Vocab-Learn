@@ -187,6 +187,18 @@ class CompletionSourceTests(TestCase):
             card.refresh_from_db()
             self.assertEqual(lexical.details(card), details)
 
+    def test_leading_whitespace_checkpoint_does_not_match_labels_or_later_body_text(self):
+        for source, definition in [
+            ("/x/ (US; expression (\n\nrefusal)):\n\nAn actual definition.\n\nSynonyms: provided", "\n\nrefusal"),
+            ("An actual definition.\n\nrefusal", "\n\nrefusal"),
+            (" \n\nrefusal", "\n\nrefusal"),
+            ("/x/: \n\n\n\nrefusal", "\nrefusal"),
+        ]:
+            with self.subTest(source=source, definition=definition):
+                checkpoint = {"source": source, "details": {"explanation": definition,
+                              "pronunciations": [], "synonyms": ["unrelated metadata"]}}
+                self.assertIsNone(lexical.recovered_checkpoint(checkpoint, source))
+
     def test_invalid_or_stale_checkpoints_fall_back_without_overriding_sources(self):
         details = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
         checkpoint = {"source": PREFIX + RIVER, "details": details}
@@ -466,10 +478,13 @@ class CompletionRecoveryTests(TransactionTestCase):
 
     def test_refilled_open_definition_survives_fresh_schema_recovery(self):
         owner = get_user_model().objects.create_user("learner")
+        definition = "A bank is land beside a river.\n\n```text\nAn open example."
+        definitions = [definition, "\n" + definition, "\n\n" + definition,
+                       "    A literal code example.", "\tA tab-indented example.", "\n\nnoun"]
         with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
-            for separator, newline in product([": ", ":\n\n"], ["\n", "\r\n"]):
-                with self.subTest(separator=separator, newline=newline):
+            for separator, newline, content in product([": ", ":\n\n"], ["\n", "\r\n"], definitions):
+                with self.subTest(separator=separator, newline=newline, definition=content):
                     deck = Deck.objects.create(owner=owner, name="Refilled Markdown")
                     try:
                         original = RIVER.replace("\n", newline)
@@ -485,7 +500,7 @@ class CompletionRecoveryTests(TransactionTestCase):
                         review.submit(review.next_question(owner, deck), "forgot")
                         card.refresh_from_db()
                         card = authoring.save_card(deck, "vocabulary", {**source, "explanation": saved.replace(original, "", 1)}, card)
-                        definition = "A bank is land beside a river.\n\n```text\nAn open example.".replace("\n", newline)
+                        definition = content.replace("\n", newline)
                         card = authoring.save_card(deck, "vocabulary", {**source, "explanation": saved.replace(original, definition, 1)}, card)
                         card.refresh_from_db()
                         self.assertEqual(lexical.details(card), {**generated, "explanation": definition})
