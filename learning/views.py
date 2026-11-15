@@ -10,7 +10,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import RequestDataTooBig, ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.http import JsonResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render as page
 from django.template.loader import render_to_string
@@ -95,6 +95,25 @@ def selection_create(request):
                         status=201 if created else 200)
 
 
+def deck_progress(user, decks):
+    """Cumulative current-source D/E qualification per deck, from one read-only query."""
+    decks = list(decks)
+    if not decks:
+        return {}
+    # The inner owner join gives SQLite a card-selective history plan without a new index.
+    qualifying = ScoredReview.objects.filter(user=user, card=OuterRef("pk"), card__deck__owner=user,
+                                             grade__in=["D", "E"], snapshot__source_version=OuterRef("source_version"))
+    cards = Card.objects.filter(deck__in=decks, deck__owner=user, archived=False).annotate(_qualified=Exists(qualifying))
+    rows = {row["deck_id"]: row for row in cards.values("deck_id")
+            .annotate(n=Count("pk"), done=Count("pk", filter=Q(_qualified=True)))}
+    progress = {}
+    for deck in decks:
+        row = rows.get(deck.pk, {"n": 0, "done": 0})
+        progress[deck.pk] = {"total": row["n"], "qualified": row["done"],
+                             "percent": 100 * row["done"] // row["n"] if row["n"] else None}
+    return progress
+
+
 def counts(user, deck=None):
     cards = review.available(user, deck)
     reviews = ScoredReview.objects.filter(user=user)
@@ -120,14 +139,16 @@ def dashboard(request):
 @login_required
 def library(request):
     archived = request.GET.get("archived") == "1"
-    decks = Deck.objects.filter(owner=request.user, archived=archived).order_by("name")
+    decks = list(Deck.objects.filter(owner=request.user, archived=archived).order_by("name"))
     form = DeckForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         deck = form.save(commit=False)
         deck.owner = request.user
         deck.save()
         return redirect("deck", deck.pk)
-    return page(request, "learning/library.html", {"decks": decks, "form": form, "archived": archived, "nav": "decks"})
+    progress = deck_progress(request.user, decks)
+    return page(request, "learning/library.html", {"tiles": [{"deck": deck, "progress": progress[deck.pk]} for deck in decks],
+        "form": form, "archived": archived, "nav": "decks"})
 
 
 @login_required
