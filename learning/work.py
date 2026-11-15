@@ -153,6 +153,9 @@ def process_assessment(job_id, claim):
 
 
 def current_generation(job, card):
+    if job.mode == "manual":
+        return (not card.archived and not card.deck.archived and card.source_version == job.source_version and
+                card.active_pair_id == job.provenance.get("requested_pair_id"))
     return (not card.archived and not card.deck.archived and card.source_version == job.source_version and
             (not card.ready if job.mode == "initial" else card.rotation_token == job.token))
 
@@ -162,30 +165,47 @@ def save_pair(job_id, claim, data, provenance):
     job = GenerationJob.objects.select_related("card__deck").get(pk=job_id)
     if job.state == "done":
         return job.result
-    if job.state != "processing" or job.claim != claim or job.deadline <= timezone.now() or not current_generation(job, job.card):
+    if job.state != "processing" or job.claim != claim or job.deadline <= timezone.now():
+        return None
+    if not current_generation(job, job.card):
+        if job.mode == "manual":
+            # A changed base pair or archived/source change supersedes the late learner request.
+            job.state, job.claim = "cancelled", uuid.uuid4()
+            job.save(update_fields=["state", "claim"])
         return None
     if job.mode == "initial" and not lexical.details(job.card)["explanation"].strip():
         return None
-    pair = ExamplePair.objects.create(card=job.card, source_version=job.source_version, provenance=provenance, **data)
-    if job.mode == "initial":
-        Card.objects.filter(pk=job.card_id).update(active_pair=pair, ready=True)
+    if job.mode == "manual":
+        # A learner request applies immediately; operator correction keeps cancelling rotation intent.
+        pair = save_corrected_pair(job.card_id, job.source_version, job.provenance["requested_pair_id"],
+                                   data, provenance, preserve_rotation=True)
+    else:
+        pair = ExamplePair.objects.create(card=job.card, source_version=job.source_version, provenance=provenance, **data)
+        if job.mode == "initial":
+            Card.objects.filter(pk=job.card_id).update(active_pair=pair, ready=True)
+    if pair is None:
+        return None
     job.result, job.provenance, job.state = pair, {**job.provenance, **provenance, "phase": "ready"}, "done"
     job.save(update_fields=["result", "provenance", "state"])
     return pair
 
 
 @transaction.atomic
-def save_corrected_pair(card_id, source_version, previous_pair_id, data, provenance):
+def save_corrected_pair(card_id, source_version, previous_pair_id, data, provenance, *, preserve_rotation=False):
     card = Card.objects.select_related("deck", "active_pair").get(pk=card_id)
     if (card.archived or card.deck.archived or not card.ready or
             card.source_version != source_version or card.active_pair_id != previous_pair_id):
         return None
     pair = ExamplePair.objects.create(card=card, source_version=source_version, **data,
         provenance={**provenance, "corrects_pair_id": previous_pair_id})
-    card.active_pair, card.rotation_token = pair, None
-    card.save(update_fields=["active_pair", "rotation_token"])
-    card.generation_jobs.filter(mode="rotation", state__in=["queued", "processing", "failed"]).update(
-        state="cancelled", claim=uuid.uuid4())
+    if preserve_rotation:
+        card.active_pair = pair
+        card.save(update_fields=["active_pair"])
+    else:
+        card.active_pair, card.rotation_token = pair, None
+        card.save(update_fields=["active_pair", "rotation_token"])
+        card.generation_jobs.filter(mode="rotation", state__in=["queued", "processing", "failed"]).update(
+            state="cancelled", claim=uuid.uuid4())
     adopt_corrected_cue(card)
     return pair
 
@@ -212,7 +232,13 @@ def save_definition(job_id, claim, details, provenance):
 
 def process_generation(job_id, claim):
     job = GenerationJob.objects.select_related("card__deck").get(pk=job_id)
-    if job.state != "processing" or job.claim != claim or not current_generation(job, job.card):
+    if job.state != "processing" or job.claim != claim:
+        return
+    if not current_generation(job, job.card):
+        if job.mode == "manual":
+            # A changed base pair or archived/source change supersedes the late learner request.
+            job.state, job.claim = "cancelled", uuid.uuid4()
+            job.save(update_fields=["state", "claim"])
         return
     if job.mode == "initial" and job.provenance.get("enrich_source") and not job.provenance.get("definition_completed"):
         source = lexical.source(job.card)
@@ -227,7 +253,7 @@ def process_generation(job_id, claim):
             return
         job = GenerationJob.objects.select_related("card__deck").get(pk=job_id)
     source = lexical.source(job.card)
-    if job.mode == "rotation" and job.card.active_pair_id:
+    if job.mode in ("rotation", "manual") and job.card.active_pair_id:
         pair = job.card.active_pair
         source["previous_pair"] = {"target_sentence": pair.target_sentence, "native_sentence": pair.native_sentence}
     p = bounded_profile("GENERATOR", job.deadline)
@@ -257,7 +283,7 @@ def retry_generation(job):
     job.requested_at = timezone.now()
     job.started_at, job.deadline = None, None
     job.provenance = {key: value for key, value in job.provenance.items() if key in
-                      {"enrich_source", "input_identity", "input_explanation", "definition", "definition_completed", "definition_generated", "teaching_details"}}
+                      {"enrich_source", "input_identity", "input_explanation", "definition", "definition_completed", "definition_generated", "teaching_details", "requested_pair_id"}}
     job.save(update_fields=["execution", "state", "claim", "error", "error_category", "retryable", "requested_at", "started_at", "deadline", "provenance"])
     return job
 

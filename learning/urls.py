@@ -12,6 +12,7 @@ urlpatterns = [
     path("decks/<int:deck_id>/cards/<int:card_id>/edit/", views.card_edit, name="card_edit"),
     path("decks/<int:deck_id>/import/", views.csv_import, name="csv_import"),
     path("cards/<int:card_id>/", views.card_view, name="card"),
+    path("cards/<int:card_id>/regenerate/", views.example_regenerate, name="example_regenerate"),
     path("cards/<int:card_id>/archive/", views.card_archive, name="card_archive"),
     path("generation/<uuid:job_id>/retry/", views.generation_retry, name="generation_retry"),
     path("practice/", views.practice, name="practice"),
