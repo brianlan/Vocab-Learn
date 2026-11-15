@@ -464,7 +464,7 @@ class CompletionRecoveryTests(TransactionTestCase):
                     for model in apps.get_app_config("learning").get_models()}
 
         before = snapshot()
-        target = "0010_structured_vocabulary_details"
+        target = "0011_learner_preferences"
         with tempfile.TemporaryDirectory() as folder:
             ordinary = Path(folder) / "ordinary.json"
             call_command("vocabulary_fields", "export", str(ordinary), stdout=io.StringIO())

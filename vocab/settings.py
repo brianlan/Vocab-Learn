@@ -20,7 +20,8 @@ MIDDLEWARE = ["django.middleware.security.SecurityMiddleware", "whitenoise.middl
 ROOT_URLCONF = "vocab.urls"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [BASE_DIR / "templates"],
               "APP_DIRS": True, "OPTIONS": {"context_processors": ["django.template.context_processors.request",
-              "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages"]}}]
+              "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages",
+              "learning.context_processors.selection_add"]}}]
 WSGI_APPLICATION = "vocab.wsgi.application"
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR / "var")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)

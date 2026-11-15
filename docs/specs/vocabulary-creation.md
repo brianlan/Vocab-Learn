@@ -1,6 +1,8 @@
 # Vocabulary creation and completion
 
 This development increment adds optional Vocabulary explanations and a private, key-authenticated HTTP creation interface.
+The later [selection-add increment](selection-add.md) reuses this authoring workflow through a distinct session/CSRF route
+and personal Settings; it never places an authoring key in browser data or changes the key-only API contract.
 Production remains on the migration baseline until a separately requested release. The subsequent
 [structured-field increment](vocabulary-fields.md) separates teaching details in development while preserving existing
 source content and learning history.

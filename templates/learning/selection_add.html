@@ -1,0 +1,31 @@
+<div id="selection-add" class="selection-add" role="group" aria-label="Add selected expression" hidden>
+  <div class="selection-add-bar">
+    <button id="selection-add-submit" class="button primary" type="button">Choose a deck</button>
+    <button id="selection-add-toggle" class="button" type="button" aria-label="Choose deck and languages" aria-controls="selection-add-picker" aria-expanded="false"><span aria-hidden="true">▾</span></button>
+  </div>
+  <div id="selection-add-picker" class="selection-add-picker" role="region" aria-label="Destination and languages" hidden>
+    <p id="selection-add-expression" class="selection-add-expression"></p>
+    <label for="selection-add-deck">Deck</label>
+    <select id="selection-add-deck"><option value="">Choose a deck</option></select>
+    <p id="selection-add-no-decks" hidden>No available decks. <a id="selection-add-create-deck">Create a deck</a>, then reload this page.</p>
+    <label for="selection-add-language">Language pair for this add</label>
+    <select id="selection-add-language" aria-describedby="selection-add-hint"><option value="">Choose a language pair</option></select>
+    <p id="selection-add-hint"></p>
+    <p>Only this expression is added, without surrounding context. Preparation uses a common learner sense and may not match this passage.</p>
+    <a id="selection-add-settings">Selection add settings</a>
+  </div>
+</div>
+<aside id="selection-add-feedback" class="selection-add-feedback" aria-label="Selection add result" hidden>
+  <div role="status" aria-live="polite" aria-atomic="true">
+    <p id="selection-add-feedback-expression" class="selection-add-expression"></p>
+    <p id="selection-add-feedback-destination"></p>
+    <p id="selection-add-status"></p>
+  </div>
+  <div class="selection-add-feedback-actions">
+    <button id="selection-add-retry" class="button" type="button" hidden>Retry same add</button>
+    <a id="selection-add-card-link" hidden>View card</a>
+    <a id="selection-add-disabled-settings" hidden>Open Settings</a>
+    <a id="selection-add-reload" href="" hidden>Reload choices</a>
+    <button id="selection-add-dismiss-feedback" class="text-button" type="button" aria-label="Dismiss selection add result">Dismiss</button>
+  </div>
+</aside>

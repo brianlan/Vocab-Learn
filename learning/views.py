@@ -7,7 +7,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import ValidationError
+from django.core.exceptions import RequestDataTooBig, ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q
@@ -17,11 +17,82 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.urls import reverse
 from urllib.parse import urlencode
-from django.views.decorators.http import require_POST, require_GET
+from django.views.decorators.http import require_POST, require_GET, require_http_methods
 from . import authoring, lexical, review, work
-from .forms import DeckForm, CardForm, ImportForm
-from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob
+from .forms import DeckForm, CardForm, ImportForm, LearnerPreferencesForm
+from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob, LearnerPreferences
 from .rendering import render
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def personal_settings(request):
+    preferences = LearnerPreferences.objects.filter(user=request.user).first() or LearnerPreferences(user=request.user)
+    form = LearnerPreferencesForm(request.POST if request.method == "POST" else None, initial={
+        "selection_add_enabled": preferences.selection_add_enabled,
+        "language_pair": f"{preferences.target_language}:{preferences.native_language}",
+    })
+    if request.method == "POST" and form.is_valid():
+        target_language, native_language = form.cleaned_data["language_pair"].split(":")
+        LearnerPreferences.objects.update_or_create(user=request.user, defaults={
+            "selection_add_enabled": form.cleaned_data["selection_add_enabled"],
+            "target_language": target_language, "native_language": native_language,
+        })
+        messages.success(request, "Settings saved.")
+        return redirect("settings")
+    return page(request, "learning/settings.html", {"form": form, "nav": "settings"})
+
+
+def selection_create(request):
+    if not request.user.is_authenticated or not request.user.is_active:
+        return JsonResponse({"error": "Sign in to add selected expressions."}, status=401)
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed."}, status=405, headers={"Allow": "POST"})
+    if LearnerPreferences.objects.filter(user=request.user, selection_add_enabled=False).exists():
+        return JsonResponse({"error": "Selection add is disabled in Settings.", "code": "disabled"}, status=403)
+    if request.content_type != "application/json":
+        return JsonResponse({"error": "Use application/json."}, status=415)
+    limit = 8 * 1024
+    try:
+        length = int(request.META.get("CONTENT_LENGTH") or 0)
+        if length < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Supply a valid Content-Length."}, status=400)
+    try:
+        if length > limit:
+            raise RequestDataTooBig
+        body = request.read(limit + 1)
+        if len(body) > limit:
+            raise RequestDataTooBig
+    except RequestDataTooBig:
+        return JsonResponse({"error": "A selection request is limited to 8 KiB."}, status=413)
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return JsonResponse({"error": "Supply a valid UTF-8 JSON object."}, status=400)
+    if not isinstance(data, dict) or set(data) != {"deck_id", "text", "target_language", "native_language"}:
+        return JsonResponse({"error": "Supply only deck_id, text, target_language and native_language."}, status=400)
+    deck_id = data["deck_id"]
+    if type(deck_id) is not int or not 0 < deck_id <= 2**63 - 1:
+        return JsonResponse({"error": "Private active deck not found.", "code": "invalid_deck"}, status=404)
+    try:
+        if not isinstance(data["text"], str):
+            raise ValidationError("Selected text must contain text.")
+        text = " ".join(data["text"].split())
+        if len(text) > 500:
+            raise ValidationError("Select an expression of at most 500 characters.")
+        source = authoring.validate_source("vocabulary", {"word": text, "explanation": "",
+            "target_language": data["target_language"], "native_language": data["native_language"]})
+        with transaction.atomic():
+            deck = Deck.objects.filter(pk=deck_id, owner=request.user, archived=False).first()
+            if not deck:
+                return JsonResponse({"error": "Private active deck not found.", "code": "invalid_deck"}, status=404)
+            card, created = authoring.create_card(deck, "vocabulary", source)
+    except ValidationError as error:
+        return JsonResponse({"error": " ".join(error.messages)}, status=400)
+    return JsonResponse({"created": created, "card_url": reverse("card", args=[card.pk]), "archived": card.archived},
+                        status=201 if created else 200)
 
 
 def counts(user, deck=None):
@@ -253,6 +324,8 @@ def presentation_view(request, presentation_id):
         return redirect(practice_url(p.scope_deck_id))
     # Only front-safe fields reach the template or client before a committed action.
     front = {key: p.snapshot[key] for key in ["question_html", "direction", "language", "units", "kind"]}
+    cue_key = "target_language" if front["direction"] == "recognition" else "native_language"
+    front["cue_language"] = p.snapshot.get(cue_key, "") if front["kind"] == "vocabulary" else ""
     data = payload(request, attempt) if attempt else None
     first_display = Presentation.objects.filter(pk=p.pk, clock_claimed=False).update(clock_claimed=True) == 1 if not attempt else False
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",

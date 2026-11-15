@@ -243,7 +243,8 @@ class VocabularyFieldsTests(TestCase):
             with self.subTest(page=page):
                 self.assertInHTML(
                     '<div class="teaching-explanation"><h3>Explanation</h3>'
-                    '<div class="prose explanation"><p>Take in <strong>liquid</strong>.</p></div></div>', html)
+                    '<div class="prose explanation" data-selection-region data-selection-language="English">'
+                    '<p>Take in <strong>liquid</strong>.</p></div></div>', html)
                 self.assertLess(html.index("<h3>Pronunciation</h3>"), html.index("<h3>Explanation</h3>"))
                 self.assertLess(html.index("<h3>Explanation</h3>"), html.index("<h3>Synonyms</h3>"))
         held.refresh_from_db()
