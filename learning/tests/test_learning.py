@@ -1482,6 +1482,83 @@ class LearningTests(TestCase):
             fresh=self.manual_regeneration(card)
             self.assertEqual(fresh.provenance["requested_pair_id"],card.active_pair_id)
 
+    def test_detail_reconciliation_preserves_new_request_after_stale_card_read(self):
+        card=self.ready(self.vocabulary())
+        completed=self.claim_manual(self.manual_regeneration(card))
+        self.run_pipeline(completed,self.MANUAL_CANDIDATE)
+        card.refresh_from_db()
+        self.score(card,"E");card.refresh_from_db()
+        rotation=card.generation_jobs.get(mode="rotation",state="queued")
+        rotation_before=GenerationJob.objects.filter(pk=rotation.pk).values().get()
+        completed_before=GenerationJob.objects.filter(pk=completed.pk).values().get()
+        old=self.claim_manual(self.manual_regeneration(card))
+        work.fail("generation",old.pk,old.claim,StageError("GENERATOR","Temporary provider failure","transport"))
+        old.refresh_from_db()
+        old_claim,old_pair_id=old.claim,card.active_pair_id
+        reconcile=work.supersede_requests
+        replacement=current=None
+
+        def replace_and_enqueue(stale_card):
+            nonlocal replacement,current
+            self.assertEqual(stale_card.active_pair_id,old_pair_id)
+            replacement=work.save_corrected_pair(card.pk,card.source_version,old_pair_id,
+                {**PAIR,"native_sentence":"那次误会很小。","native_highlight_start":2},{},preserve_rotation=True)
+            current=authoring.request_example_regeneration(stale_card,
+                expected_source_version=card.source_version,expected_pair_id=replacement.pk)
+            return reconcile(stale_card)
+
+        # Install P1 and its request after the real view reads P0, but before reconciliation begins.
+        with patch("learning.views.work.supersede_requests",side_effect=replace_and_enqueue):
+            response=self.client.get(reverse("card",args=[card.pk]))
+        current_claim=current.claim
+        old.refresh_from_db();current.refresh_from_db()
+        self.assertEqual(old.state,"cancelled")
+        self.assertNotEqual(old.claim,old_claim)
+        cancelled_claim=old.claim
+        self.assertEqual((current.state,current.claim),("queued",current_claim))
+        self.assertEqual(response.context["card"].active_pair_id,replacement.pk)
+        self.assertEqual(response.context["manual"].pk,current.pk)
+        self.assertIsNone(response.context["superseded"])
+        self.assertContains(response,"Regenerating examples")
+        self.assertContains(response,replacement.native_sentence)
+        self.assertNotContains(response,"was discarded")
+        self.assertEqual(GenerationJob.objects.filter(pk=completed.pk).values().get(),completed_before)
+        self.assertEqual(GenerationJob.objects.filter(pk=rotation.pk).values().get(),rotation_before)
+        self.claim_manual(current)
+        fresh=reconcile(card)  # the helper itself must also tolerate a stale caller instance
+        old.refresh_from_db();current.refresh_from_db()
+        self.assertEqual(fresh.active_pair_id,replacement.pk)
+        self.assertEqual(fresh.rotation_token,rotation.token)
+        self.assertEqual((current.state,current.claim),("processing",current_claim))
+        self.assertEqual(old.claim,cancelled_claim)  # repeated refresh does not re-cancel terminal work
+
+    def test_manual_regeneration_preserves_future_due_and_active_skip_deferral(self):
+        card=self.ready(self.vocabulary())
+        for protection,candidate in [("future-due",self.MANUAL_CANDIDATE),("skip",self.AUTO_CANDIDATE)]:
+            with self.subTest(protection=protection):
+                due=timezone.now()+(timedelta(days=2) if protection=="future-due" else -timedelta(seconds=1))
+                Card.objects.filter(pk=card.pk).update(due=due,deferred_until=None)
+                if protection=="skip":
+                    question=review.next_question(self.user,self.deck)
+                    self.assertIsNotNone(question)
+                    self.assertEqual(review.submit(question,"skip").state,"skipped")
+                card.refresh_from_db()
+                before=(card.due,card.deferred_until)
+                if protection=="future-due":
+                    self.assertGreater(card.due,timezone.now())
+                else:
+                    self.assertLess(card.due,timezone.now())
+                    self.assertGreater(card.deferred_until,timezone.now())
+                job=self.claim_manual(self.manual_regeneration(card))
+                self.run_pipeline(job,candidate)
+                job.refresh_from_db();card.refresh_from_db()
+                self.assertEqual(job.state,"done")
+                self.assertEqual(card.active_pair_id,job.result_id)
+                self.assertEqual((card.due,card.deferred_until),before)
+                self.assertIsNone(review.next_question(self.user,self.deck))
+                self.assertIsNone(review.next_question(self.user,None))
+                self.assertEqual(ScoredReview.objects.count(),0)
+
     def test_manual_correction_preserves_scores_frozen_scopes_and_direction(self):
         card=self.ready(self.vocabulary())
         self.score(card,"B")                     # enters Forgot and retains the cue/direction

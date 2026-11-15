@@ -130,7 +130,7 @@ def card_edit(request, deck_id, card_id=None):
 def card_view(request, card_id):
     card = get_object_or_404(Card.objects.select_related("deck", "active_pair"), pk=card_id, deck__owner=request.user)
     work.expire_generations()
-    work.supersede_requests(card)
+    card = work.supersede_requests(card)
     job = card.generation_jobs.filter(source_version=card.source_version).exclude(mode="manual").order_by("-requested_at").first()
     # Select the learner-requested status explicitly so a newer automatic job cannot hide it.
     manual = (card.generation_jobs.filter(mode="manual", source_version=card.source_version,

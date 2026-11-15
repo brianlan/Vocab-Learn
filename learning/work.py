@@ -165,9 +165,11 @@ def current_generation(job, card):
 
 @transaction.atomic
 def supersede_requests(card):
-    # Learner requests whose base pair is gone are terminal, whatever their unfinished state.
-    card.generation_jobs.filter(mode="manual").exclude(state="done").exclude(
+    # Another tab may have replaced the pair since the caller loaded this card.
+    card = Card.objects.select_related("deck", "active_pair").get(pk=card.pk)
+    card.generation_jobs.filter(mode="manual", state__in=["queued", "processing", "failed"]).exclude(
         provenance__requested_pair_id=card.active_pair_id).update(state="cancelled", claim=uuid.uuid4())
+    return card
 
 
 @transaction.atomic
