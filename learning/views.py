@@ -10,7 +10,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.http import JsonResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render as page
 from django.template.loader import render_to_string
@@ -22,6 +22,21 @@ from . import authoring, lexical, review, work
 from .forms import DeckForm, CardForm, ImportForm
 from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob
 from .rendering import render
+
+
+def deck_progress(user, decks):
+    """Cumulative current-source D/E qualification per deck, in bounded read-only queries."""
+    decks = list(decks)
+    if not decks:
+        return {}
+    qualifying = ScoredReview.objects.filter(user=user, card=OuterRef("pk"), grade__in=["D", "E"],
+                                             snapshot__source_version=OuterRef("source_version"))
+    cards = Card.objects.filter(deck__in=decks, deck__owner=user, archived=False).annotate(_qualified=Exists(qualifying))
+    totals = {row["deck_id"]: row["n"] for row in cards.values("deck_id").annotate(n=Count("pk"))}
+    done = {row["deck_id"]: row["n"] for row in cards.filter(_qualified=True).values("deck_id").annotate(n=Count("pk"))}
+    return {deck.pk: {"total": totals.get(deck.pk, 0), "qualified": done.get(deck.pk, 0),
+                      "percent": 100 * done.get(deck.pk, 0) // totals[deck.pk] if totals.get(deck.pk) else None}
+            for deck in decks}
 
 
 def counts(user, deck=None):
@@ -49,14 +64,16 @@ def dashboard(request):
 @login_required
 def library(request):
     archived = request.GET.get("archived") == "1"
-    decks = Deck.objects.filter(owner=request.user, archived=archived).order_by("name")
+    decks = list(Deck.objects.filter(owner=request.user, archived=archived).order_by("name"))
     form = DeckForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         deck = form.save(commit=False)
         deck.owner = request.user
         deck.save()
         return redirect("deck", deck.pk)
-    return page(request, "learning/library.html", {"decks": decks, "form": form, "archived": archived, "nav": "decks"})
+    progress = deck_progress(request.user, decks)
+    return page(request, "learning/library.html", {"tiles": [{"deck": deck, "progress": progress[deck.pk]} for deck in decks],
+        "form": form, "archived": archived, "nav": "decks"})
 
 
 @login_required
