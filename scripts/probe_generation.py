@@ -29,11 +29,13 @@ def probe(cases, repeats=1, review=False):
         try:
             if review:
                 local.candidate = None
-                row["data"], row["provenance"] = providers.generate(dict(case["source"]))
-                row["raw"] = local.candidate  # the generator payload observed inside the same generate() call
-                row["verdict"] = row["provenance"]["reviewer"]["verdict"]
-                row["reviewer_issues"] = row["provenance"]["reviewer"]["issues"]
-                row["status"] = "reviewed"
+                try:
+                    row["data"], row["provenance"] = providers.generate(dict(case["source"]))
+                    row["verdict"] = row["provenance"]["reviewer"]["verdict"]
+                    row["reviewer_issues"] = row["provenance"]["reviewer"]["issues"]
+                    row["status"] = "reviewed"
+                finally:
+                    row["raw"] = local.candidate  # kept on failure too: the draft arrived before the reviewer failed
             else:
                 row["raw"] = providers.chat(profile, providers.GENERATOR_RULES, case["source"])
                 row["data"] = providers.validate_pair(row["raw"], case["source"]["word"], case["source"]["native_language"])

@@ -64,3 +64,26 @@ class GenerationProbeTests(TestCase):
         self.assertEqual(row["data"]["native_highlight"], "石质")
         self.assertEqual([task for task, _ in calls], ["GENERATOR", "EXAMPLE_REVIEWER"])
         self.assertIn("candidate", calls[1][1])
+
+    def test_reviewed_failure_retains_the_same_call_draft_and_fails_closed(self):
+        cases = [{"id": "stone", "source": {"word": "stone", "explanation": "A solid object.",
+                  "target_language": "English", "native_language": "Chinese"}}]
+        candidate = {"target_sentence": "A <focus>stone</focus> fell.", "native_sentence": "一块<focus>石头</focus>掉了。"}
+        reviewer = providers.Profile("EXAMPLE_REVIEWER", "https://provider.test/chat", "reviewer-model", "reviewer-secret", 2)
+        generator = providers.Profile("GENERATOR", "https://provider.test/chat", "model", "secret-placeholder", 2)
+
+        def chat(profile, rules, payload):
+            if profile.task == "GENERATOR":
+                return candidate
+            raise providers.StageError("EXAMPLE_REVIEWER", "Timed out before the reviewer answered.", "timeout")
+
+        with patch.object(providers, "profile", side_effect=lambda task: generator if task == "GENERATOR" else reviewer), \
+                patch.object(providers, "chat", side_effect=chat) as call:
+            report = probe(cases, review=True)
+        row = report["results"][0]
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual((row["stage"], row["category"]), ("EXAMPLE_REVIEWER", "timeout"))
+        self.assertEqual(row["raw"], candidate)  # the draft arrived before the reviewer failed; kept for judgment
+        self.assertNotIn("data", row)
+        self.assertNotIn("provenance", row)

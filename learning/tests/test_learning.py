@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import random
 import tempfile
 import uuid
@@ -362,6 +363,78 @@ class LearningTests(TestCase):
         self.assertEqual(result.state,"assessed")
         self.assertEqual(ScoredReview.objects.get().snapshot,frozen)
         next_p=self.present(card);self.assertEqual(next_p.snapshot["pair_id"],pair.pk)
+
+    def test_reviewed_rotation_with_frozen_question_drives_generate_and_preserves_held_state(self):
+        card=self.ready(self.vocabulary());self.score(card,"E");card.refresh_from_db()
+        job=card.generation_jobs.get(mode="rotation",state="queued")
+        p=self.present(card);card.refresh_from_db();frozen=p.snapshot.copy()
+        old_pair_id=card.active_pair_id
+        before={key:getattr(card,key) for key in ["fsrs","due","deferred_until","collection","streak",
+            "review_count","progress_version","source_version","explanation"]}
+        job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
+        candidate={"target_sentence":"Their <focus>misunderstanding</focus> delayed the meeting.",
+                   "native_sentence":"他们的<focus>误会</focus>推迟了会议。"}
+        envelope={"verdict":"repair","issues":[{"rule":"scope","detail":"The native focus needs a compact lexical span."}],
+                  "pair":{"target_sentence":"A fresh <focus>misunderstanding</focus> surfaced at work.",
+                          "native_sentence":"工作上出现了一个新的<focus>误会</focus>。"}}
+        calls=[]
+        def chat(profile,rules,payload):
+            calls.append((profile.task,payload))
+            if profile.task=="GENERATOR":
+                self.assertIn("previous_pair",payload)
+                return candidate
+            return envelope
+        with patch.dict(os.environ,{"GENERATOR_API_KEY":"env-placeholder","EXAMPLE_REVIEWER_API_KEY":"env-placeholder"}),\
+                patch("learning.providers.chat",side_effect=chat):
+            work.process_generation(job.pk,job.claim)
+        self.assertEqual([task for task,_ in calls],["GENERATOR","EXAMPLE_REVIEWER"])
+        job.refresh_from_db();card.refresh_from_db()
+        self.assertEqual(job.state,"done")
+        pair=job.result
+        self.assertEqual(card.active_pair_id,old_pair_id)  # the reviewed candidate stays parked while frozen
+        self.assertEqual(pair.provenance["reviewer"]["verdict"],"repair")
+        self.assertEqual(pair.provenance["reviewer"]["prompt_version"],PROMPT_VERSIONS["EXAMPLE_REVIEWER"])
+        self.assertEqual(pair.provenance["prompt_version"],PROMPT_VERSIONS["GENERATOR"])
+        # The frozen question, its schedule/progress/history/definition and the held cue are untouched.
+        self.assertEqual({key:getattr(card,key) for key in before},before)
+        self.assertEqual(card.cue_pair_id,frozen["pair_id"])
+        self.assertTrue(review.valid_presentation(p))
+        self.assertEqual(review.next_question(self.user,self.deck).pk,p.pk)
+        self.assertEqual(ScoredReview.objects.count(),1)
+        # Answering the frozen question must not let the parked candidate jump the held cue.
+        review.submit(p,"skip")
+        p.refresh_from_db();self.assertEqual(p.snapshot,frozen)
+        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(minutes=31)):
+            fresh=self.present()
+        self.assertEqual(fresh.snapshot["pair_id"],frozen["pair_id"])
+        self.assertEqual(fresh.snapshot["direction"],frozen["direction"])
+
+    def test_reviewed_rotation_adopts_the_reviewed_pair_when_no_question_holds_the_cue(self):
+        card=self.ready(self.vocabulary());self.score(card,"E");card.refresh_from_db()
+        job=card.generation_jobs.get(mode="rotation",state="queued")
+        self.assertIsNone(card.cue_pair_id)  # the E cycle released the cue; no presentation holds the old pair
+        job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
+        candidate={"target_sentence":"Their <focus>misunderstanding</focus> delayed the meeting.",
+                   "native_sentence":"他们的<focus>误会</focus>推迟了会议。"}
+        envelope={"verdict":"accept","issues":[],"pair":candidate}
+        calls=[]
+        def chat(profile,rules,payload):
+            calls.append((profile.task,payload))
+            return candidate if profile.task=="GENERATOR" else envelope
+        with patch.dict(os.environ,{"GENERATOR_API_KEY":"env-placeholder","EXAMPLE_REVIEWER_API_KEY":"env-placeholder"}),\
+                patch("learning.providers.chat",side_effect=chat):
+            work.process_generation(job.pk,job.claim)
+        self.assertEqual([task for task,_ in calls],["GENERATOR","EXAMPLE_REVIEWER"])
+        job.refresh_from_db();self.assertEqual(job.state,"done")
+        self.assertEqual(job.result.provenance["reviewer"]["verdict"],"accept")
+        card.due=timezone.now()-timedelta(seconds=1);card.save(update_fields=["due"])
+        before=(card.fsrs,card.progress_version,card.collection,card.streak,card.direction_index,ScoredReview.objects.count())
+        fresh=self.present()
+        self.assertEqual(fresh.snapshot["pair_id"],job.result_id)  # the reviewed pair is adopted as the next cue
+        card.refresh_from_db();self.assertEqual(card.active_pair_id,job.result_id)
+        self.assertEqual(card.rotation_token,None)
+        self.assertEqual((card.fsrs,card.progress_version,card.collection,card.streak,card.direction_index,
+            ScoredReview.objects.count()),before)
 
     def test_refresh_command_scopes_ready_cards_and_retries_only_remaining_failures(self):
         current={"prompt_version":PROMPT_VERSIONS["GENERATOR"],

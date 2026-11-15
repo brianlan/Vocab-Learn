@@ -105,8 +105,15 @@ native focus became the lexical noun 公道; 1 fail-closed reviewer output failu
 Independent judgment against the corpus checks: 22 good candidates, 2 bad (`existential`,
 `prevention` — both accepted by the reviewer, i.e. bad→bad), 0 good→bad, 0 bad→good. Semantic
 replays into review: the known-bad `elicit`/逗笑 candidate, a wrong-sense `bank`, a wrong-word-class
-`monthly`, and an unrepairable-scope `porous` — all repaired this run (the `elicit` repair fixes
-alignment by shifting the target to an achieved result; earlier replays of the same candidate were
-accepted, so repair is not deterministic). Token usage is not recorded (the provider contract does
-not surface usage fields); the dedicated-card walkthrough is substituted by named automated tests
-for lack of an interactive dev-stack session — both disclosed in the evidence file.
+`monthly`, and an unrepairable-scope `porous`. The `elicit` replay is a RESIDUAL SCOPE FAILURE: its
+repair fixed the purpose/result alignment but the native focus 逗笑 still absorbs the unhighlighted
+object's laughter, and earlier replays of the same candidate were accepted outright. The motivating
+scope check is evidenced by a separate sampled reviewed run (`docs/implementation/
+example-quality-review-results.json`, "motivating_case_evidence": focus `问出` with the drawn-out
+object outside the highlight, `lexical-pair-v7-a` + `example-review-v1`); one sample, not a
+deterministic guarantee. The dedicated-card correction/rotation walkthrough is substituted by two
+named automated checks that drive the real `providers.generate` with the transport mocked (reviewed
+rotation while a question is frozen — held state untouched and the parked candidate never jumps the
+cue — and adoption of the reviewed pair when no cue is held); the two `save_corrected_pair` tests
+remain as storage/fence coverage only. Token usage is not recorded (the provider contract does not
+surface usage fields); both substitutions are disclosed in the evidence file.
