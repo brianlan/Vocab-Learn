@@ -15,7 +15,7 @@ from django.utils import timezone
 from learning import authoring, review, work
 from learning.models import Deck, Attempt, ScoredReview, Presentation, GenerationJob
 from learning.worker import run_worker
-from .test_learning import GENERIC, VOCAB, audio_bytes
+from .test_learning import GENERIC, VOCAB, PAIR, audio_bytes
 
 
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
@@ -68,6 +68,26 @@ class ConcurrencyTests(TransactionTestCase):
             receipts=list(pool.map(claim,range(2)))
         self.assertEqual(len({r[1] for r in receipts}),2)
         self.assertEqual(GenerationJob.objects.filter(state="processing",started_at__isnull=False,deadline__isnull=False).count(),2)
+
+    def test_concurrent_manual_regeneration_requests_coalesce_into_one_job(self):
+        card=authoring.save_card(self.deck,"vocabulary",{**VOCAB,"word":"manual-regen"})
+        job=card.generation_jobs.get(mode="initial")
+        job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
+        work.save_pair(job.pk,job.claim,PAIR,{"model":"test"})
+        card.refresh_from_db()
+        barrier=threading.Barrier(2)
+        def request(_):
+            try:
+                barrier.wait()
+                return authoring.request_example_regeneration(card,expected_source_version=card.source_version,
+                    expected_pair_id=card.active_pair_id).pk
+            finally:connections.close_all()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            job_ids=list(pool.map(request,range(2)))
+        self.assertEqual(job_ids[0],job_ids[1])
+        self.assertEqual(card.generation_jobs.filter(mode="manual",state="queued").count(),1)
+        self.assertIsNone(card.rotation_token)  # automatic intent untouched by the manual request
+        self.assertFalse(card.generation_jobs.filter(mode="rotation").exists())
 
     @override_settings(GENERATION_TIMEOUT_SECONDS=5,WORKER_CLEANUP_GRACE_SECONDS=1,WORKER_CONCURRENCY=2)
     def test_aged_generation_queue_executes_after_all_slots_recover(self):

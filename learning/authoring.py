@@ -48,6 +48,25 @@ def new_generation(card, mode="initial"):
         **({"token": card.rotation_token} if mode == "rotation" else {}))
 
 
+@transaction.atomic
+def request_example_regeneration(card, *, expected_source_version, expected_pair_id):
+    """Queue one durable learner-requested pair replacement without touching automatic rotation."""
+    card = Card.objects.select_related("deck").get(pk=card.pk)
+    if card.kind != "vocabulary" or not card.ready or card.archived or card.deck.archived:
+        raise ValidationError("Only a Ready Vocabulary card with saved examples can prepare new ones.")
+    if card.source_version != expected_source_version or card.active_pair_id != expected_pair_id:
+        raise ValidationError("This page is out of date. Reload to see the current examples.", code="stale_source")
+    active = card.generation_jobs.filter(mode="manual", source_version=card.source_version,
+        provenance__requested_pair_id=expected_pair_id, state__in=["queued", "processing"]).first()
+    if active:
+        return active
+    if card.generation_jobs.filter(mode="manual", source_version=card.source_version,
+            provenance__requested_pair_id=expected_pair_id, state="failed").exists():
+        raise ValidationError("Preparing new examples failed. Your current examples were kept; use Try again.", code="retry_directed")
+    return GenerationJob.objects.create(card=card, source_version=card.source_version, mode="manual",
+        provenance={"requested_pair_id": expected_pair_id})
+
+
 def initial_inputs(deck):
     return GenerationJob.objects.filter(card__deck=deck, mode="initial", source_version=F("card__source_version"))
 

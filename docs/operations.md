@@ -162,7 +162,7 @@ Queued/new executions use settings at dispatch; already dispatched calls retain 
 
 ### Import and daily learning
 
-Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Samples and authoring syntax](examples/README.md) describe the exact schemas. Import is limited to 5 MB/10,000 source records and is all-or-nothing on validation failure; duplicates are skipped without overwriting/restoring them. Vocabulary explanations may be omitted; missing definitions, pronunciation and close synonyms prepare before examples. Sources become study-ready only after valid paired examples are saved. Refresh their detail page for preparation status; failures expose Retry. A completed definition survives an example-stage retry.
+Create a private deck, then add a Generic/Vocabulary Card or use Import CSV. [Samples and authoring syntax](examples/README.md) describe the exact schemas. Import is limited to 5 MB/10,000 source records and is all-or-nothing on validation failure; duplicates are skipped without overwriting/restoring them. Vocabulary explanations may be omitted; missing definitions, pronunciation and close synonyms prepare before examples. Sources become study-ready only after valid paired examples are saved. Refresh their detail page for preparation status; failures expose Retry. A completed definition survives an example-stage retry. After a Vocabulary card is Ready, its detail page offers **Regenerate examples** to request another pair without editing the source; see [Correcting older Ready examples](#correcting-older-ready-examples).
 
 ### Vocabulary field extraction
 
@@ -285,6 +285,11 @@ rerun explicitly to retry the remaining cards. Newer source/active-pair changes 
 Not-ready cards, archived sources and other users are excluded; this command does not retry bulk-import preparation failures.
 
 FSRS memory/due, collection, streak, review counts, direction position and historical grades stay intact. An unfinished question or fixed/failed submission in any scope keeps its original pair; the correction takes effect at a later safe presentation boundary. Obsolete rotation work is cancelled. Run this command separately from the cold-backup maintenance window.
+
+Learners can request their own replacement pair from a Ready Vocabulary card's detail page with **Regenerate examples**.
+It uses the same generation-plus-review pipeline and the same preservation guarantees, applies the new pair automatically
+on success, and offers an explicit retry on failure. Unlike this deployer command, a learner request leaves automatic
+rotation intent and pending jobs untouched, so a later qualifying Quick recall can still replace the manual pair normally.
 
 ## Persistence, audio expiry, and upgrade
 

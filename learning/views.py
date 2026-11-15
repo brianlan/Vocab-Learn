@@ -130,12 +130,36 @@ def card_edit(request, deck_id, card_id=None):
 def card_view(request, card_id):
     card = get_object_or_404(Card.objects.select_related("deck", "active_pair"), pk=card_id, deck__owner=request.user)
     work.expire_generations()
-    job = card.generation_jobs.filter(source_version=card.source_version).order_by("-requested_at").first()
+    card = work.supersede_requests(card)
+    job = card.generation_jobs.filter(source_version=card.source_version).exclude(mode="manual").order_by("-requested_at").first()
+    # Select the learner-requested status explicitly so a newer automatic job cannot hide it.
+    manual = (card.generation_jobs.filter(mode="manual", source_version=card.source_version,
+              provenance__requested_pair_id=card.active_pair_id).order_by("-requested_at").first()
+              if card.active_pair_id else None)
+    # Keep relevant superseded information as a fallback when no request matches the current pair.
+    superseded = None if manual else card.generation_jobs.filter(
+        mode="manual", source_version=card.source_version, state="cancelled").order_by("-requested_at").first()
     teaching = lexical.details(card) if card.kind == "vocabulary" else {"explanation": card.explanation}
-    return page(request, "learning/card.html", {"card": card, "job": job, "nav": "decks",
+    return page(request, "learning/card.html", {"card": card, "job": job, "manual": manual, "superseded": superseded, "nav": "decks",
         "definition_generated": card.kind == "vocabulary" and authoring.definition_generated(card),
         "question_html": render(card.question, card.answer, True).html,
         "teaching": teaching, "explanation_html": render(teaching["explanation"]).html})
+
+
+@login_required
+@require_POST
+def example_regenerate(request, card_id):
+    card = get_object_or_404(Card, pk=card_id, deck__owner=request.user)
+    try:
+        expected_pair_id = int(request.POST.get("pair_id", ""))
+        authoring.request_example_regeneration(card, expected_source_version=int(request.POST.get("source_version", "")),
+                                               expected_pair_id=expected_pair_id)
+    except (ValueError, ValidationError) as e:
+        messages.error(request, e.messages[0] if isinstance(e, ValidationError) else
+                       "This page is out of date. Reload to see the current examples.")
+        return redirect("card", card.pk)
+    messages.success(request, "A new example pair is being prepared. Your current examples and progress stay unchanged.")
+    return redirect("card", card.pk)
 
 
 @login_required
