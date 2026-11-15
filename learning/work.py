@@ -110,6 +110,9 @@ def fail(kind, job_id, claim, error):
     else:
         job.provenance = {**job.provenance, "failed_stage": getattr(error, "stage", "worker")}
         fields.append("provenance")
+    if kind == "generation" and job.mode == "manual" and not current_generation(job, job.card):
+        # An obsolete learner request is superseded, not retryable against a newer pair.
+        job.state = "cancelled"
     job.claim = uuid.uuid4()
     job.save(update_fields=fields+["claim"])
 
@@ -267,6 +270,11 @@ def process_generation(job_id, claim):
 
 @transaction.atomic
 def expire_generations():
+    # Obsolete learner requests are superseded before the generic expiry marks jobs retryable.
+    for job in GenerationJob.objects.filter(state="processing", mode="manual", deadline__lte=timezone.now()).select_related("card"):
+        if not current_generation(job, job.card):
+            job.state, job.claim = "cancelled", uuid.uuid4()
+            job.save(update_fields=["state", "claim"])
     GenerationJob.objects.filter(state="processing", deadline__lte=timezone.now()).update(
         state="failed", claim=uuid.uuid4(), error="Example preparation expired. Retry explicitly; your source is saved.", error_category="timeout", retryable=True)
 
@@ -275,7 +283,13 @@ def expire_generations():
 def retry_generation(job):
     expire_generations()
     job = GenerationJob.objects.select_related("card__deck").get(pk=job.pk)
-    if job.state != "failed" or not current_generation(job, job.card):
+    if job.state != "failed":
+        return job
+    if not current_generation(job, job.card):
+        if job.mode == "manual":
+            # A stale retry request gets a clear terminal status instead of a silent no-op.
+            job.state, job.claim = "cancelled", uuid.uuid4()
+            job.save(update_fields=["state", "claim"])
         return job
     job.execution += 1
     job.state, job.claim, job.error = "queued", uuid.uuid4(), ""

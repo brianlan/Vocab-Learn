@@ -135,8 +135,14 @@ def card_view(request, card_id):
     manual = (card.generation_jobs.filter(mode="manual", source_version=card.source_version,
               provenance__requested_pair_id=card.active_pair_id).order_by("-requested_at").first()
               if card.active_pair_id else None)
+    # Keep relevant superseded information as a fallback when no request matches the current pair.
+    superseded = None if manual else card.generation_jobs.filter(
+        mode="manual", source_version=card.source_version, state="cancelled").order_by("-requested_at").first()
+    manual = (card.generation_jobs.filter(mode="manual", source_version=card.source_version,
+              provenance__requested_pair_id=card.active_pair_id).order_by("-requested_at").first()
+              if card.active_pair_id else None)
     teaching = lexical.details(card) if card.kind == "vocabulary" else {"explanation": card.explanation}
-    return page(request, "learning/card.html", {"card": card, "job": job, "manual": manual, "nav": "decks",
+    return page(request, "learning/card.html", {"card": card, "job": job, "manual": manual, "superseded": superseded, "nav": "decks",
         "definition_generated": card.kind == "vocabulary" and authoring.definition_generated(card),
         "question_html": render(card.question, card.answer, True).html,
         "teaching": teaching, "explanation_html": render(teaching["explanation"]).html})
