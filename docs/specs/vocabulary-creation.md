@@ -30,6 +30,36 @@ The new task has independent `DEFINITION_ENDPOINT`, `DEFINITION_MODEL`, `DEFINIT
 `DEFINITION_TIMEOUT_SECONDS` and `DEFINITION_MAX_COMPLETION_TOKENS` settings. Defaults match the existing MiniMax chat
 profile. MiniMax-key fallback remains limited to the MiniMax origin. Requests continue to omit `reasoning_effort` and `thinking`.
 
+## Example quality review
+
+Every prepared pair passes one Example Quality Review call before deterministic validation and persistence. The reviewer
+evaluates proposed Recognition/Production questions against the authored source: sense and word class, bilingual assertions,
+lexical scope, natural language and cue fairness. It returns exactly one decision in the same call:
+`accept` (empty findings, candidate strings unchanged), `repair` (nonempty findings and a final pair, which may be a local
+fix or a completely unrelated scene that still teaches the authored expression, sense and word class) or `reject`
+(nonempty findings, no pair). Rejection, timeout, malformed output or failed final validation fail closed: the initial
+card stays unready, completed teaching details are preserved, and explicit retry regenerates and reviews a fresh candidate.
+There is no unreviewed fallback, no automatic retry and no second review call after repair.
+
+Generation defaults to `glm-5.3-flash` (Zhipu endpoint, `zhipu` protocol, explicit task key) and review defaults to
+`MiniMax-M3.1-Flash` (MiniMax endpoint, `minimax` protocol). Each role keeps independent `*_ENDPOINT`, `*_MODEL`,
+`*_PROTOCOL`, `*_API_KEY`, `*_THINKING`, `*_REASONING_EFFORT`, `*_TIMEOUT_SECONDS` and `*_MAX_COMPLETION_TOKENS` settings
+under the `GENERATOR_` and `EXAMPLE_REVIEWER_` prefixes. Both roles send explicit thinking (`enabled` / `adaptive`) and
+`reasoning_effort=max`; the Zhipu dialect encodes the token budget as `max_tokens` and thinking as
+`{"thinking":{"type":"enabled"}}`, the MiniMax dialect as `max_completion_tokens` and `{"thinking":{"type":"adaptive"}}`.
+The dialect follows the configured protocol, never the model name. MiniMax-key fallback stays limited to the MiniMax
+origin; the Zhipu origin requires an explicit task key. Provider changes require process recreation to re-read `.env`.
+`.env.example` and Compose document the current defaults.
+
+The claimed generation execution budget (default 420 seconds, `GENERATION_TIMEOUT_SECONDS`) starts at worker claim and is
+shared by optional vocabulary completion, generation and review; no stage receives a fresh window. Queued waiting does not
+consume it, already claimed jobs keep their saved deadlines, and late results cannot commit. Successful pair provenance
+records both planned roles, the review verdict and findings without credentials or hidden reasoning; failed stages report
+`GENERATOR`, `EXAMPLE_REVIEWER`, `DEFINITION` or `worker` as before. Legacy pairs without reviewer provenance remain
+usable. Explicit correction/refresh eligibility considers both the generator and reviewer prompt versions, so pairs
+reviewed under an older reviewer prompt can be refreshed explicitly; deployment never triggers automatic refresh, and
+reviewer verdicts are never treated as correctness guarantees.
+
 ## Duplicate and execution behavior
 
 - An omitted/blank explanation skips an existing card with the exact same expression and language pair in that deck,

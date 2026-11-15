@@ -40,6 +40,12 @@ A Vocabulary Card review that presents a native-language context and asks for th
 **Example Pair**:
 Aligned target-language and native-language sentences expressing the same situation, with corresponding expressions identified for review.
 
+**Example Quality Review**:
+The one mandatory reviewer call after Example generation. It evaluates the proposed questions (not learner answers), and accepts an already valid pair unchanged, repairs it locally, or replaces both sentences with an unrelated scene that retains the authored expression, sense and word class. Rejection, timeout, malformed output or failed final validation fail closed: no unreviewed fallback is saved. It is separate from the Judge.
+
+**Example Reviewer**:
+The model role that performs the Example Quality Review, configured independently of the Generator under `EXAMPLE_REVIEWER_*` settings. Its profile, prompt version, verdict and findings are recorded in successful pair provenance without secrets or hidden reasoning.
+
 **Example Revision**:
 A saved version of an Example Pair, its selected expression occurrences and its generation provenance used by a review, distinct from the vocabulary being learned. It has no separately generated definition or native reference-answer paragraph.
 

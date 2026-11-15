@@ -19,6 +19,7 @@ DETAILS = {"explanation": "If something **absorbs** a liquid, the liquid goes in
            "pronunciations": [{"ipa": "/əbˈzɔrb/", "variety": "US", "label": "verb"}], "synonyms": ["soak up"]}
 PAIR = {"target_sentence": "The sponge <focus>absorbed</focus> the water.",
         "native_sentence": "海绵<focus>吸收</focus>了水。"}
+REJECT = {"verdict": "reject", "issues": [{"rule": "cue", "detail": "The native cue leaks extra meaning."}], "pair": None}
 
 
 class CompletionContractTests(UnitTestCase):
@@ -97,7 +98,7 @@ class CompletionContractTests(UnitTestCase):
                     providers.define(SOURCE, p)
 
     def test_definition_profile_and_wire_parameters_are_independent(self):
-        environment = {"MINIMAX_API_KEY": "test-only", "DEFINITION_MODEL": "definition-only"}
+        environment = {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only", "DEFINITION_MODEL": "definition-only"}
         with patch.dict(os.environ, environment):
             before = providers.profile("GENERATOR").metadata()
             p = providers.profile("DEFINITION")
@@ -129,7 +130,7 @@ class VocabularyCreationTests(TestCase):
         self.client = Client(enforce_csrf_checks=True)
         self.headers = {"HTTP_AUTHORIZATION": "Bearer " + self.token}
         self.url = reverse("api_vocabulary_create", args=[self.deck.pk])
-        self.environment = patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"})
+        self.environment = patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"})
         self.environment.start(); self.addCleanup(self.environment.stop)
 
     def post(self, data, url=None, **kwargs):
@@ -143,7 +144,11 @@ class VocabularyCreationTests(TestCase):
 
     def complete(self, card, job, claim):
         def reply(profile, system, payload):
-            return {name: DETAILS[name] for name in payload["requested_fields"]} if profile.task == "DEFINITION" else PAIR
+            if profile.task == "DEFINITION":
+                return {name: DETAILS[name] for name in payload["requested_fields"]}
+            if profile.task == "EXAMPLE_REVIEWER":
+                return {"verdict": "accept", "issues": [], "pair": payload["candidate"]}
+            return PAIR
         with patch("learning.providers.chat", side_effect=reply):
             work.process_generation(job.pk, claim)
         card.refresh_from_db()
@@ -302,13 +307,16 @@ class VocabularyCreationTests(TestCase):
             calls.append(p.task)
             if p.task == "DEFINITION":
                 return {key: DETAILS[key] for key in payload["requested_fields"]}
-            self.assertEqual(source["explanation"], payload["explanation"])
-            self.assertEqual(payload["synonyms"], DETAILS["synonyms"])
-            return PAIR
+            if p.task == "GENERATOR":
+                self.assertEqual(source["explanation"], payload["explanation"])
+                self.assertEqual(payload["synonyms"], DETAILS["synonyms"])
+                return PAIR
+            self.assertEqual(payload["candidate"], PAIR)
+            return {"verdict": "accept", "issues": [], "pair": payload["candidate"]}
         with patch("learning.providers.chat", side_effect=answer):
             work.process_generation(job.pk, claim)
         card.refresh_from_db();job.refresh_from_db()
-        self.assertEqual(calls, ["DEFINITION", "GENERATOR"])
+        self.assertEqual(calls, ["DEFINITION", "GENERATOR", "EXAMPLE_REVIEWER"])
         self.assertTrue(card.ready)
         self.assertEqual(card.definition, source["explanation"])
         self.assertEqual(card.pronunciations, DETAILS["pronunciations"])
@@ -317,6 +325,10 @@ class VocabularyCreationTests(TestCase):
         self.assertEqual(job.state, "done")
         self.assertTrue(job.provenance["definition_completed"])
         self.assertEqual(job.provenance["input_explanation"], source["explanation"])
+        self.assertEqual(job.provenance["example_reviewer"]["prompt_version"], providers.PROMPT_VERSIONS["EXAMPLE_REVIEWER"])
+        self.assertEqual(job.provenance["reviewer"]["verdict"], "accept")
+        self.assertEqual(job.provenance["reviewer"]["prompt_version"], providers.PROMPT_VERSIONS["EXAMPLE_REVIEWER"])
+        self.assertEqual(job.result.provenance["reviewer"]["verdict"], "accept")
         self.assertEqual(authoring.create_card(self.deck, "vocabulary", source), (card, False))
         self.assertEqual(self.post(SOURCE).json()["id"], card.pk)
         self.assertEqual(GenerationJob.objects.count(), 1)
@@ -331,9 +343,10 @@ class VocabularyCreationTests(TestCase):
 
     def test_example_failure_retry_preserves_completion_and_does_not_pay_twice(self):
         card, job, claim = self.claimed()
-        failure = providers.StageError("GENERATOR", "Controlled outage", "transport")
+        failure = providers.StageError("EXAMPLE_REVIEWER", "Controlled outage", "transport")
         def first(p, system, payload):
             if p.task == "DEFINITION":return DETAILS
+            if p.task == "GENERATOR":return PAIR
             raise failure
         with patch("learning.providers.chat", side_effect=first):
             with self.assertRaises(providers.StageError):work.process_generation(job.pk, claim)
@@ -348,13 +361,63 @@ class VocabularyCreationTests(TestCase):
         status = self.client.get(reverse("api_vocabulary", args=[card.pk]), **self.headers).json()
         self.assertEqual(status["preparation"]["phase"], "examples")
         _, _, second_claim, _ = work.claim_work()
-        with patch("learning.providers.define") as define, patch("learning.providers.chat", return_value=PAIR):
+        def reply(p, system, payload):
+            return {"verdict": "accept", "issues": [], "pair": payload["candidate"]} if p.task == "EXAMPLE_REVIEWER" else PAIR
+        with patch("learning.providers.define") as define, patch("learning.providers.chat", side_effect=reply):
             work.process_generation(retried.pk, second_claim)
         define.assert_not_called()
         card.refresh_from_db()
         self.assertTrue(card.ready)
         self.assertEqual(card.explanation, before)
         self.assertEqual(self.post(SOURCE).status_code, 200)
+
+    def test_reviewer_rejection_is_a_retryable_quality_failure_that_preserves_details(self):
+        card, job, claim = self.claimed()
+        def reply(p, system, payload):
+            if p.task == "DEFINITION":return DETAILS
+            if p.task == "GENERATOR":return PAIR
+            return REJECT
+        with patch("learning.providers.chat", side_effect=reply):
+            with self.assertRaises(providers.StageError) as error:work.process_generation(job.pk, claim)
+        self.assertEqual(error.exception.stage, "EXAMPLE_REVIEWER")
+        work.fail("generation", job.pk, claim, error.exception)
+        card.refresh_from_db();job.refresh_from_db()
+        self.assertFalse(card.ready)
+        self.assertEqual(card.pairs.count(), 0)
+        self.assertIn(DETAILS["explanation"], card.explanation)
+        self.assertTrue(job.retryable)
+        self.assertEqual(job.provenance["failed_stage"], "EXAMPLE_REVIEWER")
+        self.assertFalse(review.available(self.owner).exists())
+        # Explicit retry regenerates and reviews a fresh candidate, reusing completed details.
+        retried = work.retry_generation(job)
+        _, _, retry_claim, _ = work.claim_work()
+        def second(p, system, payload):
+            if p.task == "DEFINITION":return DETAILS
+            if p.task == "GENERATOR":return PAIR
+            return {"verdict": "accept", "issues": [], "pair": payload["candidate"]}
+        with patch("learning.providers.chat", side_effect=second):
+            work.process_generation(retried.pk, retry_claim)
+        card.refresh_from_db()
+        self.assertTrue(card.ready)
+        self.assertEqual(card.pairs.get().provenance["reviewer"]["verdict"], "accept")
+
+    def test_source_edit_while_review_is_outstanding_cannot_commit(self):
+        card, job, claim = self.claimed()
+        replacement = "/x/: A deliberately chosen meaning. [synonyms: ]"
+        pair = providers.validate_pair(PAIR, "absorb", "Chinese")
+        def generate(*args, **kwargs):
+            card.refresh_from_db()
+            authoring.save_card(self.deck, "vocabulary", {**SOURCE, "explanation": replacement}, card)
+            return pair, {"prompt_version": providers.PROMPT_VERSIONS["GENERATOR"],
+                          "reviewer": {"prompt_version": providers.PROMPT_VERSIONS["EXAMPLE_REVIEWER"],
+                                       "verdict": "accept", "issues": []}}
+        with patch("learning.providers.define", return_value=(DETAILS, {"requested_fields": list(DETAILS), "fields": DETAILS})), \
+                patch("learning.providers.generate", side_effect=generate):
+            work.process_generation(job.pk, claim)
+        card.refresh_from_db();job.refresh_from_db()
+        self.assertEqual(card.explanation, replacement)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(card.pairs.count(), 0)
 
     def test_late_completion_cannot_overwrite_an_edited_source(self):
         card, job, claim = self.claimed()

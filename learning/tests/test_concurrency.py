@@ -77,12 +77,17 @@ class ConcurrencyTests(TransactionTestCase):
                 nonlocal running,peak
                 body=json.loads(inner.rfile.read(int(inner.headers["Content-Length"])))
                 source=json.loads(body["messages"][1]["content"])
+                reviewing="candidate" in source
                 with lock:
-                    requests.append(source["word"]);running+=1;peak=max(peak,running)
+                    requests.append((source["word"],reviewing));running+=1;peak=max(peak,running)
                 try:
                     inner.send_response(200);inner.send_header("Content-Type","application/json");inner.end_headers()
-                    if source["word"].startswith("stall"):
+                    stall=(not reviewing and source["word"].startswith("stall")) or (reviewing and source["word"]=="review-stall")
+                    if stall:
                         while not stop.wait(.02):inner.wfile.write(b" ");inner.wfile.flush()
+                    elif reviewing:
+                        inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps(
+                            {"verdict":"accept","issues":[],"pair":source["candidate"]})}}]}).encode())
                     else:
                         time.sleep(1)
                         pair={"target_sentence":"A <focus>healthy</focus> example.","native_sentence":"一个<focus>健康的</focus>例子。"}
@@ -94,26 +99,30 @@ class ConcurrencyTests(TransactionTestCase):
         server=ThreadingHTTPServer(("127.0.0.1",0),Handler);server.daemon_threads=True
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         cards=[];old=timezone.now()-timedelta(hours=2)
-        for index,word in enumerate(["stall-a","stall-b","healthy"]):
+        for index,word in enumerate(["stall-a","stall-b","review-stall","healthy"]):
             card=authoring.save_card(self.deck,"vocabulary",{**VOCAB,"word":word});cards.append(card)
             card.generation_jobs.update(requested_at=old+timedelta(seconds=index))
         started=time.monotonic();anchor=timezone.now()
         try:
-            with patch.dict(os.environ,{"GENERATOR_ENDPOINT":f"http://127.0.0.1:{server.server_port}/generate",
-                    "GENERATOR_API_KEY":"test-only","ALLOW_INSECURE_PROVIDER_HTTP":"1"}):
+            endpoint=f"http://127.0.0.1:{server.server_port}/generate"
+            with patch.dict(os.environ,{"GENERATOR_ENDPOINT":endpoint,"GENERATOR_API_KEY":"test-only",
+                    "EXAMPLE_REVIEWER_ENDPOINT":endpoint,"EXAMPLE_REVIEWER_API_KEY":"test-only","ALLOW_INSECURE_PROVIDER_HTTP":"1"}):
                 run_worker(once=True,concurrency=2)
             elapsed=time.monotonic()-started
             self.assertEqual(GenerationJob.objects.filter(state="done").count(),1)
-            self.assertEqual(GenerationJob.objects.filter(state="failed").count(),2)
-            cards[2].refresh_from_db();self.assertTrue(cards[2].ready)
-            self.assertEqual(sorted(requests),["healthy","stall-a","stall-b"])
+            self.assertEqual(GenerationJob.objects.filter(state="failed").count(),3)
+            cards[3].refresh_from_db();self.assertTrue(cards[3].ready)
+            stalled=GenerationJob.objects.get(card=cards[2])
+            self.assertEqual((stalled.state,stalled.error_category),( "failed","timeout"))
+            self.assertEqual(sorted(requests),[("healthy",False),("healthy",True),("review-stall",False),
+                                               ("review-stall",True),("stall-a",False),("stall-b",False)])
             self.assertLessEqual(peak,2)
-            self.assertLess(elapsed,9)
+            self.assertLess(elapsed,12)
             for job in GenerationJob.objects.all():
                 self.assertGreaterEqual(job.started_at,anchor)
                 self.assertEqual(job.deadline-job.started_at,timedelta(seconds=5))
             self.assertEqual(ScoredReview.objects.count(),0)
-            print(f"GENERATION-CAPACITY: aged queue recovered after both slots stalled; healthy completion in {elapsed:.3f}s.",flush=True)
+            print(f"GENERATION-CAPACITY: aged queue recovered after stalls incl. a stalled review; healthy completion in {elapsed:.3f}s.",flush=True)
         finally:
             stop.set();server.shutdown();server.server_close();thread.join(timeout=2)
 

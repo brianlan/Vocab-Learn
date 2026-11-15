@@ -37,3 +37,30 @@ class GenerationProbeTests(TestCase):
         self.assertEqual(len(report["results"]), 2)
         self.assertEqual({row["repeat"] for row in report["results"]}, {1, 2})
         self.assertEqual(sum(row["status"] == "failed" for row in report["results"]), 1)
+
+    def test_reviewed_pipeline_mode_is_clearly_identified_and_uses_the_reviewer(self):
+        cases = [{"id": "stone", "source": {"word": "stone", "explanation": "A solid object.",
+                  "target_language": "English", "native_language": "Chinese"}}]
+        candidate = {"target_sentence": "A <focus>stone</focus> fell.", "native_sentence": "一块<focus>石头</focus>掉了。"}
+        reviewer = providers.Profile("EXAMPLE_REVIEWER", "https://provider.test/chat", "reviewer-model", "reviewer-secret", 2)
+        calls = []
+        def chat(profile, rules, payload):
+            calls.append((profile.task, payload))
+            return candidate if profile.task == "GENERATOR" else {"verdict": "repair",
+                "issues": [{"rule": "scope", "detail": "The native focus is too narrow."}],
+                "pair": {"target_sentence": candidate["target_sentence"],
+                         "native_sentence": "一块<focus>石质</focus>的石头掉了。"}}
+        generator = providers.Profile("GENERATOR", "https://provider.test/chat", "model", "secret-placeholder", 2)
+        with patch.object(providers, "profile", side_effect=lambda task: generator if task == "GENERATOR" else reviewer), \
+                patch.object(providers, "chat", side_effect=chat):
+            report = probe(cases, review=True)
+        self.assertEqual(report["mode"], "reviewed_pipeline")
+        self.assertEqual(report["reviewer_prompt_version"], providers.PROMPT_VERSIONS["EXAMPLE_REVIEWER"])
+        self.assertEqual(report["reviewer_profile"]["model"], "reviewer-model")
+        self.assertNotIn("secret-placeholder", str(report)); self.assertNotIn("reviewer-secret", str(report))
+        row = report["results"][0]
+        self.assertEqual(row["status"], "reviewed")
+        self.assertEqual(row["verdict"], "repair")
+        self.assertEqual(row["data"]["native_highlight"], "石质")
+        self.assertEqual([task for task, _ in calls], ["GENERATOR", "EXAMPLE_REVIEWER"])
+        self.assertIn("candidate", calls[1][1])

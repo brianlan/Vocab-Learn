@@ -18,9 +18,13 @@ class Command(BaseCommand):
         except get_user_model().DoesNotExist:
             raise CommandError("Learner account not found.") from None
         version = providers.PROMPT_VERSIONS["GENERATOR"]
+        review_version = providers.PROMPT_VERSIONS["EXAMPLE_REVIEWER"]
+        # A pair is refresh-eligible when its generator or reviewer prompt version no longer matches; legacy pairs
+        # without reviewer provenance were never reviewed and are eligible.
         cards = [card for card in Card.objects.filter(deck__owner=user, deck__archived=False,
             archived=False, kind="vocabulary", ready=True).select_related("active_pair").order_by("pk")
-            if card.active_pair and card.active_pair.provenance.get("prompt_version") != version]
+            if card.active_pair and (card.active_pair.provenance.get("prompt_version") != version or
+                card.active_pair.provenance.get("reviewer", {}).get("prompt_version") != review_version)]
         self.stdout.write(f"Examples needing correction: {len(cards)}. Not-ready cards are excluded.")
         if options["dry_run"] or not cards:
             return

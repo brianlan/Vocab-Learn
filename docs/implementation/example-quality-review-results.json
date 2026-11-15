@@ -1,0 +1,279 @@
+{
+  "date": "2026-11-15",
+  "issue": 4,
+  "configuration": {
+    "generation": {
+      "model": "MiniMax-M3.1-Flash",
+      "protocol": "minimax",
+      "thinking": "adaptive",
+      "reasoning_effort": "max"
+    },
+    "review": {
+      "model": "MiniMax-M3.1-Flash",
+      "protocol": "minimax",
+      "thinking": "adaptive",
+      "reasoning_effort": "max"
+    },
+    "note": "Exchanged role configuration using the available development credentials; the default GLM generation role is covered by request-dialect contract tests, not by live calls in this run."
+  },
+  "generator_prompt_version": "lexical-pair-v6-d",
+  "reviewer_prompt_version": "example-review-v1",
+  "generator_only_baseline": {
+    "cases": 25,
+    "usable": 24,
+    "failed": [
+      "compare-against"
+    ],
+    "median_seconds": 6.5
+  },
+  "reviewed_pipeline": {
+    "cases": 25,
+    "reviewed": 25,
+    "failed": [],
+    "verdicts": {
+      "accept": 23,
+      "repair": 2,
+      "reject": 0
+    },
+    "median_seconds": 9.0,
+    "max_seconds": 31.6,
+    "review_overhead_estimate_seconds": 2.6
+  },
+  "motivating_defects": [
+    {
+      "case": "embarrass",
+      "generator_defect": "missing focus markers",
+      "review_verdict": "repair",
+      "issue_rules": [
+        "format"
+      ],
+      "final_pair_valid": true
+    },
+    {
+      "case": "pick-up",
+      "generator_defect": "native sentence adds an absent detail",
+      "review_verdict": "repair",
+      "issue_rules": [
+        "alignment"
+      ],
+      "final_pair_valid": true
+    }
+  ],
+  "elicit_replay": {
+    "candidate": "The clown told a funny joke to <focus>elicit</focus> laughter from the children. / 小丑讲了一个有趣的笑话，<focus>逗笑</focus>了孩子们。",
+    "review_verdict": "accept",
+    "finding": "MiniMax-as-reviewer accepted the known unfair native focus (逗笑 includes 'laughter'; purpose realized as achieved result). Reviewer approval is not a correctness guarantee; cue-fairness review has residual semantic blind spots.",
+    "fresh_generation": {
+      "target_highlight": "elicit",
+      "native_highlight": "问出",
+      "note": "A fresh reviewed generation produced a scope-compliant cue."
+    }
+  },
+  "limits": "Sixteen-expression-corpus-derived English/Chinese sample plus the corpus's Spanish pairs; one repeated run per case. Not a production-wide accuracy estimate and not a reviewer ranking. Reviewer verdicts were not used as ground truth; final-cue judgment is the author's.",
+  "results": [
+    {
+      "case_id": "absorb",
+      "verdict": "accept",
+      "seconds": 5.07,
+      "issue_rules": [],
+      "target_highlight": "absorbed",
+      "native_highlight": "吸收"
+    },
+    {
+      "case_id": "adventure",
+      "verdict": "accept",
+      "seconds": 15.26,
+      "issue_rules": [],
+      "target_highlight": "adventure",
+      "native_highlight": "冒险"
+    },
+    {
+      "case_id": "centrifugal",
+      "verdict": "accept",
+      "seconds": 14.78,
+      "issue_rules": [],
+      "target_highlight": "centrifugal",
+      "native_highlight": "离心"
+    },
+    {
+      "case_id": "compare-against",
+      "verdict": "accept",
+      "seconds": 8.98,
+      "issue_rules": [],
+      "target_highlight": "compared our sales against last year's target",
+      "native_highlight": "把销售额与去年的目标进行了比较"
+    },
+    {
+      "case_id": "compare-to",
+      "verdict": "accept",
+      "seconds": 14.12,
+      "issue_rules": [],
+      "target_highlight": "compared our noisy classroom to a bustling beehive",
+      "native_highlight": "把我们喧闹的教室比作一个熙熙攘攘的蜂巢"
+    },
+    {
+      "case_id": "compare-with",
+      "verdict": "accept",
+      "seconds": 6.2,
+      "issue_rules": [],
+      "target_highlight": "compare the new bike with my old one",
+      "native_highlight": "把新自行车和我的旧自行车作比较"
+    },
+    {
+      "case_id": "compute",
+      "verdict": "accept",
+      "seconds": 4.22,
+      "issue_rules": [],
+      "target_highlight": "compute",
+      "native_highlight": "计算"
+    },
+    {
+      "case_id": "defeater",
+      "verdict": "accept",
+      "seconds": 19.59,
+      "issue_rules": [],
+      "target_highlight": "defeaters",
+      "native_highlight": "获胜者"
+    },
+    {
+      "case_id": "deserve",
+      "verdict": "accept",
+      "seconds": 9.01,
+      "issue_rules": [],
+      "target_highlight": "deserves",
+      "native_highlight": "值得"
+    },
+    {
+      "case_id": "embarrass",
+      "verdict": "repair",
+      "seconds": 19.18,
+      "issue_rules": [
+        "format"
+      ],
+      "target_highlight": "embarrassed",
+      "native_highlight": "让他很尴尬"
+    },
+    {
+      "case_id": "english-spanish",
+      "verdict": "accept",
+      "seconds": 4.23,
+      "issue_rules": [],
+      "target_highlight": "reluctant",
+      "native_highlight": "reacio"
+    },
+    {
+      "case_id": "existential",
+      "verdict": "accept",
+      "seconds": 10.58,
+      "issue_rules": [],
+      "target_highlight": "existential",
+      "native_highlight": "存在主义的"
+    },
+    {
+      "case_id": "give-an-idea",
+      "verdict": "accept",
+      "seconds": 9.85,
+      "issue_rules": [],
+      "target_highlight": "give Maya an idea of what the trip will cost",
+      "native_highlight": "让玛雅对这次旅行的费用大概有个概念"
+    },
+    {
+      "case_id": "intercom",
+      "verdict": "accept",
+      "seconds": 6.24,
+      "issue_rules": [],
+      "target_highlight": "intercom",
+      "native_highlight": "对讲机"
+    },
+    {
+      "case_id": "justice",
+      "verdict": "accept",
+      "seconds": 7.37,
+      "issue_rules": [],
+      "target_highlight": "justice",
+      "native_highlight": "公正"
+    },
+    {
+      "case_id": "literature",
+      "verdict": "accept",
+      "seconds": 4.89,
+      "issue_rules": [],
+      "target_highlight": "literature",
+      "native_highlight": "文学"
+    },
+    {
+      "case_id": "monthly",
+      "verdict": "accept",
+      "seconds": 6.51,
+      "issue_rules": [],
+      "target_highlight": "monthly",
+      "native_highlight": "每月"
+    },
+    {
+      "case_id": "native",
+      "verdict": "accept",
+      "seconds": 31.63,
+      "issue_rules": [],
+      "target_highlight": "native",
+      "native_highlight": "母语"
+    },
+    {
+      "case_id": "past",
+      "verdict": "accept",
+      "seconds": 10.89,
+      "issue_rules": [],
+      "target_highlight": "past",
+      "native_highlight": "以前的"
+    },
+    {
+      "case_id": "pick-up",
+      "verdict": "repair",
+      "seconds": 9.0,
+      "issue_rules": [
+        "alignment"
+      ],
+      "target_highlight": "pick her up",
+      "native_highlight": "接她"
+    },
+    {
+      "case_id": "prevention",
+      "verdict": "accept",
+      "seconds": 8.62,
+      "issue_rules": [],
+      "target_highlight": "prevention",
+      "native_highlight": "预防"
+    },
+    {
+      "case_id": "share-with",
+      "verdict": "accept",
+      "seconds": 11.59,
+      "issue_rules": [],
+      "target_highlight": "shares her snacks with me",
+      "native_highlight": "和我分享她的零食"
+    },
+    {
+      "case_id": "spanish-chinese",
+      "verdict": "accept",
+      "seconds": 13.17,
+      "issue_rules": [],
+      "target_highlight": "aprovechar",
+      "native_highlight": "充分利用"
+    },
+    {
+      "case_id": "struggle",
+      "verdict": "accept",
+      "seconds": 10.9,
+      "issue_rules": [],
+      "target_highlight": "struggle",
+      "native_highlight": "费了好大劲"
+    },
+    {
+      "case_id": "trick",
+      "verdict": "accept",
+      "seconds": 4.66,
+      "issue_rules": [],
+      "target_highlight": "trick",
+      "native_highlight": "恶作剧"
+    }
+  ]
+}

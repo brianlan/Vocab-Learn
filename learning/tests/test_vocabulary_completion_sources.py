@@ -32,7 +32,7 @@ class CompletionSourceTests(TestCase):
         self.browser.force_login(self.owner)
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        for mock in [patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}),
+        for mock in [patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}),
                      patch("learning.providers.request", side_effect=AssertionError("No provider network calls"))]:
             mock.start(); self.addCleanup(mock.stop)
 
@@ -44,7 +44,11 @@ class CompletionSourceTests(TestCase):
         calls = {}
         def answer(profile, system, payload):
             calls[profile.task] = payload
-            return {name: generated[name] for name in payload["requested_fields"]} if profile.task == "DEFINITION" else pair
+            if profile.task == "DEFINITION":
+                return {name: generated[name] for name in payload["requested_fields"]}
+            if profile.task == "EXAMPLE_REVIEWER":
+                return {"verdict": "accept", "issues": [], "pair": payload["candidate"]}
+            return pair
         with patch("learning.providers.chat", side_effect=answer):
             work.process_generation(job_id, claim)
         card.refresh_from_db()
@@ -444,8 +448,11 @@ class CompletionRecoveryTests(TransactionTestCase):
     def prepare(self, card, generated, pair=RIVER_PAIR):
         _, job_id, claim, _ = work.claim_work()
         def answer(profile, system, payload):
-            return ({name: generated[name] for name in payload["requested_fields"]}
-                    if profile.task == "DEFINITION" else pair)
+            if profile.task == "DEFINITION":
+                return {name: generated[name] for name in payload["requested_fields"]}
+            if profile.task == "EXAMPLE_REVIEWER":
+                return {"verdict": "accept", "issues": [], "pair": payload["candidate"]}
+            return pair
         with patch("learning.providers.chat", side_effect=answer):
             work.process_generation(job_id, claim)
         card.refresh_from_db()
@@ -481,7 +488,7 @@ class CompletionRecoveryTests(TransactionTestCase):
         definition = "A bank is land beside a river.\n\n```text\nAn open example."
         definitions = [definition, "\n" + definition, "\n\n" + definition,
                        "    A literal code example.", "\tA tab-indented example.", "\n\nnoun"]
-        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
             for separator, newline, content in product([": ", ":\n\n"], ["\n", "\r\n"], definitions):
                 with self.subTest(separator=separator, newline=newline, definition=content):
@@ -513,7 +520,7 @@ class CompletionRecoveryTests(TransactionTestCase):
         owner = get_user_model().objects.create_user("learner")
         generated = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
 
-        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
             for stage in ["queued", "ready", "formatted", "legacy"]:
                 with self.subTest(stage=stage):
@@ -552,7 +559,7 @@ class CompletionRecoveryTests(TransactionTestCase):
                      "pronunciations": [{"ipa": "/aɪl pæs/", "variety": "US", "label": "expression (refusal)"}]}
         pair = {"target_sentence": "Thanks, but <focus>I'll pass</focus> on the cake.",
                 "native_sentence": "谢谢，不过我<focus>就算了</focus>。"}
-        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
             for newline in ["\n", "\r\n"]:
                 with self.subTest(newline=newline):
@@ -580,7 +587,7 @@ class CompletionRecoveryTests(TransactionTestCase):
     def test_queued_revision_recovers_empty_definition_with_retained_metadata(self):
         owner = get_user_model().objects.create_user("learner")
         generated = {"explanation": RIVER, "pronunciations": READINGS, "synonyms": SYNONYMS}
-        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
             for newline in ["\n", "\r\n"]:
                 with self.subTest(newline=newline):
@@ -605,7 +612,7 @@ class CompletionRecoveryTests(TransactionTestCase):
 
     def test_queued_blank_definition_with_legacy_plain_footer_recovers_both_prefixes(self):
         owner = get_user_model().objects.create_user("learner")
-        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}), patch(
                 "learning.providers.request", side_effect=AssertionError("No provider network calls")):
             for separator, newline, blank in product([": ", ":\n\n"], ["\n", "\r\n"], ["", " ", "\n", "\n\n"]):
                 with self.subTest(separator=separator, newline=newline, blank=blank):

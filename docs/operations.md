@@ -125,21 +125,32 @@ docker compose exec web python manage.py createsuperuser
 
 The trusted administrator can use `/admin/` for Django user administration. Deck/Card admin views are read-only; learner-facing mutations apply source, history and scheduling rules. Password changes use Django's hashing and session invalidation. For noninteractive account creation, `createlearner NAME --password-env VARIABLE_NAME` reads a password from a named process environment variable without putting its value in command arguments.
 
-### Four independent model tasks
+### Five independent model tasks
 
-`ASR_*`, `JUDGE_*`, `GENERATOR_*` and `DEFINITION_*` settings are independent. The three LLM defaults are
-`MiniMax-M3.1-Flash`; ASR defaults to native MiniMax `asr-1.0`. `DEFINITION_*` controls new Vocabulary teaching-detail
-completion, separately from example generation. The full settings/defaults are in `.env.example` and the
-[creation increment](specs/vocabulary-creation.md). These new creation capabilities are development-only until a production release.
+`ASR_*`, `JUDGE_*`, `GENERATOR_*`, `EXAMPLE_REVIEWER_*` and `DEFINITION_*` settings are independent. The LLM defaults
+except generation are `MiniMax-M3.1-Flash`; ASR defaults to native MiniMax `asr-1.0`. Generation defaults to Zhipu
+`glm-5.3-flash` (`GENERATOR_PROTOCOL=zhipu`, budget sent as `max_tokens`, thinking `{"type":"enabled"}`) and requires an
+explicit `GENERATOR_API_KEY`; review defaults to MiniMax `MiniMax-M3.1-Flash` (`EXAMPLE_REVIEWER_PROTOCOL=minimax`,
+budget as `max_completion_tokens`, thinking `{"type":"adaptive"}`). Both chat roles send `GENERATOR_REASONING_EFFORT=max`
+and `EXAMPLE_REVIEWER_REASONING_EFFORT=max`. The shared MiniMax key is offered only to tasks whose endpoint is the native
+MiniMax origin. `DEFINITION_*` controls new Vocabulary teaching-detail completion, separately from example generation.
+The full settings/defaults are in `.env.example` and the [creation increment](specs/vocabulary-creation.md). These new
+creation capabilities are development-only until a production release.
 
 The current Generator prompt is the original scope-workflow D, tracked as `lexical-pair-v6-d`. It is distinct from the
-earlier unpromoted experimental `lexical-pair-v6` and from D2. Judge remains `lexical-meaning-v3`; requests continue to omit
-`reasoning_effort`. New preparation and ordinary future rotations use D. Deploying the prompt does not refresh saved pairs,
+earlier unpromoted experimental `lexical-pair-v6` and from D2. Judge remains `lexical-meaning-v3`; Judge/Definition
+requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt is `example-review-v1`. New
+preparation and ordinary future rotations use D plus one review call. Deploying a prompt does not refresh saved pairs,
 invalidate held questions or reset learning progress; the explicit refresh command below remains a separate operation.
 
-For another compatible provider, explicitly configure that task's full endpoint URL, model and API key. Select `ASR_PROTOCOL=openai` for the multipart transcription adapter, including its own `ASR_API_KEY`; the native MiniMax language header and transcription language form field are different contracts. The default MiniMax credential is never sent to another origin. Other protocols need an adapter, not a model-name-only change.
+For another compatible provider, explicitly configure that task's full endpoint URL, model, protocol and API key. Select
+`ASR_PROTOCOL=openai` for the multipart transcription adapter, including its own `ASR_API_KEY`; the native MiniMax
+language header and transcription language form field are different contracts. Supported chat protocols are `minimax`,
+`zhipu` and `openai`; each fixes its token-budget key and accepted thinking values, and the configured protocol — never
+the model name — selects the dialect. The default MiniMax credential is never sent to another origin.
 
-Worker profiles are validated at startup, and production WSGI startup checks all four profiles without making paid requests. After changing Compose settings, recreate web/worker so their process environments reflect the changes:
+Worker profiles are validated at startup, and production WSGI startup checks all five profiles without making paid
+requests. After changing Compose settings, recreate web/worker so their process environments reflect the changes:
 
 ```sh
 docker compose up -d --force-recreate web worker
@@ -242,7 +253,7 @@ For a Normal card, a D whose FSRS result remains in Learning is scheduled a unif
 
 ### Recovering failed initial preparation
 
-Background generation starts its execution clock only when a worker claims it. Queued tasks may wait longer than five minutes or survive a worker restart without failing; each claim receives its full `GENERATION_TIMEOUT_SECONDS` budget. The existing two-slot worker prioritizes queued spoken assessments when a slot becomes available. Running calls are not preempted. Changing concurrency or raising a timeout is not needed to correct queue ageing.
+Background generation starts its execution clock only when a worker claims it. Queued tasks may wait longer than seven minutes or survive a worker restart without failing; each claim receives its full `GENERATION_TIMEOUT_SECONDS` budget (default 420 seconds), shared by optional vocabulary completion, generation and the one Example Quality Review call — no stage gets a fresh window. The existing two-slot worker prioritizes queued spoken assessments when a slot becomes available. Running calls are not preempted. Changing concurrency or raising a timeout is not needed to correct queue ageing.
 
 To explicitly recover a learner's failed initial preparation, preview and then requeue:
 
@@ -264,7 +275,12 @@ docker compose exec web python manage.py refresh_examples alice --dry-run
 docker compose exec web python manage.py refresh_examples alice
 ```
 
-The second command makes paid Generator calls with at most two concurrent requests, using the independently configured Generator profile. It saves new pair revisions and skips cards whose active pair already uses the current prompt version. Failed calls leave the old pair available; rerun explicitly to retry the remaining cards. Newer source/active-pair changes win over a stale correction result. Not-ready cards, archived sources and other users are excluded; this command does not retry bulk-import preparation failures.
+The second command makes paid generation-plus-review calls with at most two concurrent requests, using the independently
+configured Generator and Example reviewer profiles. It saves new pair revisions and skips cards whose active pair already
+uses both the current generator and reviewer prompt versions, so legacy pairs without reviewer provenance and pairs from
+an older reviewer prompt are also refreshed. Failed calls (including reviewer rejection) leave the old pair available;
+rerun explicitly to retry the remaining cards. Newer source/active-pair changes win over a stale correction result.
+Not-ready cards, archived sources and other users are excluded; this command does not retry bulk-import preparation failures.
 
 FSRS memory/due, collection, streak, review counts, direction position and historical grades stay intact. An unfinished question or fixed/failed submission in any scope keeps its original pair; the correction takes effect at a later safe presentation boundary. Obsolete rotation work is cancelled. Run this command separately from the cold-backup maintenance window.
 
@@ -338,4 +354,4 @@ Tests use a separate file-backed SQLite test database. They include real competi
 python tests/browser_smoke.py --access-file /private/access.json --audio /private/fixture.wav --chromium /path/to/chrome
 ```
 
-`scripts/probe_providers.py --live --output /private/results.json` explicitly opts into paid public-fixture model probes. `--task judge|generator|asr` limits the task; `--audio-dir` supplies `English.wav`, `Spanish.wav`, `Chinese.wav`. Human microphone/Edge/client-trust checks remain separate from synthetic/headless evidence.
+`scripts/probe_providers.py --live --output /private/results.json` explicitly opts into paid public-fixture model probes; its generation checks run the full reviewed pipeline (generation plus one Example Quality Review call). `--task judge|generator|asr` limits the task; `--audio-dir` supplies `English.wav`, `Spanish.wav`, `Chinese.wav`. `scripts/probe_generation.py --live --output /private/raw.json` collects raw Generator outputs for explicit human review, and `scripts/probe_generation.py --live --review` runs the clearly identified full reviewed pipeline over the regression corpus. The raw and reviewed modes are separate evaluations; never compare raw results against reviewer verdicts. Human microphone/Edge/client-trust checks remain separate from synthetic/headless evidence.

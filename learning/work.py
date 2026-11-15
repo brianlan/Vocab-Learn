@@ -231,10 +231,11 @@ def process_generation(job_id, claim):
         pair = job.card.active_pair
         source["previous_pair"] = {"target_sentence": pair.target_sentence, "native_sentence": pair.native_sentence}
     p = bounded_profile("GENERATOR", job.deadline)
+    reviewer = bounded_profile("EXAMPLE_REVIEWER", job.deadline)
     if not GenerationJob.objects.filter(pk=job_id, claim=claim, state="processing", deadline__gt=timezone.now()).update(
-            provenance={**job.provenance, **p.metadata(), "phase": "examples"}):
+            provenance={**job.provenance, **p.metadata(), "example_reviewer": reviewer.metadata(), "phase": "examples"}):
         return
-    result, provenance = providers.generate(source, p)
+    result, provenance = providers.generate(source, p, reviewer=reviewer, budget_seconds=remaining(job.deadline))
     save_pair(job_id, claim, result, provenance)
 
 

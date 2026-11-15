@@ -145,7 +145,7 @@ class LearningTests(TestCase):
             self.assertContains(response,"Queued")
             claimed=work.claim_work()
         job.refresh_from_db()
-        self.assertEqual(claimed,("generation",job.pk,job.claim,later+timedelta(seconds=300)))
+        self.assertEqual(claimed,("generation",job.pk,job.claim,later+timedelta(seconds=420)))
         self.assertEqual(job.started_at,later)
         with patch("learning.work.timezone.now",return_value=job.deadline):
             self.client.get(reverse("card", args=[card.pk]))
@@ -169,16 +169,16 @@ class LearningTests(TestCase):
             receipts=[work.claim_work(),work.claim_work()]
         self.assertEqual(GenerationJob.objects.filter(state="queued").count(),1199)
         self.assertEqual(GenerationJob.objects.filter(state="processing",started_at=now).count(),2)
-        for receipt in receipts:self.assertEqual(receipt[3],now+timedelta(seconds=300))
-        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=299)):
+        for receipt in receipts:self.assertEqual(receipt[3],now+timedelta(seconds=420))
+        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=419)):
             self.assertIsNotNone(work.save_pair(receipts[0][1],receipts[0][2],PAIR,{}))
-        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=301)):
+        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=421)):
             work.expire_generations()
             self.assertIsNone(work.save_pair(receipts[1][1],receipts[1][2],PAIR,{}))
             next_job=work.claim_work()
         self.assertEqual(GenerationJob.objects.filter(state="failed").count(),1)
         self.assertEqual(Card.objects.filter(ready=True).count(),1)
-        self.assertEqual(next_job[3],now+timedelta(seconds=601))
+        self.assertEqual(next_job[3],now+timedelta(seconds=841))
         self.assertEqual(GenerationJob.objects.filter(state="queued",deadline__isnull=True).count(),1198)
 
     def test_assessment_keeps_submission_deadline_and_queue_priority(self):
@@ -251,7 +251,7 @@ class LearningTests(TestCase):
         later=timezone.now()+timedelta(days=2)
         with patch("learning.work.timezone.now",return_value=later):
             fresh=work.claim_work()
-        self.assertEqual(fresh[3],later+timedelta(seconds=300))
+        self.assertEqual(fresh[3],later+timedelta(seconds=420))
         self.assertNotEqual(receipt[2],fresh[2])
         self.assertIsNone(work.save_pair(receipt[1],receipt[2],PAIR,{}))
         with patch("learning.work.timezone.now",return_value=later+timedelta(seconds=1)):
@@ -364,8 +364,14 @@ class LearningTests(TestCase):
         next_p=self.present(card);self.assertEqual(next_p.snapshot["pair_id"],pair.pk)
 
     def test_refresh_command_scopes_ready_cards_and_retries_only_remaining_failures(self):
+        current={"prompt_version":PROMPT_VERSIONS["GENERATOR"],
+                 "reviewer":{"prompt_version":PROMPT_VERSIONS["EXAMPLE_REVIEWER"],"verdict":"accept","issues":[]}}
         ready=self.ready(self.vocabulary())
-        second=self.ready(self.vocabulary(word="another"))
+        pair=ready.active_pair;pair.provenance=dict(current);pair.save()
+        second=self.ready(self.vocabulary(word="another"))  # helper provenance is legacy: refresh-eligible
+        legacy=self.ready(self.vocabulary(word="legacy"))
+        old_reviewer=self.ready(self.vocabulary(word="old-reviewer"))
+        stale=old_reviewer.active_pair;stale.provenance={**current,"reviewer":{"prompt_version":"example-review-v0"}};stale.save()
         self.vocabulary(word="not-ready")
         foreign_deck=Deck.objects.create(owner=self.other,name="Private")
         foreign=self.ready(authoring.save_card(foreign_deck,"vocabulary",VOCAB))
@@ -373,20 +379,23 @@ class LearningTests(TestCase):
         with patch("learning.providers.generate") as generate:
             call_command("refresh_examples",self.user.username,dry_run=True,stdout=output)
         generate.assert_not_called()
-        self.assertIn("Examples needing correction: 2",output.getvalue())
+        self.assertIn("Examples needing correction: 3",output.getvalue())
 
         def generate(source,profile):
             if source["word"]=="another":raise StageError("GENERATOR","Temporary provider failure")
-            return PAIR,{"prompt_version":PROMPT_VERSIONS["GENERATOR"]}
+            return PAIR,{**current,"model":"refreshed"}
         with patch("learning.providers.profile"),patch("learning.providers.generate",side_effect=generate):
             with self.assertRaises(CommandError):
                 call_command("refresh_examples",self.user.username,stdout=output,stderr=io.StringIO())
-        ready.refresh_from_db();second.refresh_from_db();foreign.refresh_from_db()
-        self.assertEqual(ready.pairs.count(),2)
+        for card in [ready,second,legacy,old_reviewer,foreign]:
+            card.refresh_from_db()
+        self.assertEqual(ready.pairs.count(),1)
         self.assertEqual(second.pairs.count(),1)
+        self.assertEqual(legacy.pairs.count(),2)
+        self.assertEqual(old_reviewer.pairs.count(),2)
         self.assertEqual(foreign.pairs.count(),1)
         with patch("learning.providers.profile"),patch("learning.providers.generate",
-                return_value=(PAIR,{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})) as generate:
+                return_value=(PAIR,{**current,"model":"refreshed"})) as generate:
             call_command("refresh_examples",self.user.username,stdout=output)
         self.assertEqual(generate.call_count,1)
         second.refresh_from_db();self.assertEqual(second.pairs.count(),2)
