@@ -13,7 +13,7 @@ class Command(BaseCommand):
         if options["concurrency"] is not None and not 1 <= options["concurrency"] <= 16:
             raise CommandError("Concurrency must be between 1 and 16.")
         try:
-            for task in ["ASR", "JUDGE", "GENERATOR", "DEFINITION"]:
+            for task in ["ASR", "JUDGE", "GENERATOR", "DEFINITION", "EXAMPLE_REVIEWER"]:
                 profile(task)
         except StageError as e:
             raise CommandError(str(e)) from None

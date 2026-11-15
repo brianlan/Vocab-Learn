@@ -1,0 +1,525 @@
+{
+  "date": "2026-11-15",
+  "issue": 4,
+  "revision": "review round 2 (paired candidate/final run; supersedes the earlier separate-baseline report)",
+  "configuration": {
+    "generation": {
+      "model": "MiniMax-M3.1-Flash",
+      "protocol": "minimax",
+      "thinking": "adaptive",
+      "reasoning_effort": "max"
+    },
+    "review": {
+      "model": "MiniMax-M3.1-Flash",
+      "protocol": "minimax",
+      "thinking": "adaptive",
+      "reasoning_effort": "max"
+    },
+    "note": "Exchanged role configuration using the available development credentials (no GLM key exists locally). The default GLM generation role is verified by request-dialect contract tests, not by live calls in this run."
+  },
+  "generator_prompt_version": "lexical-pair-v7-a",
+  "reviewer_prompt_version": "example-review-v1",
+  "exact_invocations": [
+    "scripts/probe_generation.py --live --review --repeat 1 --output var/example-review-paired-results.json",
+    "reviewer-only replay script (ad-hoc, one-off): providers.chat(EXAMPLE_REVIEWER profile, EXAMPLE_REVIEW_RULES, {**source, candidate}) per fixture; results in var/example-review-replays.json"
+  ],
+  "paired_run": {
+    "cases": 25,
+    "reviewed": 24,
+    "verdicts": {
+      "accept": 23,
+      "repair": 1,
+      "reject": 0
+    },
+    "review_repairs": [
+      {
+        "case": "justice",
+        "change": "native focus 公正对待 -> 公道 (lexical noun), fairness sense kept"
+      }
+    ],
+    "reviewer_output_failures": [
+      {
+        "case": "past",
+        "stage": "EXAMPLE_REVIEWER",
+        "category": "invalid_output",
+        "behavior": "fail closed; retryable; no fallback pair"
+      }
+    ],
+    "median_seconds": 9.4,
+    "max_seconds": 44.5
+  },
+  "independent_semantic_judgment": {
+    "method": "Each candidate (pre-review generator output) and each reviewed final pair was judged against the per-case check in docs/research/generator-regression-cases.json, independent of reviewer verdicts. Labels are one author's judgment, not a benchmark and not a reviewer ranking.",
+    "candidates": {
+      "good": 22,
+      "bad": 2
+    },
+    "finals": {
+      "good": 22,
+      "bad": 2
+    },
+    "transitions": {
+      "good->good": 22,
+      "bad->bad": 2,
+      "failure": [
+        "past"
+      ]
+    },
+    "divergences": [
+      {
+        "case": "existential",
+        "verdict": "accept",
+        "judgment": "bad",
+        "detail": "Corpus requires the broad life-meaning sense, not affiliation with existentialism; the native sentence says 存在主义的问题 (the philosophical school). Candidate and accepted final are both BAD."
+      },
+      {
+        "case": "prevention",
+        "verdict": "accept",
+        "judgment": "bad",
+        "detail": "Corpus requires a nonmedical context; the pair is a flu-vaccination program (medical). Candidate and accepted final are both BAD."
+      }
+    ],
+    "case_notes": {
+      "existential": "Corpus requires the broad life-meaning sense, not affiliation with existentialism; the native sentence says 存在主义的问题 (the philosophical school). Candidate and accepted final are both BAD.",
+      "prevention": "Corpus requires a nonmedical context; the pair is a flu-vaccination program (medical). Candidate and accepted final are both BAD.",
+      "justice": "Candidate native focus 公正对待 already carries the fairness sense (weak legal-flavored scene); the reviewer repaired the focus to the lexical noun 公道. Final good.",
+      "trick": "A clown performs a prank; the sense is 恶作剧 (playful prank), not a clown performance or stunt, so the check passes.",
+      "defeater": "对手球队的克星 keeps the relational defeater-of-that-team meaning without an invented named participant.",
+      "past": "Reviewer returned unreadable JSON (invalid_output at stage EXAMPLE_REVIEWER); the job would fail closed as retryable, no fallback pair exists."
+    }
+  },
+  "semantic_replays_into_review": [
+    {
+      "name": "elicit-known-bad",
+      "candidate": "purpose elicit ... laughter / 逗笑了 (result-shift known bad)",
+      "verdict": "repair",
+      "issue_rules": [
+        "alignment"
+      ],
+      "final": "The clown told a funny joke that elicited laughter from the children. / 小丑讲了一个有趣的笑话，逗笑了孩子们。",
+      "judgment": "alignment repaired; lexical scope still failing (逗笑 absorbs the unhighlighted object's laughter). RESIDUAL SCOPE FAILURE. DISCLOSED VARIANCE: earlier replays of this same candidate were accepted outright, so even the alignment repair is not deterministic.",
+      "alignment_judgment": "good — the repair fixed the purpose/result mismatch by rewriting the target to an achieved result.",
+      "scope_judgment": "BAD — the native focus 逗笑 still contains the laughter meaning of the unhighlighted object; exactly the lexical-scope defect issue #4 targets. This output is retained as a residual scope failure, not a success."
+    },
+    {
+      "name": "wrong-sense-bank",
+      "candidate": "financial-institution bank against a river-land explanation",
+      "verdict": "repair",
+      "issue_rules": [
+        "source",
+        "cue",
+        "format"
+      ],
+      "final": "We rested beside the lake on the bank. / 我们在湖岸休息。",
+      "judgment": "good — unrelated-scene full rewrite that PRESERVES the authored lexeme, sense and word class (positive source-preserving rewrite case).",
+      "positive_kind": "unrelated-scene rewrite preserving source"
+    },
+    {
+      "name": "wrong-class-monthly",
+      "candidate": "monthly as a noun (a monthly / 月刊) against the adjective explanation",
+      "verdict": "repair",
+      "issue_rules": [
+        "source"
+      ],
+      "final": "This monthly magazine costs five dollars. / 这本每月发行的杂志售价五美元。",
+      "judgment": "good — word class restored to the authored adjective. Earlier replay attempts of this fixture returned unreadable reviewer JSON twice before this repair; adversarial-replay output stability is limited.",
+      "positive_kind": "word-class repair"
+    },
+    {
+      "name": "unrepairable-scope-porous",
+      "candidate": "native focus is an expanded definition, not a lexical item",
+      "verdict": "repair",
+      "issue_rules": [
+        "format",
+        "language"
+      ],
+      "final": "This porous material is popular. / 这种多孔的材料很受欢迎。",
+      "judgment": "good — definition-unpacking native focus replaced by the conventional lexical equivalent 多孔的.",
+      "positive_kind": "lexical-scope repair"
+    }
+  ],
+  "unavailable_measurements": {
+    "token_usage": "Not recorded: providers.chat returns only the validated JSON content and neither persists nor surfaces provider usage fields; exposing them would extend the provider contract beyond issue #4's scope.",
+    "glm_live_run": "No Zhipu credential exists in the development environment; the default GLM generation role is covered by request-dialect contract tests only.",
+    "browser_dev_card_walkthrough": "Substituted by named automated checks; this session has no interactive dev-stack browser. See self_check_substitutions."
+  },
+  "self_check_substitutions": {
+    "reason": "The dedicated development-card walkthrough (first preparation, controlled review failure + retry, correction/rotation with a frozen question) requires an interactive browser session against a running dev stack, which this environment cannot drive. The same durable flows are covered end-to-end by these named automated tests with mocked transport:",
+    "first_preparation": [
+      "learning.tests.test_vocabulary_creation.VocabularyCreationTests.test_two_stage_preparation_saves_definition_and_alias_before_examples",
+      "learning.tests.test_vocabulary_creation.VocabularyCreationTests.test_whitespace_only_definition_completes_without_losing_generated_content"
+    ],
+    "controlled_review_failure_and_retry": [
+      "learning.tests.test_vocabulary_creation.VocabularyCreationTests.test_example_failure_retry_preserves_completion_and_does_not_pay_twice",
+      "learning.tests.test_vocabulary_creation.VocabularyCreationTests.test_reviewer_rejection_is_a_retryable_quality_failure_that_preserves_details",
+      "learning.tests.test_vocabulary_creation.VocabularyCreationTests.test_source_edit_while_review_is_outstanding_cannot_commit"
+    ],
+    "correction_and_rotation_with_frozen_question": {
+      "tests": [
+        "learning.tests.test_learning.LearningTests.test_reviewed_rotation_with_frozen_question_drives_generate_and_preserves_held_state",
+        "learning.tests.test_learning.LearningTests.test_reviewed_rotation_adopts_the_reviewed_pair_when_no_question_holds_the_cue"
+      ],
+      "covers": "Both drive work.process_generation through the REAL providers.generate with the transport seam (providers.chat) mocked: exactly one GENERATOR call (with previous_pair) then one EXAMPLE_REVIEWER call, reviewer provenance (verdict + example-review-v1) stored on the adopted pair, and the generator prompt version recorded. The frozen-question check asserts the held snapshot, schedule, progress, history count, definition and cue stay untouched while the candidate parks, and that the parked candidate cannot jump the held cue after the question is answered. The adoption check runs the same reviewed flow with no held cue and asserts the next presentation adopts the reviewed pair without touching schedule/progress/history.",
+      "manual_storage_checks": [
+        "learning.tests.test_learning.LearningTests.test_example_correction_preserves_held_question_then_replaces_retained_cue",
+        "learning.tests.test_learning.LearningTests.test_example_correction_is_source_fenced_and_keeps_submissions_in_other_scopes"
+      ],
+      "manual_storage_note": "The two earlier save_corrected_pair tests remain as distinct storage/fence coverage; they intentionally bypass generation and are no longer claimed as the reviewed-workflow substitute."
+    }
+  },
+  "limits": "25-case corpus, one run per case, one author's semantic labels; not a production-wide accuracy estimate and not a reviewer ranking. Reviewer verdicts are never correctness guarantees: in this run the reviewer accepted both corpus-failing candidates (existential, prevention) and repaired the already-good justice focus. The motivating elicit scope check is evidenced by one sampled reviewed run (问出 focus) and remains non-deterministic: the known-bad 逗笑 replay was only partially repaired and earlier replays were accepted outright. Raw pairs, replay decisions and any usage data stay in the ignored var/ directory.",
+  "results": [
+    {
+      "case_id": "absorb",
+      "verdict": "accept",
+      "seconds": 4.51,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "The sponge <focus>absorbed</focus> the spilled juice.",
+      "candidate_native": "海绵<focus>吸收</focus>了洒出的果汁。",
+      "final_target": "The sponge absorbed the spilled juice.",
+      "final_native": "海绵吸收了洒出的果汁。",
+      "target_highlight": "absorbed",
+      "native_highlight": "吸收"
+    },
+    {
+      "case_id": "adventure",
+      "verdict": "accept",
+      "seconds": 34.51,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "When the planned road was closed, our family drove through the hills, and the unexpected journey became an exciting <focus>adventure</focus>.",
+      "candidate_native": "计划中的道路封闭后，我们一家开车穿过山丘，这次意外的旅程变成了一场令人兴奋的<focus>探险</focus>。",
+      "final_target": "When the planned road was closed, our family drove through the hills, and the unexpected journey became an exciting adventure.",
+      "final_native": "计划中的道路封闭后，我们一家开车穿过山丘，这次意外的旅程变成了一场令人兴奋的探险。",
+      "target_highlight": "adventure",
+      "native_highlight": "探险"
+    },
+    {
+      "case_id": "centrifugal",
+      "verdict": "accept",
+      "seconds": 17.61,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "When the bowl spins, a <focus>centrifugal</focus> force pushes the water outward.",
+      "candidate_native": "碗旋转时，<focus>离心</focus>力把水向外推。",
+      "final_target": "When the bowl spins, a centrifugal force pushes the water outward.",
+      "final_native": "碗旋转时，离心力把水向外推。",
+      "target_highlight": "centrifugal",
+      "native_highlight": "离心"
+    },
+    {
+      "case_id": "compare-against",
+      "verdict": "accept",
+      "seconds": 11.65,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "Before signing the contract, we <focus>compared the offer against the market price</focus>.",
+      "candidate_native": "签约前，我们<focus>把这份报价同市场价进行对比</focus>。",
+      "final_target": "Before signing the contract, we compared the offer against the market price.",
+      "final_native": "签约前，我们把这份报价同市场价进行对比。",
+      "target_highlight": "compared the offer against the market price",
+      "native_highlight": "把这份报价同市场价进行对比"
+    },
+    {
+      "case_id": "compare-to",
+      "verdict": "accept",
+      "seconds": 7.78,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "The poet <focus>compared the clouds to sheep drifting across the sky</focus>.",
+      "candidate_native": "诗人<focus>把云比作在天空中漂动的绵羊</focus>。",
+      "final_target": "The poet compared the clouds to sheep drifting across the sky.",
+      "final_native": "诗人把云比作在天空中漂动的绵羊。",
+      "target_highlight": "compared the clouds to sheep drifting across the sky",
+      "native_highlight": "把云比作在天空中漂动的绵羊"
+    },
+    {
+      "case_id": "compare-with",
+      "verdict": "accept",
+      "seconds": 10.55,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "Please <focus>compare this phone with my old phone</focus> and note the similarities and differences.",
+      "candidate_native": "请<focus>把这部手机和我的旧手机比较一下</focus>，并记下它们的相同点和不同之处。",
+      "final_target": "Please compare this phone with my old phone and note the similarities and differences.",
+      "final_native": "请把这部手机和我的旧手机比较一下，并记下它们的相同点和不同之处。",
+      "target_highlight": "compare this phone with my old phone",
+      "native_highlight": "把这部手机和我的旧手机比较一下"
+    },
+    {
+      "case_id": "compute",
+      "verdict": "accept",
+      "seconds": 7.87,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "The engineer <focus>computed</focus> the total cost before buying the machine.",
+      "candidate_native": "工程师在购买机器前先<focus>计算</focus>了总成本。",
+      "final_target": "The engineer computed the total cost before buying the machine.",
+      "final_native": "工程师在购买机器前先计算了总成本。",
+      "target_highlight": "computed",
+      "native_highlight": "计算"
+    },
+    {
+      "case_id": "defeater",
+      "verdict": "accept",
+      "seconds": 32.32,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "After scoring the winning goal, our striker was the opposing team's <focus>defeater</focus> in the final.",
+      "candidate_native": "我们的前锋在决赛中攻入制胜球，成了对手球队的<focus>克星</focus>。",
+      "final_target": "After scoring the winning goal, our striker was the opposing team's defeater in the final.",
+      "final_native": "我们的前锋在决赛中攻入制胜球，成了对手球队的克星。",
+      "target_highlight": "defeater",
+      "native_highlight": "克星"
+    },
+    {
+      "case_id": "deserve",
+      "verdict": "accept",
+      "seconds": 15.04,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "You <focus>deserve</focus> respect because you always tell the truth.",
+      "candidate_native": "你总是说实话，所以<focus>值得</focus>受到尊重。",
+      "final_target": "You deserve respect because you always tell the truth.",
+      "final_native": "你总是说实话，所以值得受到尊重。",
+      "target_highlight": "deserve",
+      "native_highlight": "值得"
+    },
+    {
+      "case_id": "embarrass",
+      "verdict": "accept",
+      "seconds": 8.27,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "I <focus>embarrassed</focus> my friend by reading her message aloud at lunch.",
+      "candidate_native": "午餐时我大声念了朋友的信息，<focus>让她感到尴尬</focus>。",
+      "final_target": "I embarrassed my friend by reading her message aloud at lunch.",
+      "final_native": "午餐时我大声念了朋友的信息，让她感到尴尬。",
+      "target_highlight": "embarrassed",
+      "native_highlight": "让她感到尴尬"
+    },
+    {
+      "case_id": "english-spanish",
+      "verdict": "accept",
+      "seconds": 8.34,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "My brother was <focus>reluctant</focus> to help me carry the boxes.",
+      "candidate_native": "Mi hermano se mostró <focus>reacio</focus> a ayudarme a cargar las cajas.",
+      "final_target": "My brother was reluctant to help me carry the boxes.",
+      "final_native": "Mi hermano se mostró reacio a ayudarme a cargar las cajas.",
+      "target_highlight": "reluctant",
+      "native_highlight": "reacio"
+    },
+    {
+      "case_id": "existential",
+      "verdict": "accept",
+      "seconds": 8.78,
+      "issue_rules": [],
+      "judgment": "bad",
+      "candidate_target": "The film explores <focus>existential</focus> questions about choice and purpose in life.",
+      "candidate_native": "这部电影探讨了<focus>存在主义的</focus>问题，涉及人生选择和人生目的。",
+      "final_target": "The film explores existential questions about choice and purpose in life.",
+      "final_native": "这部电影探讨了存在主义的问题，涉及人生选择和人生目的。",
+      "target_highlight": "existential",
+      "native_highlight": "存在主义的"
+    },
+    {
+      "case_id": "give-an-idea",
+      "verdict": "accept",
+      "seconds": 6.57,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "Could you <focus>give me an idea of what the new job involves</focus>?",
+      "candidate_native": "你能<focus>让我大致了解一下这份新工作涉及什么内容</focus>吗？",
+      "final_target": "Could you give me an idea of what the new job involves?",
+      "final_native": "你能让我大致了解一下这份新工作涉及什么内容吗？",
+      "target_highlight": "give me an idea of what the new job involves",
+      "native_highlight": "让我大致了解一下这份新工作涉及什么内容"
+    },
+    {
+      "case_id": "intercom",
+      "verdict": "accept",
+      "seconds": 6.01,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "The receptionist spoke to me through the <focus>intercom</focus>.",
+      "candidate_native": "接待员通过<focus>对讲机</focus>跟我说话。",
+      "final_target": "The receptionist spoke to me through the intercom.",
+      "final_native": "接待员通过对讲机跟我说话。",
+      "target_highlight": "intercom",
+      "native_highlight": "对讲机"
+    },
+    {
+      "case_id": "justice",
+      "verdict": "repair",
+      "seconds": 44.5,
+      "issue_rules": [
+        "source"
+      ],
+      "judgment": "good",
+      "candidate_target": "The judge promised to give every person <focus>justice</focus>.",
+      "candidate_native": "法官承诺会<focus>公正</focus>对待每个人。",
+      "final_target": "The judge promised to give every person justice.",
+      "final_native": "法官承诺会给每个人一个公道。",
+      "target_highlight": "justice",
+      "native_highlight": "公道"
+    },
+    {
+      "case_id": "literature",
+      "verdict": "accept",
+      "seconds": 6.1,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "He collects <focus>literature</focus> written by African poets.",
+      "candidate_native": "他收藏非洲诗人创作的<focus>文学作品</focus>。",
+      "final_target": "He collects literature written by African poets.",
+      "final_native": "他收藏非洲诗人创作的文学作品。",
+      "target_highlight": "literature",
+      "native_highlight": "文学作品"
+    },
+    {
+      "case_id": "monthly",
+      "verdict": "accept",
+      "seconds": 15.56,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "I pay a <focus>monthly</focus> fee for my gym membership.",
+      "candidate_native": "我<focus>每月</focus>支付健身房会员费。",
+      "final_target": "I pay a monthly fee for my gym membership.",
+      "final_native": "我每月支付健身房会员费。",
+      "target_highlight": "monthly",
+      "native_highlight": "每月"
+    },
+    {
+      "case_id": "native",
+      "verdict": "accept",
+      "seconds": 10.02,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "Vietnamese is my <focus>native</focus> language.",
+      "candidate_native": "越南语是我的<focus>母语</focus>。",
+      "final_target": "Vietnamese is my native language.",
+      "final_native": "越南语是我的母语。",
+      "target_highlight": "native",
+      "native_highlight": "母语"
+    },
+    {
+      "case_id": "past",
+      "verdict": null,
+      "seconds": 78.71,
+      "issue_rules": [],
+      "judgment": "failed",
+      "candidate_target": "",
+      "candidate_native": "",
+      "final_target": null,
+      "final_native": null,
+      "target_highlight": null,
+      "native_highlight": null
+    },
+    {
+      "case_id": "pick-up",
+      "verdict": "accept",
+      "seconds": 7.49,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "I'll <focus>pick you up</focus> at the station at six and take you home.",
+      "candidate_native": "我会在六点去车站<focus>接你</focus>，然后送你回家。",
+      "final_target": "I'll pick you up at the station at six and take you home.",
+      "final_native": "我会在六点去车站接你，然后送你回家。",
+      "target_highlight": "pick you up",
+      "native_highlight": "接你"
+    },
+    {
+      "case_id": "prevention",
+      "verdict": "accept",
+      "seconds": 10.4,
+      "issue_rules": [],
+      "judgment": "bad",
+      "candidate_target": "The city started a vaccination program for flu <focus>prevention</focus> before winter.",
+      "candidate_native": "市政府在冬季前启动了一项用于流感<focus>预防</focus>的疫苗接种计划。",
+      "final_target": "The city started a vaccination program for flu prevention before winter.",
+      "final_native": "市政府在冬季前启动了一项用于流感预防的疫苗接种计划。",
+      "target_highlight": "prevention",
+      "native_highlight": "预防"
+    },
+    {
+      "case_id": "share-with",
+      "verdict": "accept",
+      "seconds": 19.73,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "I <focus>share my umbrella with my neighbor</focus> whenever it rains.",
+      "candidate_native": "下雨时，我会<focus>和邻居一起用我的雨伞</focus>。",
+      "final_target": "I share my umbrella with my neighbor whenever it rains.",
+      "final_native": "下雨时，我会和邻居一起用我的雨伞。",
+      "target_highlight": "share my umbrella with my neighbor",
+      "native_highlight": "和邻居一起用我的雨伞"
+    },
+    {
+      "case_id": "spanish-chinese",
+      "verdict": "accept",
+      "seconds": 6.41,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "El equipo <focus>aprovechó</focus> la pausa para corregir la estrategia.",
+      "candidate_native": "团队<focus>充分利用</focus>暂停时间调整了策略。",
+      "final_target": "El equipo aprovechó la pausa para corregir la estrategia.",
+      "final_native": "团队充分利用暂停时间调整了策略。",
+      "target_highlight": "aprovechó",
+      "native_highlight": "充分利用"
+    },
+    {
+      "case_id": "struggle",
+      "verdict": "accept",
+      "seconds": 29.84,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "The little boy <focus>struggled</focus> to tie his shoes before school.",
+      "candidate_native": "小男孩上学前<focus>费力地</focus>系鞋带。",
+      "final_target": "The little boy struggled to tie his shoes before school.",
+      "final_native": "小男孩上学前费力地系鞋带。",
+      "target_highlight": "struggled",
+      "native_highlight": "费力地"
+    },
+    {
+      "case_id": "trick",
+      "verdict": "accept",
+      "seconds": 6.0,
+      "issue_rules": [],
+      "judgment": "good",
+      "candidate_target": "The clown's playful <focus>trick</focus> made the children laugh.",
+      "candidate_native": "小丑的<focus>恶作剧</focus>逗得孩子们哈哈大笑。",
+      "final_target": "The clown's playful trick made the children laugh.",
+      "final_native": "小丑的恶作剧逗得孩子们哈哈大笑。",
+      "target_highlight": "trick",
+      "native_highlight": "恶作剧"
+    }
+  ],
+  "motivating_case_evidence": {
+    "purpose": "Recorded evidence for the issue's motivating scope check: a full reviewed generation whose native focus expresses elicit alone, without absorbing the drawn-out object.",
+    "date": "2026-11-15",
+    "configuration": {
+      "generation": {
+        "model": "MiniMax-M3.1-Flash",
+        "protocol": "minimax",
+        "thinking": "adaptive",
+        "reasoning_effort": "max"
+      },
+      "review": {
+        "model": "MiniMax-M3.1-Flash",
+        "protocol": "minimax",
+        "thinking": "adaptive",
+        "reasoning_effort": "max"
+      },
+      "generator_prompt_version": "lexical-pair-v7-a",
+      "reviewer_prompt_version": "example-review-v1",
+      "invocation": "scripts/probe_generation.py --live --review --cases <single elicit case> --output var/example-review-elicit-motivating.json"
+    },
+    "marked_target": "After patiently asking several questions, the teacher <focus>elicited</focus> a clear answer from the shy student.",
+    "marked_native": "老师耐心问了几个问题，终于从那个害羞的学生那里<focus>问出</focus>了一个明确的回答。",
+    "judgment": "SCOPE-COMPLIANT: the native focus 问出 expresses elicit alone; the drawn-out object 一个明确的回答 sits outside the focus, so production never reveals the answer and recognition never exposes the target word. Alignment holds (问出 ↔ elicited, method 耐心问 ↔ patiently asking).",
+    "limits": "One sampled reviewed run (the reviewer accepted the candidate unchanged); not a deterministic guarantee — the replay above shows the same model can accept or only partially repair the known-bad 逗笑 candidate. This case is not part of the committed 25-case corpus."
+  }
+}

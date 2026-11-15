@@ -68,7 +68,7 @@ def positive_budget(name, default):
         raise ImproperlyConfigured(name+" must be a positive finite number.") from None
 
 ASSESSMENT_TIMEOUT_SECONDS = positive_budget("ASSESSMENT_TIMEOUT_SECONDS", 300)
-GENERATION_TIMEOUT_SECONDS = positive_budget("GENERATION_TIMEOUT_SECONDS", 300)
+GENERATION_TIMEOUT_SECONDS = positive_budget("GENERATION_TIMEOUT_SECONDS", 420)
 WORKER_CLEANUP_GRACE_SECONDS = positive_budget("WORKER_CLEANUP_GRACE_SECONDS", 10)
 try:
     WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "2"))

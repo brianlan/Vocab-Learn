@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import random
 import tempfile
 import uuid
@@ -145,7 +146,7 @@ class LearningTests(TestCase):
             self.assertContains(response,"Queued")
             claimed=work.claim_work()
         job.refresh_from_db()
-        self.assertEqual(claimed,("generation",job.pk,job.claim,later+timedelta(seconds=300)))
+        self.assertEqual(claimed,("generation",job.pk,job.claim,later+timedelta(seconds=420)))
         self.assertEqual(job.started_at,later)
         with patch("learning.work.timezone.now",return_value=job.deadline):
             self.client.get(reverse("card", args=[card.pk]))
@@ -169,16 +170,16 @@ class LearningTests(TestCase):
             receipts=[work.claim_work(),work.claim_work()]
         self.assertEqual(GenerationJob.objects.filter(state="queued").count(),1199)
         self.assertEqual(GenerationJob.objects.filter(state="processing",started_at=now).count(),2)
-        for receipt in receipts:self.assertEqual(receipt[3],now+timedelta(seconds=300))
-        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=299)):
+        for receipt in receipts:self.assertEqual(receipt[3],now+timedelta(seconds=420))
+        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=419)):
             self.assertIsNotNone(work.save_pair(receipts[0][1],receipts[0][2],PAIR,{}))
-        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=301)):
+        with patch("learning.work.timezone.now",return_value=now+timedelta(seconds=421)):
             work.expire_generations()
             self.assertIsNone(work.save_pair(receipts[1][1],receipts[1][2],PAIR,{}))
             next_job=work.claim_work()
         self.assertEqual(GenerationJob.objects.filter(state="failed").count(),1)
         self.assertEqual(Card.objects.filter(ready=True).count(),1)
-        self.assertEqual(next_job[3],now+timedelta(seconds=601))
+        self.assertEqual(next_job[3],now+timedelta(seconds=841))
         self.assertEqual(GenerationJob.objects.filter(state="queued",deadline__isnull=True).count(),1198)
 
     def test_assessment_keeps_submission_deadline_and_queue_priority(self):
@@ -251,7 +252,7 @@ class LearningTests(TestCase):
         later=timezone.now()+timedelta(days=2)
         with patch("learning.work.timezone.now",return_value=later):
             fresh=work.claim_work()
-        self.assertEqual(fresh[3],later+timedelta(seconds=300))
+        self.assertEqual(fresh[3],later+timedelta(seconds=420))
         self.assertNotEqual(receipt[2],fresh[2])
         self.assertIsNone(work.save_pair(receipt[1],receipt[2],PAIR,{}))
         with patch("learning.work.timezone.now",return_value=later+timedelta(seconds=1)):
@@ -363,9 +364,87 @@ class LearningTests(TestCase):
         self.assertEqual(ScoredReview.objects.get().snapshot,frozen)
         next_p=self.present(card);self.assertEqual(next_p.snapshot["pair_id"],pair.pk)
 
+    def test_reviewed_rotation_with_frozen_question_drives_generate_and_preserves_held_state(self):
+        card=self.ready(self.vocabulary());self.score(card,"E");card.refresh_from_db()
+        job=card.generation_jobs.get(mode="rotation",state="queued")
+        p=self.present(card);card.refresh_from_db();frozen=p.snapshot.copy()
+        old_pair_id=card.active_pair_id
+        before={key:getattr(card,key) for key in ["fsrs","due","deferred_until","collection","streak",
+            "review_count","progress_version","source_version","explanation"]}
+        job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
+        candidate={"target_sentence":"Their <focus>misunderstanding</focus> delayed the meeting.",
+                   "native_sentence":"他们的<focus>误会</focus>推迟了会议。"}
+        envelope={"verdict":"repair","issues":[{"rule":"scope","detail":"The native focus needs a compact lexical span."}],
+                  "pair":{"target_sentence":"A fresh <focus>misunderstanding</focus> surfaced at work.",
+                          "native_sentence":"工作上出现了一个新的<focus>误会</focus>。"}}
+        calls=[]
+        def chat(profile,rules,payload):
+            calls.append((profile.task,payload))
+            if profile.task=="GENERATOR":
+                self.assertIn("previous_pair",payload)
+                return candidate
+            return envelope
+        with patch.dict(os.environ,{"GENERATOR_API_KEY":"env-placeholder","EXAMPLE_REVIEWER_API_KEY":"env-placeholder"}),\
+                patch("learning.providers.chat",side_effect=chat):
+            work.process_generation(job.pk,job.claim)
+        self.assertEqual([task for task,_ in calls],["GENERATOR","EXAMPLE_REVIEWER"])
+        job.refresh_from_db();card.refresh_from_db()
+        self.assertEqual(job.state,"done")
+        pair=job.result
+        self.assertEqual(card.active_pair_id,old_pair_id)  # the reviewed candidate stays parked while frozen
+        self.assertEqual(pair.provenance["reviewer"]["verdict"],"repair")
+        self.assertEqual(pair.provenance["reviewer"]["prompt_version"],PROMPT_VERSIONS["EXAMPLE_REVIEWER"])
+        self.assertEqual(pair.provenance["prompt_version"],PROMPT_VERSIONS["GENERATOR"])
+        # The frozen question, its schedule/progress/history/definition and the held cue are untouched.
+        self.assertEqual({key:getattr(card,key) for key in before},before)
+        self.assertEqual(card.cue_pair_id,frozen["pair_id"])
+        self.assertTrue(review.valid_presentation(p))
+        self.assertEqual(review.next_question(self.user,self.deck).pk,p.pk)
+        self.assertEqual(ScoredReview.objects.count(),1)
+        # Answering the frozen question must not let the parked candidate jump the held cue.
+        review.submit(p,"skip")
+        p.refresh_from_db();self.assertEqual(p.snapshot,frozen)
+        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(minutes=31)):
+            fresh=self.present()
+        self.assertEqual(fresh.snapshot["pair_id"],frozen["pair_id"])
+        self.assertEqual(fresh.snapshot["direction"],frozen["direction"])
+
+    def test_reviewed_rotation_adopts_the_reviewed_pair_when_no_question_holds_the_cue(self):
+        card=self.ready(self.vocabulary());self.score(card,"E");card.refresh_from_db()
+        job=card.generation_jobs.get(mode="rotation",state="queued")
+        self.assertIsNone(card.cue_pair_id)  # the E cycle released the cue; no presentation holds the old pair
+        job.state="processing";job.started_at=timezone.now();job.deadline=job.started_at+timedelta(seconds=300);job.save()
+        candidate={"target_sentence":"Their <focus>misunderstanding</focus> delayed the meeting.",
+                   "native_sentence":"他们的<focus>误会</focus>推迟了会议。"}
+        envelope={"verdict":"accept","issues":[],"pair":candidate}
+        calls=[]
+        def chat(profile,rules,payload):
+            calls.append((profile.task,payload))
+            return candidate if profile.task=="GENERATOR" else envelope
+        with patch.dict(os.environ,{"GENERATOR_API_KEY":"env-placeholder","EXAMPLE_REVIEWER_API_KEY":"env-placeholder"}),\
+                patch("learning.providers.chat",side_effect=chat):
+            work.process_generation(job.pk,job.claim)
+        self.assertEqual([task for task,_ in calls],["GENERATOR","EXAMPLE_REVIEWER"])
+        job.refresh_from_db();self.assertEqual(job.state,"done")
+        self.assertEqual(job.result.provenance["reviewer"]["verdict"],"accept")
+        card.due=timezone.now()-timedelta(seconds=1);card.save(update_fields=["due"])
+        before=(card.fsrs,card.progress_version,card.collection,card.streak,card.direction_index,ScoredReview.objects.count())
+        fresh=self.present()
+        self.assertEqual(fresh.snapshot["pair_id"],job.result_id)  # the reviewed pair is adopted as the next cue
+        card.refresh_from_db();self.assertEqual(card.active_pair_id,job.result_id)
+        self.assertEqual(card.rotation_token,None)
+        self.assertEqual((card.fsrs,card.progress_version,card.collection,card.streak,card.direction_index,
+            ScoredReview.objects.count()),before)
+
     def test_refresh_command_scopes_ready_cards_and_retries_only_remaining_failures(self):
+        current={"prompt_version":PROMPT_VERSIONS["GENERATOR"],
+                 "reviewer":{"prompt_version":PROMPT_VERSIONS["EXAMPLE_REVIEWER"],"verdict":"accept","issues":[]}}
         ready=self.ready(self.vocabulary())
-        second=self.ready(self.vocabulary(word="another"))
+        pair=ready.active_pair;pair.provenance=dict(current);pair.save()
+        second=self.ready(self.vocabulary(word="another"))  # helper provenance is legacy: refresh-eligible
+        legacy=self.ready(self.vocabulary(word="legacy"))
+        old_reviewer=self.ready(self.vocabulary(word="old-reviewer"))
+        stale=old_reviewer.active_pair;stale.provenance={**current,"reviewer":{"prompt_version":"example-review-v0"}};stale.save()
         self.vocabulary(word="not-ready")
         foreign_deck=Deck.objects.create(owner=self.other,name="Private")
         foreign=self.ready(authoring.save_card(foreign_deck,"vocabulary",VOCAB))
@@ -373,20 +452,23 @@ class LearningTests(TestCase):
         with patch("learning.providers.generate") as generate:
             call_command("refresh_examples",self.user.username,dry_run=True,stdout=output)
         generate.assert_not_called()
-        self.assertIn("Examples needing correction: 2",output.getvalue())
+        self.assertIn("Examples needing correction: 3",output.getvalue())
 
         def generate(source,profile):
             if source["word"]=="another":raise StageError("GENERATOR","Temporary provider failure")
-            return PAIR,{"prompt_version":PROMPT_VERSIONS["GENERATOR"]}
+            return PAIR,{**current,"model":"refreshed"}
         with patch("learning.providers.profile"),patch("learning.providers.generate",side_effect=generate):
             with self.assertRaises(CommandError):
                 call_command("refresh_examples",self.user.username,stdout=output,stderr=io.StringIO())
-        ready.refresh_from_db();second.refresh_from_db();foreign.refresh_from_db()
-        self.assertEqual(ready.pairs.count(),2)
+        for card in [ready,second,legacy,old_reviewer,foreign]:
+            card.refresh_from_db()
+        self.assertEqual(ready.pairs.count(),1)
         self.assertEqual(second.pairs.count(),1)
+        self.assertEqual(legacy.pairs.count(),2)
+        self.assertEqual(old_reviewer.pairs.count(),2)
         self.assertEqual(foreign.pairs.count(),1)
         with patch("learning.providers.profile"),patch("learning.providers.generate",
-                return_value=(PAIR,{"prompt_version":PROMPT_VERSIONS["GENERATOR"]})) as generate:
+                return_value=(PAIR,{**current,"model":"refreshed"})) as generate:
             call_command("refresh_examples",self.user.username,stdout=output)
         self.assertEqual(generate.call_count,1)
         second.refresh_from_db();self.assertEqual(second.pairs.count(),2)

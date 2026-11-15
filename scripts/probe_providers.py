@@ -1,4 +1,8 @@
-"""Opt-in, paid real-provider checks using public hand-authored learning fixtures."""
+"""Opt-in, paid real-provider checks using public hand-authored learning fixtures.
+
+Generation checks run the full reviewed pipeline: one Generator call plus one Example Quality
+Review call (accept/repair/replace) followed by deterministic validation. Raw generator outputs
+are collected separately by scripts/probe_generation.py without --review."""
 import argparse
 import json
 import sys
@@ -83,7 +87,7 @@ def run(audio_dir, task="all"):
         for language in ["English","Spanish","Chinese"]:
             check("ASR-"+language,lambda l=language:transcribe(audio_dir/(l+".wav"),l))
     return {"status":"passed" if all(r["status"]=="passed" for r in results) else "needs-review", "results":results,
-            "limits":"Representative fixtures only. Structural generation checks require sense/alignment review; synthetic audio is not physical-microphone or broad language-accuracy evidence."}
+            "limits":"Representative fixtures only. Generation checks include the Example Quality Review; reviewer verdicts are not linguistic ground truth. Structural generation checks require sense/alignment review; synthetic audio is not physical-microphone or broad language-accuracy evidence."}
 
 
 if __name__=="__main__":

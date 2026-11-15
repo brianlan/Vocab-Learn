@@ -299,7 +299,7 @@ class VocabularyFieldsTests(TestCase):
              "Thanks, but <focus>I'll pass</focus> on the cake.", "谢谢，不过我<focus>就算了</focus>。"),
         ]
         for word, synonyms, definition, target, native in cases:
-            with self.subTest(word=word), patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only"}), patch(
+            with self.subTest(word=word), patch.dict(os.environ, {"MINIMAX_API_KEY": "test-only", "GENERATOR_API_KEY": "test-only"}), patch(
                     "learning.providers.request", side_effect=AssertionError("No provider requests")):
                 deck = Deck.objects.create(owner=self.user, name=word)
                 card, _ = authoring.create_card(deck, "vocabulary", {**SOURCE, "word": word, "explanation": ""})
@@ -307,8 +307,11 @@ class VocabularyFieldsTests(TestCase):
                 generated = {"explanation": definition, "pronunciations": [
                     {"ipa": "/test/", "variety": "US", "label": "expression (informal)"}], "synonyms": synonyms}
                 def reply(profile, system, payload):
-                    return ({name: generated[name] for name in payload["requested_fields"]} if profile.task == "DEFINITION"
-                            else {"target_sentence": target, "native_sentence": native})
+                    if profile.task == "DEFINITION":
+                        return {name: generated[name] for name in payload["requested_fields"]}
+                    if profile.task == "EXAMPLE_REVIEWER":
+                        return {"verdict": "accept", "issues": [], "pair": payload["candidate"]}
+                    return {"target_sentence": target, "native_sentence": native}
                 with patch("learning.providers.chat", side_effect=reply):
                     work.process_generation(job_id, claim)
                 card.refresh_from_db()
