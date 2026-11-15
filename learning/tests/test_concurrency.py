@@ -10,10 +10,11 @@ from pathlib import Path
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.db import connections
+from django.db.models.query import QuerySet
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
-from learning import authoring, review, work
-from learning.models import Deck, Attempt, ScoredReview, Presentation, GenerationJob
+from learning import authoring, review, views, work
+from learning.models import Card, Deck, Attempt, ScoredReview, Presentation, GenerationJob
 from learning.worker import run_worker
 from .test_learning import GENERIC, VOCAB, audio_bytes
 
@@ -39,6 +40,40 @@ class ConcurrencyTests(TransactionTestCase):
             questions=list(pool.map(enter,range(2)))
         self.assertEqual(questions[0],questions[1])
         self.assertEqual(Presentation.objects.count(),1)
+
+    def test_deck_progress_stays_coherent_across_committed_restore_and_archive(self):
+        card=authoring.save_card(self.deck,"generic",{**GENERIC,"answer":"four things"})
+        for _ in range(2):
+            attempt=review.submit(self.presentation(),"speak",2)
+            self.assertEqual(review.commit_grade(attempt.pk,attempt.claim,"D",[],"Progress fixture.").state,"assessed")
+        authoring.archive_card(card,True)
+        fetch_all=QuerySet._fetch_all
+        for archived,before_total,after_total in [(False,1,2),(True,2,1)]:
+            with self.subTest(archived=archived):
+                changed=False
+
+                def change_membership():
+                    try:
+                        authoring.archive_card(card,archived)
+                    finally:
+                        connections.close_all()
+
+                def change_after_read(queryset):
+                    nonlocal changed
+                    fetch_all(queryset)
+                    if not changed and queryset.model is Card and queryset.query.group_by:
+                        changed=True
+                        # Commit on an independent connection after the first aggregate has fully read its snapshot.
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            pool.submit(change_membership).result(timeout=5)
+
+                with patch.object(QuerySet,"_fetch_all",change_after_read):
+                    row=views.deck_progress(self.user,[self.deck])[self.deck.pk]
+                self.assertTrue(changed)
+                self.assertEqual(row,{"total":before_total,"qualified":before_total,"percent":100})
+                self.assertTrue(0 <= row["qualified"] <= row["total"])
+                self.assertEqual(views.deck_progress(self.user,[self.deck])[self.deck.pk],
+                    {"total":after_total,"qualified":after_total,"percent":100})
 
     def test_two_real_connections_cannot_both_score_same_progress(self):
         first=review.submit(self.presentation(),"speak",1,"unused")

@@ -25,18 +25,22 @@ from .rendering import render
 
 
 def deck_progress(user, decks):
-    """Cumulative current-source D/E qualification per deck, in bounded read-only queries."""
+    """Cumulative current-source D/E qualification per deck, from one read-only query."""
     decks = list(decks)
     if not decks:
         return {}
-    qualifying = ScoredReview.objects.filter(user=user, card=OuterRef("pk"), grade__in=["D", "E"],
-                                             snapshot__source_version=OuterRef("source_version"))
+    # The inner owner join gives SQLite a card-selective history plan without a new index.
+    qualifying = ScoredReview.objects.filter(user=user, card=OuterRef("pk"), card__deck__owner=user,
+                                             grade__in=["D", "E"], snapshot__source_version=OuterRef("source_version"))
     cards = Card.objects.filter(deck__in=decks, deck__owner=user, archived=False).annotate(_qualified=Exists(qualifying))
-    totals = {row["deck_id"]: row["n"] for row in cards.values("deck_id").annotate(n=Count("pk"))}
-    done = {row["deck_id"]: row["n"] for row in cards.filter(_qualified=True).values("deck_id").annotate(n=Count("pk"))}
-    return {deck.pk: {"total": totals.get(deck.pk, 0), "qualified": done.get(deck.pk, 0),
-                      "percent": 100 * done.get(deck.pk, 0) // totals[deck.pk] if totals.get(deck.pk) else None}
-            for deck in decks}
+    rows = {row["deck_id"]: row for row in cards.values("deck_id")
+            .annotate(n=Count("pk"), done=Count("pk", filter=Q(_qualified=True)))}
+    progress = {}
+    for deck in decks:
+        row = rows.get(deck.pk, {"n": 0, "done": 0})
+        progress[deck.pk] = {"total": row["n"], "qualified": row["done"],
+                             "percent": 100 * row["done"] // row["n"] if row["n"] else None}
+    return progress
 
 
 def counts(user, deck=None):
