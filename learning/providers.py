@@ -12,7 +12,7 @@ import httpx
 
 TASK_LABELS = {"ASR": "Speech recognition", "JUDGE": "Answer assessment", "GENERATOR": "Example preparation",
                "DEFINITION": "Vocabulary completion", "EXAMPLE_REVIEWER": "Example review"}
-PROMPT_VERSIONS = {"JUDGE": "lexical-meaning-v3", "GENERATOR": "lexical-pair-v6-d", "DEFINITION": "learner-entry-v2",
+PROMPT_VERSIONS = {"JUDGE": "lexical-meaning-v3", "GENERATOR": "lexical-pair-v7-a", "DEFINITION": "learner-entry-v2",
                    "EXAMPLE_REVIEWER": "example-review-v1"}
 # Budget key and thinking values follow the selected protocol dialect; no model-name inference.
 DIALECTS = {"minimax": {"thinking": {"adaptive", "disabled"}, "budget": "max_completion_tokens"},
@@ -76,7 +76,7 @@ def profile(task):
     key = os.getenv(task + "_API_KEY", "") or (os.getenv("MINIMAX_API_KEY", "") if native_default else "")
     if not key:
         raise StageError(task, "Provider credentials are missing. Ask the deployer to configure this task.", "configuration")
-    if protocol not in DIALECTS:
+    if protocol not in ({"minimax", "openai"} if asr else DIALECTS):
         raise StageError(task, "Unsupported provider protocol.", "configuration")
     thinking = os.getenv(task + "_THINKING", THINKING_DEFAULTS.get(task, "")).strip().lower()
     effort = os.getenv(task + "_REASONING_EFFORT", EFFORT_DEFAULTS.get(task, "")).strip().lower()
@@ -324,6 +324,11 @@ def assess(snapshot, transcript, p=None):
 
 GENERATOR_RULES = """Create one short, idiomatic bilingual learning example for the supplied expression.
 
+THE LEARNER'S TASKS
+Recognition shows only the target sentence and asks for the meaning of its highlighted expression in the native language.
+Production shows only the native sentence and asks for the target expression; the explanation and the target sentence are
+hidden. Build the pair so each task is answerable from its own visible sentence alone, with no answer leaking into the cue.
+
 OUTPUT
 Return ONLY this JSON object with the actual sentences:
 {"target_sentence":"...<focus>learning expression</focus>...","native_sentence":"...<focus>native equivalent</focus>..."}
@@ -472,8 +477,8 @@ def validate_review(data, candidate):
         raise invalid
     verdict, issues, pair = data["verdict"], data["issues"], data["pair"]
     if (verdict not in ("accept", "repair", "reject") or not isinstance(issues, list) or len(issues) > 8 or any(
-            not isinstance(item, dict) or set(item) != {"rule", "detail"} or item["rule"] not in
-            {"source", "alignment", "scope", "language", "cue", "format"} or
+            not isinstance(item, dict) or set(item) != {"rule", "detail"} or not isinstance(item["rule"], str) or
+            item["rule"] not in {"source", "alignment", "scope", "language", "cue", "format"} or
             not isinstance(item["detail"], str) or not item["detail"].strip() or len(item["detail"]) > 1000
             for item in issues)):
         raise invalid

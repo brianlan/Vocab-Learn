@@ -25,7 +25,6 @@ class GenerationProbeTests(TestCase):
         self.assertEqual(rows["stone"]["status"], "needs_semantic_review")
         self.assertEqual(report["status"], "needs_semantic_review")
         self.assertNotIn(profile.key, str(report))
-
     def test_repeats_preserve_every_result_without_automatic_retry(self):
         cases = [{"id": "stone", "source": {"word": "stone", "explanation": "A solid object.",
                   "target_language": "English", "native_language": "Chinese"}}]
@@ -61,6 +60,7 @@ class GenerationProbeTests(TestCase):
         row = report["results"][0]
         self.assertEqual(row["status"], "reviewed")
         self.assertEqual(row["verdict"], "repair")
+        self.assertEqual(row["raw"], candidate)
         self.assertEqual(row["data"]["native_highlight"], "石质")
         self.assertEqual([task for task, _ in calls], ["GENERATOR", "EXAMPLE_REVIEWER"])
         self.assertIn("candidate", calls[1][1])

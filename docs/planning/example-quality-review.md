@@ -95,13 +95,18 @@ Mocked transport tests prove workflow contracts, not linguistic accuracy. Live e
 judgment of final cues; reviewer verdicts are never treated as ground truth. Raw results stay in
 ignored private directories; only sanitized aggregates are published.
 
-Recorded run (2026-11-15, `docs/implementation/example-quality-review-results.json`): the available
-development credentials are MiniMax, so the live pass used the exchanged MiniMax→MiniMax role
-configuration with explicit `adaptive` thinking and `reasoning_effort=max` — the role exchange the
-configuration contract promises. The default GLM generation role is covered by request-dialect
-contract tests, not by this live run. Generator-only baseline: 24/25 usable (one marker failure).
-Reviewed pipeline: 25/25 reviewed, 23 accept / 2 repair, median 9.0 s (≈2.6 s review overhead),
-max 31.6 s. The marker-defect case was repaired in the reviewer call. Replaying the motivating bad
-`elicit`/逗笑 candidate directly into review was ACCEPTED: MiniMax-as-reviewer tolerates that
-unfair native focus, which is reported as a residual semantic blind spot; a fresh reviewed
-generation produced a compliant `问出` cue.
+Recorded run (2026-11-15, `docs/implementation/example-quality-review-results.json`, review round 2):
+the available development credentials are MiniMax, so the live pass used the exchanged
+MiniMax→MiniMax role configuration with explicit `adaptive` thinking and `reasoning_effort=max` —
+the role exchange the configuration contract promises. The default GLM generation role is covered by
+request-dialect contract tests, not by this live run. One paired run records each case's
+pre-review candidate and its reviewed final: 24/25 reviewed (23 accept, 1 repair — `justice`'s
+native focus became the lexical noun 公道; 1 fail-closed reviewer output failure, `past`).
+Independent judgment against the corpus checks: 22 good candidates, 2 bad (`existential`,
+`prevention` — both accepted by the reviewer, i.e. bad→bad), 0 good→bad, 0 bad→good. Semantic
+replays into review: the known-bad `elicit`/逗笑 candidate, a wrong-sense `bank`, a wrong-word-class
+`monthly`, and an unrepairable-scope `porous` — all repaired this run (the `elicit` repair fixes
+alignment by shifting the target to an achieved result; earlier replays of the same candidate were
+accepted, so repair is not deterministic). Token usage is not recorded (the provider contract does
+not surface usage fields); the dedicated-card walkthrough is substituted by named automated tests
+for lack of an interactive dev-stack session — both disclosed in the evidence file.

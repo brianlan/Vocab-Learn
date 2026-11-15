@@ -78,6 +78,13 @@ class ProviderTests(ProviderBase):
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"k","JUDGE_PROTOCOL":"anthropic"}):
             with self.assertRaises(p.StageError): p.profile("JUDGE")
 
+    def test_asr_protocol_allowlist_excludes_chat_dialects(self):
+        with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","ASR_API_KEY":"asr-only","ASR_PROTOCOL":"zhipu"},clear=True):
+            with self.assertRaises(p.StageError) as error: p.profile("ASR")
+        self.assertEqual(error.exception.category,"configuration")
+        with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","ASR_API_KEY":"asr-only"},clear=True):
+            self.assertEqual(p.profile("ASR").protocol,"minimax")
+
     def test_native_header_vs_transcription_form(self):
         with tempfile.TemporaryDirectory() as folder:
             audio=Path(folder)/"test.wav"; audio.write_bytes(b"sample")
@@ -228,13 +235,18 @@ class ProviderTests(ProviderBase):
     def test_rotation_requires_both_new_sentences_and_configuration_rejects_nan(self):
         pair={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}
         previous=p.validate_pair(pair,"bank")
-        repeated={"verdict":"repair","issues":[{"rule":"alignment","detail":"Repeated the previous scene verbatim."}],
-                  "pair":{"target_sentence":previous["target_sentence"],"native_sentence":previous["native_sentence"]}}
-        with patch("learning.providers.chat",side_effect=[pair,repeated]):
-            with self.assertRaises(p.StageError) as error:
-                p.generate({"word":"bank","previous_pair":previous},self.profile("GENERATOR"),
-                           reviewer=self.profile("EXAMPLE_REVIEWER"))
-        self.assertEqual(error.exception.stage,"EXAMPLE_REVIEWER")
+        def repair(target,native):
+            return {"verdict":"repair","issues":[{"rule":"alignment","detail":"Kept the previous sentence."}],
+                    "pair":{"target_sentence":target,"native_sentence":native}}
+        for repeated in [repair(pair["target_sentence"],"河对岸有一片安静的<focus>银行</focus>。"),
+                         repair("A new <focus>bank</focus> opened by the river last month.",pair["native_sentence"])]:
+            with self.subTest(repeated=repeated["pair"]):
+                with patch("learning.providers.chat",side_effect=[pair,repeated]):
+                    with self.assertRaises(p.StageError) as error:
+                        p.generate({"word":"bank","previous_pair":previous},self.profile("GENERATOR"),
+                                   reviewer=self.profile("EXAMPLE_REVIEWER"))
+                self.assertEqual(error.exception.stage,"EXAMPLE_REVIEWER")
+                self.assertIn("repeated an old sentence",str(error.exception))
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only"},clear=True):
             for value in ["nan","-1","inf"]:
                 with patch.dict(os.environ,{"JUDGE_TIMEOUT_SECONDS":value}):
@@ -300,10 +312,10 @@ class ReviewedGenerationTests(ProviderBase):
         self.assertNotIn("placeholder-only",str(metadata))
 
     def test_local_repair_and_unrelated_full_rewrite_replace_without_extra_calls(self):
+        rewritten={"target_sentence":"We picnicked on the grassy <focus>bank</focus> while boats passed.",
+                   "native_sentence":"小船驶过时，我们在长满草的<focus>河岸</focus>上野餐。"}
         for issues,pair in [([{"rule":"scope","detail":"Native focus includes the result meaning."}],REPAIRED),
-                            ([{"rule":"cue","detail":"No local edit can make the cue fair."}],
-                             {"target_sentence":"The detective noted his <focus> suspicion</focus>.",
-                              "native_sentence":"侦探注意到了他的<focus>怀疑</focus>。"})]:
+                            ([{"rule":"cue","detail":"No local edit can make the cue fair."}],rewritten)]:
             with self.subTest(issues=issues):
                 result,calls=self.play(CANDIDATE,self.envelope("repair",issues,pair))
                 self.assertEqual(len(calls),2)
@@ -343,12 +355,21 @@ class ReviewedGenerationTests(ProviderBase):
                self.envelope("maybe",[{"rule":"scope","detail":"Bad verdict."}],None),
                self.envelope("repair",[{"rule":"invented","detail":"Unknown rule."}],REPAIRED),
                self.envelope("repair",[{"rule":"scope","detail":" "}],REPAIRED),
+               self.envelope("repair",[{"rule":[],"detail":"Unhashable rule."}],REPAIRED),
+               self.envelope("repair",[{"rule":{"nested":"object"},"detail":"Object rule."}],REPAIRED),
                {"verdict":"reject","issues":{"rule":"cue"},"pair":None}]
         for verdict in cases:
             with self.subTest(verdict=verdict):
                 with self.assertRaises(p.StageError) as error:
                     self.play(CANDIDATE,verdict)
                 self.assertEqual(error.exception.stage,"EXAMPLE_REVIEWER")
+        generator,reviewer=self.profiles()
+        with patch("learning.providers.chat",side_effect=[CANDIDATE,self.envelope("repair",
+                [{"rule":[],"detail":"Unhashable rule."}],REPAIRED)]) as chat:
+            with self.assertRaises(p.StageError) as error:
+                p.generate(BANK,generator,reviewer=reviewer)
+        self.assertEqual((error.exception.stage,error.exception.category),("EXAMPLE_REVIEWER","invalid_output"))
+        self.assertEqual(chat.call_count,2)
         with self.assertRaises(p.StageError) as error:
             self.play(CANDIDATE,self.envelope("repair",[{"rule":"format","detail":"Broken markers."}],double_marked))
         self.assertEqual(error.exception.stage,"EXAMPLE_REVIEWER")

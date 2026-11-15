@@ -137,7 +137,9 @@ MiniMax origin. `DEFINITION_*` controls new Vocabulary teaching-detail completio
 The full settings/defaults are in `.env.example` and the [creation increment](specs/vocabulary-creation.md). These new
 creation capabilities are development-only until a production release.
 
-The current Generator prompt is the original scope-workflow D, tracked as `lexical-pair-v6-d`. It is distinct from the
+The current Generator prompt is tracked as `lexical-pair-v7-a`: the original scope-workflow D plus the
+learner-task context required by the example quality review (Recognition shows only the target sentence;
+Production shows only the native sentence, with the explanation and target counterpart hidden). It is distinct from the
 earlier unpromoted experimental `lexical-pair-v6` and from D2. Judge remains `lexical-meaning-v3`; Judge/Definition
 requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt is `example-review-v1`. New
 preparation and ordinary future rotations use D plus one review call. Deploying a prompt does not refresh saved pairs,

@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -27,7 +28,9 @@ def probe(cases, repeats=1, review=False):
         row = {"case_id": case["id"], "repeat": repeat}
         try:
             if review:
+                local.candidate = None
                 row["data"], row["provenance"] = providers.generate(dict(case["source"]))
+                row["raw"] = local.candidate  # the generator payload observed inside the same generate() call
                 row["verdict"] = row["provenance"]["reviewer"]["verdict"]
                 row["reviewer_issues"] = row["provenance"]["reviewer"]["issues"]
                 row["status"] = "reviewed"
@@ -44,12 +47,26 @@ def probe(cases, repeats=1, review=False):
         return row
 
     rows = []
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        pending = [pool.submit(run, case, repeat) for repeat in range(1, repeats + 1) for case in cases]
-        for future in as_completed(pending):
-            row = future.result()
-            rows.append(row)
-            print(row["case_id"], row["repeat"], row["status"], row["seconds"], flush=True)
+    local = threading.local()
+    if review:
+        # Observe the generator payload inside the real generate() call without changing its contract.
+        original_chat = providers.chat
+        def recording_chat(profile_, rules, payload):
+            result = original_chat(profile_, rules, payload)
+            if profile_.task == "GENERATOR":
+                local.candidate = result
+            return result
+        providers.chat = recording_chat
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = [pool.submit(run, case, repeat) for repeat in range(1, repeats + 1) for case in cases]
+            for future in as_completed(pending):
+                row = future.result()
+                rows.append(row)
+                print(row["case_id"], row["repeat"], row["status"], row["seconds"], flush=True)
+    finally:
+        if review:
+            providers.chat = original_chat
     assert len(rows) == len(cases) * repeats
     report = {"prompt_version": providers.PROMPT_VERSIONS["GENERATOR"],
               "prompt_sha256": hashlib.sha256(providers.GENERATOR_RULES.encode()).hexdigest(),
