@@ -1167,7 +1167,7 @@ class LearningTests(TestCase):
         self.assertContains(response,"out of date")
         readiness=self.client.post(reverse("example_regenerate",args=[preparing.pk]),
             {"source_version":preparing.source_version,"pair_id":12345},follow=True)
-        self.assertContains(response,"Only a Ready Vocabulary card")
+        self.assertContains(readiness,"Only a Ready Vocabulary card")
         self.assertEqual(GenerationJob.objects.filter(mode="manual").count(),0)
 
     def test_manual_regeneration_coalesces_duplicates_and_retry_keeps_identity(self):
@@ -1358,13 +1358,16 @@ class LearningTests(TestCase):
         old_pair_id=card.active_pair_id
         p=self.present(card)  # a held question exercises the frozen-cue branch inside the save
         job=self.claim_manual(self.manual_regeneration(card))
+        claim=job.claim
         replacement={**PAIR,"target_sentence":"A fresh scene used the word.","target_highlight":"word","target_highlight_start":23}
-        with patch("learning.work.adopt_corrected_cue",side_effect=OperationalError("interrupted")):
+        # the final job write fails after the correction returns: the joining transaction rolls everything back
+        with patch("learning.work.GenerationJob.save",side_effect=OperationalError("interrupted")):
             with self.assertRaises(OperationalError):
                 work.save_pair(job.pk,job.claim,replacement,{})
         card.refresh_from_db();job.refresh_from_db()
         self.assertEqual(card.pairs.count(),1)  # the interrupted save rolled back: no revision, no pointer switch
         self.assertEqual(card.active_pair_id,old_pair_id)
+        self.assertEqual((job.state,job.result_id,job.claim),("processing",None,claim))
         self.assertEqual(job.state,"processing")
         self.assertIsNone(work.save_pair(job.pk,uuid.uuid4(),replacement,{}))  # a replaced claim cannot commit
         self.assertEqual(card.pairs.count(),1)
@@ -1416,38 +1419,136 @@ class LearningTests(TestCase):
                 authoring.archive_card(raced,True)
             pending.refresh_from_db()
             self.assertEqual(pending.state,"cancelled")
+            # delivering the old claim after cancellation cannot commit anything
+            stale_claim,stale_pairs=pending.claim,raced.pairs.count()
+            self.assertIsNone(work.save_pair(pending.pk,stale_claim,
+                dict(PAIR,target_sentence="A late obsolete result.",target_highlight="word",target_highlight_start=23),{}))
+            pending.refresh_from_db();raced.refresh_from_db()
+            self.assertEqual((pending.state,pending.result_id),("cancelled",None))
+            self.assertEqual(raced.pairs.count(),stale_pairs)
+
+    def test_obsolete_failure_and_expiry_terminate_as_superseded(self):
+        for expire in [False,True]:
+            card=self.ready(self.vocabulary(word=f"obsolete-{expire}"))
+            job=self.claim_manual(self.manual_regeneration(card))
+            claim=job.claim
+            replacement=work.save_corrected_pair(card.pk,card.source_version,card.active_pair_id,
+                {**PAIR,"native_sentence":"那次误会很小。","native_highlight_start":2},{})
+            if expire:
+                job.deadline=timezone.now()-timedelta(seconds=1);job.save(update_fields=["deadline"])
+                work.expire_generations()
+            else:
+                work.fail("generation",job.pk,job.claim,StageError("GENERATOR","Temporary provider failure","transport"))
+            job.refresh_from_db();card.refresh_from_db()
+            self.assertEqual(job.state,"cancelled")          # obsolete work is superseded, not retryable
+            self.assertNotEqual(job.claim,claim)
+            self.assertIsNone(job.result_id)
+            self.assertEqual(card.pairs.count(),2)           # only the replacement pair exists
+            self.assertEqual(card.active_pair_id,replacement.pk)
+            self.assertIsNone(work.save_pair(job.pk,job.claim,PAIR,{}))       # a late commit is refused
+            self.assertEqual(work.retry_generation(job).state,"cancelled")    # a late retry is refused
+
+    def test_failed_request_before_supersession_shows_superseded_information(self):
+        previous=None
+        for activate in [False,True]:
+            card=self.ready(self.vocabulary(word=f"failed-then-{activate}"))
+            if previous is not None:                 # keep the earlier card out of the shared queue
+                Card.objects.filter(pk=previous.pk).update(due=timezone.now()+timedelta(days=30),deferred_until=None)
+            previous=card
+            job=self.claim_manual(self.manual_regeneration(card))
+            claim=job.claim
+            # the request fails normally while its base pair is still current
+            work.fail("generation",job.pk,job.claim,StageError("GENERATOR","Temporary provider failure","transport"))
+            job.refresh_from_db()
+            self.assertEqual(job.state,"failed")
+            if activate:
+                self.assertEqual(self.score(card,"E").state,"assessed")
+                rotation=card.generation_jobs.get(mode="rotation",state="queued")
+                self.claim_manual(rotation)
+                self.run_pipeline(rotation,self.AUTO_CANDIDATE)   # a done candidate, not yet adopted
+                self.present(card)                                # the activation point installs the candidate
+                card.refresh_from_db()
+            else:
+                work.save_corrected_pair(card.pk,card.source_version,card.active_pair_id,
+                    {**PAIR,"native_sentence":"那次误会很小。","native_highlight_start":2},{})
+            html=self.client.get(reverse("card",args=[card.pk])).content.decode()
+            self.assertIn("was discarded because the examples changed",html)
+            self.assertNotIn("Try again",html)                   # no stale retry for superseded work
+            self.assertIn("Regenerate examples",html)            # a fresh request bound to the new pair is offered
+            job.refresh_from_db()
+            self.assertEqual(job.state,"cancelled")              # reconciled to the terminal superseded state
+            self.assertNotEqual(job.claim,claim)
+            card.refresh_from_db()
+            fresh=self.manual_regeneration(card)
+            self.assertEqual(fresh.provenance["requested_pair_id"],card.active_pair_id)
 
     def test_manual_correction_preserves_scores_frozen_scopes_and_direction(self):
         card=self.ready(self.vocabulary())
-        p1=self.present(card)
         self.score(card,"B")                     # enters Forgot and retains the cue/direction
+        self.score(card,"D")                     # an earned reinforcement streak in Forgot
         card.refresh_from_db()
-        self.assertEqual(card.collection,"Forgot")
+        self.assertEqual((card.collection,card.streak),("Forgot",1))
+        history=list(ScoredReview.objects.order_by("pk").values_list("grade","snapshot"))
         direction=(card.cue_direction,card.direction_index,card.cue_pair_id,card.direction_block)
+        # a future due holds the card in both scopes
+        Card.objects.filter(pk=card.pk).update(due=timezone.now()+timedelta(days=2),deferred_until=None)
+        self.assertIsNone(review.next_question(self.user,self.deck))
+        self.assertIsNone(review.next_question(self.user,None))
+        # an active Skip deferral holds the card in both scopes too
         Card.objects.filter(pk=card.pk).update(due=timezone.now()-timedelta(seconds=1),deferred_until=None)
-        p2=review.next_question(self.user,None)   # open question in the all-deck scope
+        review.submit(review.next_question(self.user,None),"skip")
+        card.refresh_from_db()
+        self.assertIsNotNone(card.deferred_until)
+        self.assertIsNone(review.next_question(self.user,self.deck))
+        self.assertIsNone(review.next_question(self.user,None))
+        Card.objects.filter(pk=card.pk).update(due=timezone.now()-timedelta(seconds=1),deferred_until=None)
+        deck_question=review.next_question(self.user,self.deck)   # a timing-failed attempt in the deck scope
+        deck_frozen=deck_question.snapshot.copy()
+        failed_attempt=review.submit(deck_question,"speak",None)
+        self.assertEqual((failed_attempt.state,failed_attempt.error_stage),("failed","timing"))
+        all_question=review.next_question(self.user,None)         # a real submitted attempt in the other scope
+        all_frozen=all_question.snapshot.copy()
+        self.assertIsNone(all_question.scope_deck_id)
+        path=Path(self.folder.name)/(uuid.uuid4().hex+".audio");path.write_bytes(audio_bytes())
+        submitted=review.submit(all_question,"speak",2,path.name)
+        self.assertEqual(submitted.state,"submitted")
+        other_deck=Deck.objects.create(owner=self.user,name="Other scope deck")
+        self.ready(authoring.save_card(other_deck,"vocabulary",dict(VOCAB,word="scope-keeper")))
+        other_question=review.next_question(self.user,other_deck)  # an unfinished question in another scope
+        other_frozen=other_question.snapshot.copy()
         card.refresh_from_db()
         before={key:getattr(card,key) for key in ["fsrs","due","deferred_until","collection","streak",
             "review_count","source_version","progress_version"]}
-        self.assertIsNone(p2.scope_deck_id)
-        frozen=p2.snapshot.copy()
-        a=self.spoken(p2)                        # a fixed submitted attempt in the other scope
         job=self.claim_manual(self.manual_regeneration(card))
         self.run_pipeline(job,self.MANUAL_CANDIDATE)
         job.refresh_from_db();card.refresh_from_db()
         self.assertEqual({key:getattr(card,key) for key in before},before)
         self.assertEqual((card.cue_direction,card.direction_index,card.cue_pair_id,card.direction_block),direction)
-        self.assertEqual(a.state,"processing")
-        self.assertTrue(review.valid_presentation(p2))
-        result=review.commit_grade(a.pk,a.claim,"D",[],"Grade the frozen all-deck question.")
+        self.assertEqual(list(ScoredReview.objects.order_by("pk").values_list("grade","snapshot")),history)
+        # every held presentation and attempt survives the persistence unchanged
+        deck_question=Presentation.objects.get(pk=deck_question.pk)
+        all_question=Presentation.objects.get(pk=all_question.pk)
+        other_question=Presentation.objects.get(pk=other_question.pk)
+        self.assertEqual([p.invalidated for p in (deck_question,all_question,other_question)],[False]*3)
+        self.assertEqual((deck_question.snapshot,all_question.snapshot,other_question.snapshot),
+                         (deck_frozen,all_frozen,other_frozen))
+        failed_attempt=Attempt.objects.get(pk=failed_attempt.pk)
+        self.assertEqual((failed_attempt.state,failed_attempt.error_stage,failed_attempt.audio_name,failed_attempt.grade),
+                         ("failed","timing","",""))
+        submitted=Attempt.objects.get(pk=submitted.pk)
+        self.assertEqual((submitted.state,submitted.audio_name),("submitted",path.name))
+        self.assertTrue(review.valid_presentation(deck_question))
+        # the submitted attempt grades normally after the persistence
+        submitted.state="processing";submitted.save(update_fields=["state"])
+        result=review.commit_grade(submitted.pk,submitted.claim,"D",[],"Grade the frozen all-deck question.")
         self.assertEqual(result.state,"assessed")
-        self.assertEqual(ScoredReview.objects.get(attempt=a).snapshot,frozen)
-        self.assertEqual(card.pairs.count(),2)
+        self.assertEqual(ScoredReview.objects.get(attempt=submitted).snapshot,all_frozen)
         # the correction takes over at the next safe presentation with the retained direction
+        review.exit_attempt(failed_attempt)
         fresh=self.present(card)
         card.refresh_from_db()
         self.assertEqual(fresh.snapshot["pair_id"],job.result_id)
-        self.assertEqual(fresh.snapshot["direction"],frozen["direction"])
+        self.assertEqual(fresh.snapshot["direction"],all_frozen["direction"])
         self.assertEqual(card.direction_index,direction[1])
 
     def test_manual_lifecycle_preserves_done_failed_and_running_automatic_work(self):
@@ -1466,30 +1567,63 @@ class LearningTests(TestCase):
         self.assertEqual(card.rotation_token,done.token)
         fresh=self.present(card)                      # the candidate is still eligible at the activation point
         self.assertEqual(fresh.snapshot["pair_id"],done.result_id)
-        # failed automatic work survives a manual retry-cycle success untouched
+        # failed automatic work survives a full manual failure-and-retry cycle untouched
         self.assertEqual(self.score(card,"E").state,"assessed")
         failing=card.generation_jobs.get(mode="rotation",state="queued")
         self.claim_manual(failing)
         work.fail("generation",failing.pk,failing.claim,StageError("GENERATOR","Temporary provider failure","transport"))
         failing.refresh_from_db();self.assertEqual(failing.state,"failed")
+        failing_snapshot=("failed",failing.claim,failing.execution,failing.result_id)
+        failing_token=failing.token
         card.refresh_from_db()
+        kept=card.active_pair_id
         retried=self.claim_manual(self.manual_regeneration(card))
+        card.refresh_from_db()
+        self.assertEqual(card.rotation_token,failing_token)        # the request keeps rotation intent
+        work.fail("generation",retried.pk,retried.claim,StageError("GENERATOR","Temporary provider failure","transport"))
+        retried.refresh_from_db();failing.refresh_from_db();card.refresh_from_db()
+        self.assertEqual(retried.state,"failed")
+        self.assertEqual((failing.state,failing.claim,failing.execution,failing.result_id),failing_snapshot)
+        self.assertEqual(card.rotation_token,failing_token)
+        self.assertEqual(card.active_pair_id,kept)                 # the current examples were kept
+        work.retry_generation(retried)
+        retried.refresh_from_db();failing.refresh_from_db();card.refresh_from_db()
+        self.assertEqual(retried.state,"queued")
+        self.assertEqual((failing.state,failing.claim,failing.execution,failing.result_id),failing_snapshot)
+        self.assertEqual(card.rotation_token,failing_token)
+        self.claim_manual(retried)
         self.run_pipeline(retried,self.MANUAL_CANDIDATE)
-        failing.refresh_from_db()
+        retried.refresh_from_db();failing.refresh_from_db();card.refresh_from_db()
         self.assertEqual(failing.state,"failed")
-        # running automatic work survives manual failure and retry untouched
+        self.assertEqual(card.rotation_token,failing_token)        # the done candidate stays eligible
+        self.assertEqual(card.active_pair_id,retried.result_id)
+        # running automatic work survives a full manual failure-and-retry cycle untouched
         self.assertEqual(self.score(card,"E").state,"assessed")
         running=card.generation_jobs.get(mode="rotation",state="queued")
         self.claim_manual(running)
+        running_snapshot=("processing",running.claim,running.execution,running.result_id)
         card.refresh_from_db()
+        self.assertEqual(card.rotation_token,running.token)
         failed_manual=self.claim_manual(self.manual_regeneration(card))
         work.fail("generation",failed_manual.pk,failed_manual.claim,StageError("GENERATOR","Temporary provider failure","transport"))
-        running.refresh_from_db();self.assertEqual(running.state,"processing")
+        failed_manual.refresh_from_db();running.refresh_from_db();card.refresh_from_db()
+        self.assertEqual(failed_manual.state,"failed")
+        self.assertEqual((running.state,running.claim,running.execution,running.result_id),running_snapshot)
+        self.assertEqual(card.rotation_token,running.token)
+        self.assertEqual(card.active_pair_id,retried.result_id)
         work.retry_generation(failed_manual)
-        running.refresh_from_db();self.assertEqual(running.state,"processing")
-        failed_manual.refresh_from_db();self.assertEqual(failed_manual.state,"queued")
-        retried.refresh_from_db()
-        self.assertEqual(card.active_pair_id,retried.result_id)  # the current examples were kept
+        failed_manual.refresh_from_db();running.refresh_from_db();card.refresh_from_db()
+        self.assertEqual(failed_manual.state,"queued")
+        self.assertEqual((running.state,running.claim,running.execution,running.result_id),running_snapshot)
+        self.assertEqual(card.rotation_token,running.token)
+        self.claim_manual(failed_manual)
+        self.run_pipeline(failed_manual,
+            {**self.MANUAL_CANDIDATE,"target_sentence":"A quiet <focus>misunderstanding</focus> settled between them.",
+             "native_sentence":"他们之间沉淀了一个安静的<focus>误会</focus>。"})
+        failed_manual.refresh_from_db();running.refresh_from_db();card.refresh_from_db()
+        self.assertEqual((running.state,running.claim,running.execution,running.result_id),running_snapshot)
+        self.assertEqual(card.rotation_token,running.token)
+        self.assertEqual(card.active_pair_id,failed_manual.result_id)  # the current examples were kept
 
     def test_superseded_request_shows_fallback_and_manual_status_stays_visible(self):
         card=self.ready(self.vocabulary())

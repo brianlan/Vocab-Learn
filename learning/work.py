@@ -164,6 +164,13 @@ def current_generation(job, card):
 
 
 @transaction.atomic
+def supersede_requests(card):
+    # Learner requests whose base pair is gone are terminal, whatever their unfinished state.
+    card.generation_jobs.filter(mode="manual").exclude(state="done").exclude(
+        provenance__requested_pair_id=card.active_pair_id).update(state="cancelled", claim=uuid.uuid4())
+
+
+@transaction.atomic
 def save_pair(job_id, claim, data, provenance):
     job = GenerationJob.objects.select_related("card__deck").get(pk=job_id)
     if job.state == "done":

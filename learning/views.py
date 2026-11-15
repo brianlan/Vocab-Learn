@@ -130,6 +130,7 @@ def card_edit(request, deck_id, card_id=None):
 def card_view(request, card_id):
     card = get_object_or_404(Card.objects.select_related("deck", "active_pair"), pk=card_id, deck__owner=request.user)
     work.expire_generations()
+    work.supersede_requests(card)
     job = card.generation_jobs.filter(source_version=card.source_version).exclude(mode="manual").order_by("-requested_at").first()
     # Select the learner-requested status explicitly so a newer automatic job cannot hide it.
     manual = (card.generation_jobs.filter(mode="manual", source_version=card.source_version,
@@ -138,9 +139,6 @@ def card_view(request, card_id):
     # Keep relevant superseded information as a fallback when no request matches the current pair.
     superseded = None if manual else card.generation_jobs.filter(
         mode="manual", source_version=card.source_version, state="cancelled").order_by("-requested_at").first()
-    manual = (card.generation_jobs.filter(mode="manual", source_version=card.source_version,
-              provenance__requested_pair_id=card.active_pair_id).order_by("-requested_at").first()
-              if card.active_pair_id else None)
     teaching = lexical.details(card) if card.kind == "vocabulary" else {"explanation": card.explanation}
     return page(request, "learning/card.html", {"card": card, "job": job, "manual": manual, "superseded": superseded, "nav": "decks",
         "definition_generated": card.kind == "vocabulary" and authoring.definition_generated(card),
