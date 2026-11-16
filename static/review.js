@@ -7,7 +7,7 @@
   const csrf = () => document.querySelector("input[name=csrfmiddlewaretoken]").value;
   let phase = card.dataset.state, recorder = null, stream = null, acquisition = 0;
   let frozenBlob = null, frozenDuration = null, frozenAction = null, polling = null;
-  let baseElapsed = 0, excluded = 0, waitStart = null, clockLost = false;
+  let baseElapsed = 0, excluded = 0, waitStart = null, clockLost = false, waitSince = null;
   const started = performance.now();
   let lastPayload = "", busy = false;
   const tell = message => { $("#technical-message").textContent = message; $("#technical-message").hidden = !message; };
@@ -102,8 +102,8 @@
     const collection = document.querySelector("[data-collection-label]");
     if (collection && data.collection) { collection.textContent = data.collection === "Forgot" ? "Forgot collection" : "Normal review"; collection.classList.toggle("warm", data.collection === "Forgot"); }
     try { localStorage.removeItem(key); } catch (_) { /* Submitted timing is durable on the server. */ }
-    if (["submitted", "processing"].includes(phase)) startPolling();
-    else { clearInterval(polling); polling = null; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
+    if (["submitted", "processing"].includes(phase)) { if (waitSince === null) waitSince = performance.now(); startPolling(); }
+    else { waitSince = null; clearInterval(polling); polling = null; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
   }
   function reconnect(message) {
     tell(message + " The server outcome is unconfirmed. Check status or retry the same request.");
@@ -139,9 +139,15 @@
     finally { busy = false; button.disabled = false; }
   });
   if (phase === "question") readClock();
-  else if (["submitted", "processing"].includes(phase)) startPolling();
+  else if (["submitted", "processing"].includes(phase)) { waitSince = performance.now(); startPolling(); }
   setInterval(() => {
     saveClock();
+    if (waitSince !== null && performance.now()-waitSince >= 15000) {
+      // The server expires the execution at the same budget; fetch its timeout/recovery state immediately.
+      waitSince = -1e15;
+      tell("This is taking longer than the 15-second assessment budget. Waiting for the server's timeout or result…");
+      check();
+    }
     if (phase === "recording" && recorder) {
       const seconds = Math.floor((performance.now()-recorder.started)/1000);
       $("#recording-indicator").textContent = "Recording · " + Math.floor(seconds/60) + ":" + String(seconds%60).padStart(2,"0");

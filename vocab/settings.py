@@ -68,7 +68,7 @@ def positive_budget(name, default):
     except ValueError:
         raise ImproperlyConfigured(name+" must be a positive finite number.") from None
 
-ASSESSMENT_TIMEOUT_SECONDS = positive_budget("ASSESSMENT_TIMEOUT_SECONDS", 300)
+ASSESSMENT_TIMEOUT_SECONDS = positive_budget("ASSESSMENT_TIMEOUT_SECONDS", 15)
 GENERATION_TIMEOUT_SECONDS = positive_budget("GENERATION_TIMEOUT_SECONDS", 420)
 WORKER_CLEANUP_GRACE_SECONDS = positive_budget("WORKER_CLEANUP_GRACE_SECONDS", 10)
 try:

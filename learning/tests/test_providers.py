@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import tempfile
@@ -14,27 +15,27 @@ class ProviderBase(TestCase):
         original = httpx.AsyncClient
         return patch("learning.providers.httpx.AsyncClient", side_effect=lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
 
-    def profile(self, task="JUDGE", protocol="openai", timeout=2):
+    def profile(self, task="AUDIO_ASSESS", protocol="openai", timeout=2):
         return p.Profile(task,"https://provider.test/endpoint","selected-model","placeholder-only",timeout,8192,protocol)
 
 
 class ProviderTests(ProviderBase):
 
     def test_independent_profiles_and_no_cross_origin_key_fallback(self):
-        with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","GENERATOR_API_KEY":"generator-only"},clear=True):
+        with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","GENERATOR_API_KEY":"generator-only","AUDIO_ASSESS_API_KEY":"audio-only"},clear=True):
             before = p.profile("GENERATOR").metadata()
             reviewer = p.profile("EXAMPLE_REVIEWER").metadata()
-            with patch.dict(os.environ,{"JUDGE_MODEL":"different","JUDGE_TIMEOUT_SECONDS":"3"}):
-                self.assertEqual(p.profile("JUDGE").model,"different")
+            with patch.dict(os.environ,{"AUDIO_ASSESS_MODEL":"different","AUDIO_ASSESS_TIMEOUT_SECONDS":"3"}):
+                self.assertEqual(p.profile("AUDIO_ASSESS").model,"different")
                 self.assertEqual(p.profile("GENERATOR").metadata(),before)
                 self.assertEqual(p.profile("EXAMPLE_REVIEWER").metadata(),reviewer)
-            with patch.dict(os.environ,{"JUDGE_ENDPOINT":"https://another.test/chat"}):
-                with self.assertRaises(p.StageError): p.profile("JUDGE")
-            with patch.dict(os.environ,{"JUDGE_ENDPOINT":"https://api.minimax.cn.evil.test/chat"}):
-                with self.assertRaises(p.StageError): p.profile("JUDGE")
-            with patch.dict(os.environ,{"ASR_API_KEY":"asr-only"}):
-                self.assertEqual(p.profile("ASR").key,"asr-only")
-                self.assertEqual(p.profile("JUDGE").key,"placeholder-only")
+            with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"https://another.test/chat","AUDIO_ASSESS_API_KEY":""}):
+                with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
+            with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"https://api.minimax.cn.evil.test/chat","AUDIO_ASSESS_API_KEY":""}):
+                with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")  # the lookalike origin never receives the MiniMax fallback key
+            with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"audio-only","AUDIO_ASSESS_ENDPOINT":"https://api.minimax.cn/v1/chat/completions"}):
+                self.assertEqual(p.profile("AUDIO_ASSESS").key,"audio-only")
+                self.assertEqual(p.profile("EXAMPLE_REVIEWER").key,"placeholder-only")
         # GLM's default origin requires an explicit task key; MiniMax's native origin may use the shared key.
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only"},clear=True):
             with self.assertRaises(p.StageError): p.profile("GENERATOR")
@@ -43,23 +44,24 @@ class ProviderTests(ProviderBase):
     def test_generation_and_review_dialects_defaults_and_role_exchange(self):
         response = {"choices":[{"finish_reason":"stop","message":{"content":json.dumps({"ok":True})}}]}
         seen = []
-        with patch.dict(os.environ,{"MINIMAX_API_KEY":"minimax-only","GENERATOR_API_KEY":"glm-only"}):
+        with patch.dict(os.environ,{"MINIMAX_API_KEY":"minimax-only","GENERATOR_API_KEY":"glm-only","AUDIO_ASSESS_API_KEY":"audio-only"}):
             with patch("learning.providers.request", side_effect=lambda request, **kw: seen.append(kw["json"]) or response):
                 p.chat(p.profile("GENERATOR"), "rules", {})
                 p.chat(p.profile("EXAMPLE_REVIEWER"), "rules", {})
-                p.chat(p.profile("JUDGE"), "rules", {})
+                p.chat(p.profile("AUDIO_ASSESS"), "rules", {})
                 p.chat(p.profile("DEFINITION"), "rules", {})
-        generator, reviewer, judge, definition = seen
+        generator, reviewer, audio_assess, definition = seen
         self.assertEqual(set(generator), {"model","stream","max_tokens","messages","thinking","reasoning_effort"})
         self.assertEqual(generator["thinking"],{"type":"enabled"})
         self.assertEqual(generator["reasoning_effort"],"max")
         self.assertEqual(set(reviewer), {"model","stream","max_completion_tokens","messages","thinking","reasoning_effort"})
         self.assertEqual(reviewer["thinking"],{"type":"adaptive"})
         self.assertEqual(reviewer["reasoning_effort"],"max")
-        # Unrelated tasks keep their payload exactly as before.
-        for legacy in (judge, definition):
-            self.assertEqual(set(legacy),{"model","stream","max_completion_tokens","messages"})
-            self.assertNotIn("thinking",legacy); self.assertNotIn("reasoning_effort",legacy)
+        # Unrelated chat tasks keep their payload exactly as before; audio defaults resolve to the qwen dialect.
+        self.assertEqual(set(audio_assess),{"model","stream","max_tokens","messages"})
+        self.assertNotIn("thinking",audio_assess); self.assertNotIn("reasoning_effort",audio_assess)
+        self.assertEqual(set(definition),{"model","stream","max_completion_tokens","messages"})
+        self.assertNotIn("thinking",definition); self.assertNotIn("reasoning_effort",definition)
         exchanged = {"MINIMAX_API_KEY":"minimax-only","EXAMPLE_REVIEWER_API_KEY":"glm-reviewer-only",
                      "GENERATOR_ENDPOINT":"https://api.minimax.cn/v1/chat/completions",
                      "GENERATOR_PROTOCOL":"minimax","GENERATOR_THINKING":"adaptive","GENERATOR_REASONING_EFFORT":"high",
@@ -75,35 +77,73 @@ class ProviderTests(ProviderBase):
             with self.assertRaises(p.StageError): p.profile("GENERATOR")
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"k","GENERATOR_REASONING_EFFORT":"louder"}):
             with self.assertRaises(p.StageError): p.profile("GENERATOR")
-        with patch.dict(os.environ,{"MINIMAX_API_KEY":"k","JUDGE_PROTOCOL":"anthropic"}):
-            with self.assertRaises(p.StageError): p.profile("JUDGE")
+        with patch.dict(os.environ,{"MINIMAX_API_KEY":"k","EXAMPLE_REVIEWER_PROTOCOL":"anthropic"}):
+            with self.assertRaises(p.StageError): p.profile("EXAMPLE_REVIEWER")
+        with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_PROVIDER":"anthropic"},clear=True):
+            with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
 
-    def test_asr_protocol_allowlist_excludes_chat_dialects(self):
-        with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","ASR_API_KEY":"asr-only","ASR_PROTOCOL":"zhipu"},clear=True):
-            with self.assertRaises(p.StageError) as error: p.profile("ASR")
-        self.assertEqual(error.exception.category,"configuration")
-        with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","ASR_API_KEY":"asr-only"},clear=True):
-            self.assertEqual(p.profile("ASR").protocol,"minimax")
+    def test_audio_provider_selection_defaults_and_dialect_ownership(self):
+        with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"audio-key"},clear=True):
+            qwen = p.profile("AUDIO_ASSESS")
+            self.assertEqual((qwen.protocol,qwen.model,qwen.endpoint),
+                ("qwen","qwen3.8-omni-flash","https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"))
+            with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"doubao"}):
+                doubao = p.profile("AUDIO_ASSESS")
+                self.assertEqual((doubao.protocol,doubao.model,doubao.endpoint),
+                    ("doubao","doubao-seed-2-1-lite-260915","https://ark.cn-beijing.volces.com/api/v3/chat/completions"))
+                with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"https://api.minimax.cn/v1/chat/completions"}):
+                    self.assertEqual(p.profile("AUDIO_ASSESS").key,"audio-key")  # no shared MiniMax fallback for audio origins
+        # The explicit disabled-thinking setting is adapter-owned; configuring it is rejected, never silently changed.
+        with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_THINKING":"disabled"},clear=True):
+            with self.assertRaises(p.StageError) as error: p.profile("AUDIO_ASSESS")
+            self.assertEqual(error.exception.category,"configuration")
+        with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_REASONING_EFFORT":"max"},clear=True):
+            with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
 
-    def test_native_header_vs_transcription_form(self):
+    def test_audio_request_dialects_send_wav_and_explicit_nonthinking(self):
+        payload = b"RIFFfake-wav-bytes"
+        seen = []
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":
+                json.dumps({"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
+        snapshots = {"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
         with tempfile.TemporaryDirectory() as folder:
-            audio=Path(folder)/"test.wav"; audio.write_bytes(b"sample")
-            for protocol,language,code in [("minimax","Chinese","zh"),("openai","Spanish","es")]:
-                seen=[]
-                def handler(request):
-                    seen.append(request)
-                    return httpx.Response(200,json={"text":"recognized text","base_resp":{"status_code":0}})
-                with self.transport(handler):
-                    text,metadata=p.transcribe(audio,language,self.profile("ASR",protocol))
-                request=seen[0]; body=request.content.decode()
-                self.assertEqual(text,"recognized text")
-                self.assertIn('name="file"',body); self.assertIn('name="model"',body)
-                if protocol=="minimax":
-                    self.assertEqual(request.headers.get("language"),code)
-                    self.assertNotIn('name="language"',body)
+            path=Path(folder)/"answer.wav"; path.write_bytes(payload)
+            for provider in ["qwen","doubao"]:
+                seen.clear()
+                with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":provider,"AUDIO_ASSESS_API_KEY":"k"},clear=True):
+                    with self.transport(handler):
+                        transcript,units,metadata=p.audio_assessment(snapshots,path)
+                self.assertEqual(transcript,"heard answer")
+                self.assertEqual(units[0]["outcome"],"complete")
+                self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["AUDIO_ASSESS"])
+                self.assertEqual(metadata["model"],p.AUDIO_PROVIDERS[provider]["model"])
+                body=seen[0]
+                self.assertEqual(body["response_format"],{"type":"json_object"})
+                parts=body["messages"][1]["content"]
+                self.assertEqual(parts[0]["type"],"text")
+                task=json.loads(parts[0]["text"])
+                self.assertEqual(task["expected_unit_ids"],[1]); self.assertNotIn("transcript",task)
+                encoded=base64.b64encode(payload).decode()
+                if provider=="qwen":
+                    self.assertEqual(body["reasoning_effort"],"none")
+                    self.assertNotIn("thinking",body); self.assertNotIn("service_tier",body)
+                    self.assertEqual(parts[1],{"type":"input_audio","input_audio":{"data":encoded,"format":"wav"}})
                 else:
-                    self.assertNotIn("language",request.headers)
-                    self.assertIn('name="language"',body); self.assertIn(code,body)
+                    self.assertEqual(body["thinking"],{"type":"disabled"})
+                    self.assertEqual(body["service_tier"],"default")
+                    self.assertNotIn("reasoning_effort",body)
+                    self.assertEqual(parts[1],{"type":"audio_url","audio_url":{"url":"data:audio/wav;base64,"+encoded}})
+
+    def test_assessment_rejects_missing_transcript_refusals_and_unassessable(self):
+        good={"id":1,"outcome":"complete","reason":"Okay"}
+        for data in [{"units":[good]}, {"transcript":"  ","units":[good]}, {"transcript":5,"units":[good]},
+                     {"transcript":"heard","units":[]}, {"transcript":"heard","unassessable":True}]:
+            with self.subTest(data=data):
+                with self.assertRaises(p.StageError): p.validate_assessment(data,[1])
+        transcript,units=p.validate_assessment({"transcript":" 吸收 ","units":[good]},[1])
+        self.assertEqual((transcript,units[0]["outcome"]),("吸收","complete"))
 
     def test_chat_contract_fence_reasoning_and_failure_variants(self):
         valid={"units":[{"id":1,"outcome":"complete","reason":"Complete content."}]}
@@ -133,29 +173,32 @@ class ProviderTests(ProviderBase):
         result=p.validate_units({"units":[good,{"id":2,"outcome":"incorrect","reason":"Learner left blank unanswered"}]},[1,2])
         self.assertEqual(result[1]["outcome"],"incorrect")
 
-    def test_vocabulary_judge_uses_authored_meaning_and_only_visible_context(self):
+    def test_audio_assessment_uses_authored_meaning_and_only_visible_context(self):
         legacy = {"kind":"vocabulary", "direction":"recognition", "word":"absorb",
             "explanation":"Soak up liquid and hold it.", "question_text":"The sponge absorbs the water.",
             "target_highlight":"absorbs", "native_sentence":"海绵把水吸进去并留住了。",
             "native_highlight":"把水吸进去并留住了", "reference":"海绵把水吸进去并留在里面。",
             "gloss":"海绵把水吸进去并留在里面。", "language":"Chinese", "units":1}
-        result={"units":[{"id":1,"outcome":"complete","reason":"Equivalent lexical meaning."}]}
-        with patch("learning.providers.chat",return_value=result) as chat:
-            units,metadata=p.assess(legacy,"吸收",self.profile())
-        payload=chat.call_args.args[2]
-        self.assertEqual(payload["explanation"],legacy["explanation"])
-        self.assertEqual(payload["word"],"absorb")
-        self.assertEqual(payload["transcript"],"吸收")
-        for hidden in ["reference","gloss","native_sentence","native_highlight"]:
-            self.assertNotIn(hidden,payload)
-        self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["JUDGE"])
-        with patch("learning.providers.chat",return_value=result) as chat:
-            p.assess({**legacy,"highlight_start":11},"吸收",self.profile())
-        self.assertEqual(chat.call_args.args[2]["highlight_start"],11)
-        generic={"kind":"generic","reference":"call off","units":1}
-        with patch("learning.providers.chat",return_value=result) as chat:
-            p.assess(generic,"cancel",self.profile())
-        self.assertEqual(chat.call_args.args[2]["reference"],"call off")
+        result={"transcript":"吸收","units":[{"id":1,"outcome":"complete","reason":"Equivalent lexical meaning."}]}
+        with tempfile.TemporaryDirectory() as folder:
+            recording=Path(folder)/"answer.wav"; recording.write_bytes(b"RIFF")
+            with patch("learning.providers.chat",return_value=result) as chat:
+                transcript,units,metadata=p.audio_assessment(legacy,recording,self.profile("AUDIO_ASSESS","qwen"))
+            payload=chat.call_args.args[2]
+            self.assertEqual(transcript,"吸收")
+            self.assertEqual(payload["explanation"],legacy["explanation"])
+            self.assertEqual(payload["word"],"absorb")
+            self.assertEqual(payload["expected_unit_ids"],[1])
+            for hidden in ["reference","gloss","native_sentence","native_highlight","transcript"]:
+                self.assertNotIn(hidden,payload)
+            self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["AUDIO_ASSESS"])
+            with patch("learning.providers.chat",return_value=result) as chat:
+                p.audio_assessment({**legacy,"highlight_start":11},recording,self.profile("AUDIO_ASSESS","qwen"))
+            self.assertEqual(chat.call_args.args[2]["highlight_start"],11)
+            generic={"kind":"generic","reference":"call off","units":1}
+            with patch("learning.providers.chat",return_value=result) as chat:
+                p.audio_assessment(generic,recording,self.profile("AUDIO_ASSESS","qwen"))
+            self.assertEqual(chat.call_args.args[2]["reference"],"call off")
 
     def test_invalid_pair_shape_highlights_and_answer_leak(self):
         valid={"target_sentence":"A <focus>bank</focus> is nearby.","native_sentence":"<focus>银行</focus>就在附近。"}
@@ -249,11 +292,11 @@ class ProviderTests(ProviderBase):
                 self.assertIn("repeated an old sentence",str(error.exception))
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only"},clear=True):
             for value in ["nan","-1","inf"]:
-                with patch.dict(os.environ,{"JUDGE_TIMEOUT_SECONDS":value}):
-                    with self.assertRaises(p.StageError): p.profile("JUDGE")
+                with patch.dict(os.environ,{"AUDIO_ASSESS_TIMEOUT_SECONDS":value,"AUDIO_ASSESS_API_KEY":"k"}):
+                    with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
             for endpoint in ["https://[","https://api.minimax.cn:bad/chat","not-a-url"]:
-                with patch.dict(os.environ,{"JUDGE_ENDPOINT":endpoint}):
-                    with self.assertRaises(p.StageError): p.profile("JUDGE")
+                with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":endpoint,"AUDIO_ASSESS_API_KEY":"k"}):
+                    with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
 
     def test_redirect_and_inactivity_trickle_are_bounded(self):
         with self.transport(lambda request:httpx.Response(302,headers={"Location":"https://evil.test"})):

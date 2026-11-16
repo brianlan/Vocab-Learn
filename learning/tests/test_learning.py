@@ -45,6 +45,9 @@ class LearningTests(TestCase):
         self.addCleanup(self.folder.cleanup)
         self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
         self.override.enable(); self.addCleanup(self.override.disable)
+        self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+        self.environ.start(); self.addCleanup(self.environ.stop)
         self.user = get_user_model().objects.create_user("learner", password="test-password")
         self.other = get_user_model().objects.create_user("other", password="test-password")
         self.deck = Deck.objects.create(owner=self.user, name="Everyday ideas")
@@ -186,11 +189,11 @@ class LearningTests(TestCase):
         self.vocabulary()
         self.generic();a=review.submit(self.present(),"speak",1,"unused")
         deadline=a.deadline
-        with patch("learning.work.timezone.now",return_value=a.submitted_at+timedelta(seconds=100)):
+        with patch("learning.work.timezone.now",return_value=a.submitted_at+timedelta(seconds=10)):
             receipt=work.claim_work()
         self.assertEqual(receipt,("assessment",a.pk,a.claim,deadline))
         self.assertEqual(GenerationJob.objects.get().state,"queued")
-        self.assertEqual(deadline,a.submitted_at+timedelta(seconds=300))
+        self.assertEqual(deadline,a.submitted_at+timedelta(seconds=15))
 
     def test_explicit_preparation_requeue_is_scoped_and_idempotent(self):
         def failed(card):
@@ -486,28 +489,29 @@ class LearningTests(TestCase):
         self.generic(question="I had to **{{blank}}** because I was <u>{{blank}}</u>.",answer="call off; feeling unwell")
         p=self.present(); self.assertEqual(p.snapshot["units"],2)
         a=self.spoken(p); before=Card.objects.get(pk=p.card_id).fsrs
-        with patch("learning.providers.transcribe",return_value=("cancel, feeling unwell",{})),patch("learning.providers.assess",side_effect=StageError("JUDGE","Missing unit")):
+        with patch("learning.providers.audio_assessment",side_effect=StageError("AUDIO_ASSESS","Missing unit")):
             try: work.process_assessment(a.pk,a.claim)
             except StageError as e: work.fail("assessment",a.pk,a.claim,e)
-        a.refresh_from_db(); self.assertEqual(a.state,"failed"); self.assertEqual(a.transcript,"cancel, feeling unwell")
+        a.refresh_from_db(); self.assertEqual(a.state,"failed"); self.assertEqual(a.transcript,"")
         self.assertEqual(Card.objects.get(pk=p.card_id).fsrs,before)
 
-    def test_pipeline_normalizes_reuses_transcript_and_cleans_on_commit(self):
-        """AUDIO-NORMALIZE / AUDIO-COMMIT / RESTORE-TRANSCRIPT."""
+    def test_pipeline_normalizes_assesses_and_cleans_on_commit(self):
+        """AUDIO-NORMALIZE / AUDIO-COMMIT / RESTORE-AUDIO-REQUIRED."""
         self.generic(); a=self.spoken(self.present())
-        units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
-        with patch("learning.providers.transcribe",return_value=("four",{"model":"fake-asr"})) as asr,patch("learning.providers.assess",side_effect=StageError("JUDGE","Temporary failure")):
+        with patch("learning.providers.audio_assessment",side_effect=StageError("AUDIO_ASSESS","Temporary failure")) as assessment:
             with self.assertRaises(StageError): work.process_assessment(a.pk,a.claim)
-        a.refresh_from_db(); self.assertEqual(a.transcript,"four")
+        self.assertEqual(assessment.call_count,1)
+        a.refresh_from_db(); self.assertEqual(a.transcript,"")
         self.assertTrue((Path(self.folder.name)/a.audio_name).exists())
         with wave.open(str(Path(self.folder.name)/(a.audio_name+".wav")),"rb") as normalized:
             self.assertEqual((normalized.getnchannels(),normalized.getframerate(),normalized.getsampwidth()),(1,16000,2))
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Temporary"))
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary"))
         a=review.retry_attempt(a); a.state="processing"; a.save()
-        with patch("learning.providers.transcribe") as asr,patch("learning.providers.assess",return_value=(units,{"model":"fake-judge"})):
+        units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
+        with patch("learning.providers.audio_assessment",return_value=("four",units,{"model":"fake-audio"})) as assessment:
             work.process_assessment(a.pk,a.claim)
-            asr.assert_not_called()
-        a.refresh_from_db(); self.assertEqual((a.state,a.grade),("assessed","E"))
+            self.assertEqual(assessment.call_count,1)  # exactly one model request for this execution
+        a.refresh_from_db(); self.assertEqual((a.state,a.grade,a.transcript,a.judge_provenance["model"]),("assessed","E","four","fake-audio"))
         self.assertFalse((Path(self.folder.name)/a.audio_name).exists())
         self.assertEqual(ScoredReview.objects.count(),1)
 
@@ -548,7 +552,8 @@ class LearningTests(TestCase):
         a.state="failed"; a.audio_expires_at=timezone.now()-timedelta(seconds=1); a.save()
         self.assertEqual(review.retry_attempt(a).state,"failed")
         a.transcript="four"; a.save()
-        self.assertEqual(review.retry_attempt(a).state,"submitted")
+        # A saved transcript never re-enables a retry once the recording is gone.
+        self.assertEqual(review.retry_attempt(a).state,"failed")
 
     def test_distinct_attempts_and_source_edit_fence(self):
         """TWO-ATTEMPTS / SOURCE-EDIT."""
@@ -567,32 +572,35 @@ class LearningTests(TestCase):
     def test_pipeline_closes_stale_attempt_before_more_paid_work(self):
         self.generic(); first=self.spoken(self.present()); second=self.spoken(review.next_question(self.user))
         review.commit_grade(first.pk,first.claim,"E",[],"First committed")
-        with patch("learning.providers.transcribe") as asr,patch("learning.providers.assess") as judge:
+        with patch("learning.providers.audio_assessment") as assessment:
             work.process_assessment(second.pk,second.claim)
         second.refresh_from_db()
         self.assertEqual(second.state,"closed_unassessed")
-        asr.assert_not_called();judge.assert_not_called()
+        assessment.assert_not_called()
         self.assertEqual(ScoredReview.objects.count(),1)
 
-    def test_profile_dispatch_snapshot_retry_and_cached_asr_provenance(self):
+    def test_profile_dispatch_snapshot_retry_and_frozen_audio_requirement(self):
         import os
-        self.generic();a=self.spoken(self.present());a.transcript="four";a.asr_provenance={"model":"original-asr"};a.save()
+        self.generic();a=self.spoken(self.present());a.asr_provenance={"model":"original-asr"};a.save()
         seen=[]
-        def interrupted(profile,*args):
+        def interrupted(profile,*args,**kwargs):
             seen.append(profile.model)
-            os.environ["JUDGE_MODEL"]="judge-next"
-            raise StageError("JUDGE","Controlled interruption","transport")
-        with patch.dict(os.environ,{"JUDGE_MODEL":"judge-dispatched","MINIMAX_API_KEY":"placeholder-only"}),patch("learning.providers.chat",side_effect=interrupted):
+            os.environ["AUDIO_ASSESS_MODEL"]="audio-next"
+            raise StageError("AUDIO_ASSESS","Controlled interruption","transport")
+        with patch.dict(os.environ,{"AUDIO_ASSESS_MODEL":"audio-dispatched","AUDIO_ASSESS_API_KEY":"test-only",
+                "AUDIO_ASSESS_ENDPOINT":"https://provider.test/endpoint"}),patch("learning.providers.chat",side_effect=interrupted):
             with self.assertRaises(StageError):work.process_assessment(a.pk,a.claim)
-        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"judge-dispatched")
-        self.assertEqual(seen,["judge-dispatched"])
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Temporary","transport"))
+        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"audio-dispatched")
+        self.assertEqual(seen,["audio-dispatched"])
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary","transport"))
         a=review.retry_attempt(a);a.state="processing";a.save()
-        units={"units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]}
-        with patch.dict(os.environ,{"JUDGE_MODEL":"judge-retry","MINIMAX_API_KEY":"placeholder-only"}),patch("learning.providers.chat",return_value=units),patch("learning.providers.transcribe") as asr:
+        result={"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]}
+        with patch.dict(os.environ,{"AUDIO_ASSESS_MODEL":"audio-retry","AUDIO_ASSESS_API_KEY":"test-only",
+                "AUDIO_ASSESS_ENDPOINT":"https://provider.test/endpoint"}),patch("learning.providers.chat",return_value=result) as chat:
             work.process_assessment(a.pk,a.claim)
-        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"judge-retry")
-        self.assertEqual(a.asr_provenance,{"model":"original-asr"});asr.assert_not_called()
+            self.assertEqual(chat.call_count,1)  # one paid request per execution
+        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"audio-retry")
+        self.assertEqual(a.asr_provenance,{"model":"original-asr"})
 
     def test_forgot_timeline_and_preserved_scheduler_memory(self):
         """SRS-TIMELINE / DELAY-ANCHOR / NEXT-REVIEW."""
@@ -720,7 +728,7 @@ class LearningTests(TestCase):
         card=self.generic(question="Why did you postpone the meeting?",answer="To give everyone more time to prepare.")
         p=self.present();self.assertEqual(p.snapshot["units"],1)
         a=self.spoken(p)
-        with patch("learning.providers.transcribe",return_value=(card.answer,{})),patch("learning.providers.assess",return_value=([{"id":1,"outcome":"complete","reason":"Complete sentence"}],{})):
+        with patch("learning.providers.audio_assessment",return_value=(card.answer,[{"id":1,"outcome":"complete","reason":"Complete sentence"}],{})):
             work.process_assessment(a.pk,a.claim)
         a.refresh_from_db();self.assertEqual(a.grade,"E")
         path=Path(self.folder.name)/"invalid.audio";path.write_bytes(b"This is not an audio file")
@@ -963,7 +971,7 @@ class LearningTests(TestCase):
         card.refresh_from_db()
         before=(card.fsrs,card.due,card.collection,card.streak,card.direction_index,card.review_count,card.progress_version)
         a=self.spoken(p)
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Controlled outage","transport"))
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Controlled outage","transport"))
         a=review.retry_attempt(a);review.exit_attempt(a)
         card.refresh_from_db();at=card.deferred_until
         for action in ["skip","speak"]:
@@ -1044,18 +1052,18 @@ class LearningTests(TestCase):
         self.assertEqual(review.commit_grade(a.pk,a.claim,"E",[],"old").state,"closed_unassessed")
         self.assertEqual(ScoredReview.objects.count(),0)
 
-    def test_restore_without_audio_and_with_saved_transcript(self):
-        """RESTORE-NO-AUDIO / RESTORE-TRANSCRIPT logical states; real backup drill is separate."""
+    def test_restore_without_audio_rejects_transcript_only_retry(self):
+        """RESTORE-NO-AUDIO logical state; real backup drill is separate."""
         self.generic(); a=self.spoken(self.present()); work.cleanup_attempt_audio(a)
         with self.assertRaises(StageError): work.process_assessment(a.pk,a.claim)
         work.fail("assessment",a.pk,a.claim,StageError("audio","Missing recording"))
         self.assertEqual(review.retry_attempt(a).state,"failed")
         a.refresh_from_db(); a.transcript="four"; a.save()
-        self.assertEqual(review.retry_attempt(a).state,"submitted")
+        self.assertEqual(review.retry_attempt(a).state,"failed")
 
     def test_timing_frozen_through_retry_and_schedule_uses_receipt(self):
         self.generic(); a=self.spoken(self.present(),11); anchor=a.submitted_at
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","temporary"))
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","temporary"))
         a=review.retry_attempt(a)
         self.assertEqual((a.duration,a.submitted_at),(11,anchor))
         result=review.commit_grade(a.pk,a.claim,"B",[],"wrong")
@@ -1067,17 +1075,18 @@ class LearningTests(TestCase):
         units=[{"id":1,"outcome":"complete","reason":"Complete fixture"}]
         for index,(grade,duration) in enumerate([("E",2),("D",90)],1):
             self.generic(question=f"Database retry {grade} fixture?");a=self.spoken(self.present(),duration)
-            a.transcript="four";a.save();calls=[]
+            calls=[]
             def save(card,*args,**kwargs):
                 calls.append(card.pk)
                 if len(calls)==1:raise OperationalError("database is locked")
                 return original(card,*args,**kwargs)
-            with patch("learning.providers.assess",return_value=(units,{})) as judge,patch.object(Card,"save",save),patch(
+            with patch("learning.providers.audio_assessment",return_value=("four",units,{})) as assessment,patch.object(Card,"save",save),patch(
                     "learning.review.Scheduler",wraps=Scheduler) as schedule,patch("learning.review.random.randint",return_value=2) as jitter:
                 work.process_assessment(a.pk,a.claim)
-            self.assertEqual(judge.call_count,1);self.assertEqual(schedule.call_count,1)
+            self.assertEqual(assessment.call_count,1);self.assertEqual(schedule.call_count,1)
             self.assertEqual(jitter.call_count,1 if grade=="D" else 0)
             a.refresh_from_db();self.assertEqual((a.state,a.grade),("assessed",grade))
+            self.assertEqual(a.transcript,"four")
             if grade=="D":self.assertEqual(a.next_due,a.submitted_at+timedelta(days=2))
             self.assertEqual(ScoredReview.objects.count(),index)
 

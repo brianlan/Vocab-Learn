@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -203,22 +204,23 @@ class ConcurrencyTests(TransactionTestCase):
             def do_POST(inner):
                 body=json.loads(inner.rfile.read(int(inner.headers["Content-Length"])))
                 requests.append(body)
-                transcript=json.loads(body["messages"][1]["content"])["transcript"]
+                text=next(part["text"] for part in body["messages"][1]["content"] if part["type"]=="text")
                 inner.send_response(200); inner.send_header("Content-Type","application/json"); inner.end_headers()
-                if transcript=="stall":
+                if "Stall fixture" in text:
                     try:
                         while not stop.wait(.04): inner.wfile.write(b" "); inner.wfile.flush()
                     except (BrokenPipeError,ConnectionResetError): pass
                 else:
                     time.sleep(1)
-                    inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps({"units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]})}}]}).encode())
+                    inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps(
+                        {"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]})}}]}).encode())
             def log_message(inner,*args): pass
         server=ThreadingHTTPServer(("127.0.0.1",0),Handler); server.daemon_threads=True
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        Card.objects.filter(pk=self.card.pk).update(question="Stall fixture?")
         a=review.submit(self.presentation(),"speak",1,"missing")
         folder=tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
         audio_dir=Path(folder.name)
-        a.transcript="" if conversion else "stall"
         a.audio_name="fault.audio"
         (audio_dir/a.audio_name).write_bytes(audio_bytes())
         a.save()
@@ -233,13 +235,15 @@ class ConcurrencyTests(TransactionTestCase):
         def enqueue():
             try:
                 time.sleep(4)
-                b=review.submit(p,"speak",1,"missing")
-                b.transcript="four"; b.save(); created.append(b.pk)
+                name=uuid.uuid4().hex+".audio"
+                (audio_dir/name).write_bytes(audio_bytes())
+                (audio_dir/(name+".wav")).write_bytes(audio_bytes())  # normalized derivative ready; conversion variant needs no ffmpeg here
+                b=review.submit(p,"speak",1,name); created.append(b.pk)
             finally: connections.close_all()
         enqueuer=threading.Thread(target=enqueue)
         started=time.monotonic(); enqueuer.start()
         try:
-            with patch.dict(os.environ,{"JUDGE_ENDPOINT":f"http://127.0.0.1:{server.server_port}/judge","JUDGE_API_KEY":"test-only", "ALLOW_INSECURE_PROVIDER_HTTP":"1",
+            with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":f"http://127.0.0.1:{server.server_port}/judge","AUDIO_ASSESS_API_KEY":"test-only", "ALLOW_INSECURE_PROVIDER_HTTP":"1",
                            "PATH":str(audio_dir)+os.pathsep+os.environ["PATH"] if conversion else os.environ["PATH"]}),override_settings(AUDIO_DIR=audio_dir):
                 run_worker(once=True,concurrency=1)
             enqueuer.join(timeout=2)

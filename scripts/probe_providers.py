@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from learning.providers import assess, generate, transcribe, StageError
+from learning.providers import audio_assessment, generate, StageError
 
 
 def snapshot(kind, direction, question, reference, explanation="", word="", units=1, language=""):
@@ -66,8 +66,16 @@ def run(audio_dir, task="all"):
         except StageError as error:
             record={"name":name,"status":"blocked","seconds":round(time.monotonic()-started,2),"stage":error.stage,"message":str(error)}
         results.append(record); print(name,record["status"],record["seconds"],flush=True)
-    for name,context,response,expected in cases if task in ["all", "judge"] else []:
-        check(name,lambda c=context,t=response:assess(c,t),expected)
+    for name,context,expected_utterance,expected in cases if task in ["all", "audio"] else []:
+        audio_path=audio_dir/(name+".wav") if audio_dir else None
+        if audio_path is None or not audio_path.is_file():
+            results.append({"name":name,"status":"missing-audio","expected":expected,
+                "expected_utterance":expected_utterance,"result":None,"profile":None})
+            print(name,"missing-audio",flush=True); continue
+        def probe(context=context,audio_path=audio_path):
+            transcript,units,profile=audio_assessment(context,audio_path)
+            return units,{**profile,"transcript":transcript,"expected_utterance":expected_utterance}
+        check(name,probe,expected)
     for target,native,word in ([("English","Chinese","misunderstanding"),("English","Spanish","misunderstanding"),("Spanish","Chinese","malentendido")] if task in ["all", "generator"] else []):
         check("GENERATOR-"+target+"-"+native,lambda t=target,n=native,w=word:generate({"word":w,"target_language":t,"native_language":n,
             "explanation":"A disagreement or problem caused when people do not understand each other correctly."}))
@@ -83,19 +91,16 @@ def run(audio_dir, task="all"):
                                  ("absorptive","Having the ability or capacity to absorb liquid.")]:
             check("GENERATOR-WORD-CLASS-"+word.upper(),lambda w=word,e=explanation:generate({"word":w,
                 "target_language":"English","native_language":"Chinese","explanation":e}))
-    if audio_dir and task in ["all", "asr"]:
-        for language in ["English","Spanish","Chinese"]:
-            check("ASR-"+language,lambda l=language:transcribe(audio_dir/(l+".wav"),l))
     return {"status":"passed" if all(r["status"]=="passed" for r in results) else "needs-review", "results":results,
-            "limits":"Representative fixtures only. Generation checks include the Example Quality Review; reviewer verdicts are not linguistic ground truth. Structural generation checks require sense/alignment review; synthetic audio is not physical-microphone or broad language-accuracy evidence."}
+            "limits":"Representative fixtures only; each audio case requires audio_dir/<CASE>.wav recorded speech and pauses on missing files. Generation checks include the Example Quality Review; reviewer verdicts are not linguistic ground truth. Structural generation checks require sense/alignment review; synthetic audio is not physical-microphone or broad language-accuracy evidence. Transcript fidelity and grading disagreements must be reviewed separately from the recorded status."}
 
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live",action="store_true",help="Acknowledge that these calls use configured provider credentials and incur charges.")
-    parser.add_argument("--audio-dir",type=Path,help="Optional English.wav, Spanish.wav and Chinese.wav speech fixtures.")
+    parser.add_argument("--audio-dir",type=Path,help="Directory of case-named recordings, e.g. GENERIC-MULTI.wav for spoken answers.")
     parser.add_argument("--output",type=Path,required=True)
-    parser.add_argument("--task",choices=["all", "judge", "generator", "asr"],default="all")
+    parser.add_argument("--task",choices=["all", "audio", "generator"],default="all")
     options=parser.parse_args()
     if not options.live: parser.error("Pass --live to run paid model calls.")
     report=run(options.audio_dir, options.task)

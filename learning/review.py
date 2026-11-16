@@ -260,7 +260,8 @@ def retry_attempt(a):
         return exit_attempt(a)
     if a.duration is None or a.error_stage == "timing":
         return a
-    if not a.transcript and (not a.audio_name or a.audio_expires_at <= timezone.now() or not (settings.AUDIO_DIR/a.audio_name).is_file()):
+    # Audio-only assessment: even legacy transcript-only attempts cannot retry without their recording.
+    if not a.audio_name or a.audio_expires_at <= timezone.now() or not (settings.AUDIO_DIR/a.audio_name).is_file():
         a.error = "This recording is missing or expired. Continue unassessed; a later review accepts a new recording."
         a.save(update_fields=["error"])
         return a
