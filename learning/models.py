@@ -4,6 +4,13 @@ from django.db import models
 from django.utils import timezone
 
 
+class LearnerPreferences(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    selection_add_enabled = models.BooleanField(default=True)
+    target_language = models.CharField(max_length=12, default="English")
+    native_language = models.CharField(max_length=12, default="Chinese")
+
+
 class Deck(models.Model):
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     name = models.CharField(max_length=160)

@@ -1,0 +1,11 @@
+{% extends 'learning/base.html' %}
+{% block title %}Settings · Vocab Learn{% endblock %}
+{% block content %}
+<header class="page-heading compact"><span class="eyebrow">YOUR ACCOUNT</span><h1>Settings.</h1></header>
+<section class="panel form-panel">
+<h2>Selection add</h2>
+<p class="muted">Select a word or phrase in learning content to add it to a deck. Only the selected expression is saved, without its reading context.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button class="button primary">Save settings <span>↗</span></button></form>
+<p class="quiet small">Your preferences apply across devices. The last-used deck is remembered only in this browser.</p>
+</section>
+{% endblock %}

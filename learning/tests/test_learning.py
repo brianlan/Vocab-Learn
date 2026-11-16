@@ -313,7 +313,7 @@ class LearningTests(TestCase):
         p.save(update_fields=["snapshot"])
         review.submit(p,"skip")
         html=self.client.get(reverse("status",args=[p.pk])).json()["back_html"]
-        self.assertIn('<h2 class="answer">misunderstanding</h2>',html)
+        self.assertIn('<h2 class="answer" data-selection-region data-selection-language="English">misunderstanding</h2>',html)
         self.assertIn(card.explanation,html)
         self.assertNotIn("A legacy generated native definition",html)
         p.refresh_from_db();self.assertEqual(p.snapshot["gloss"],"A legacy generated native definition")

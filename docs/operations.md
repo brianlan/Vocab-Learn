@@ -56,6 +56,11 @@ Migration `0008_example_highlight_positions` adds and backfills the selected pos
 Migration `0010_structured_vocabulary_details` adds three Vocabulary teaching properties. It does not rewrite sources
 or backfill content automatically. Apply the reviewed [field extraction](#vocabulary-field-extraction) separately.
 
+Migration 0011 adds learner preferences only. Existing accounts use enabled/English→Chinese defaults without a backfill;
+their own Settings save creates the row. Cards, schedules, examples, jobs and frozen history are untouched. This is a
+development change until an explicit production release; use the ordinary live-database upgrade procedure, never a
+development database replacement.
+
 ## Docker Compose and private LAN HTTPS
 
 ```sh
@@ -124,6 +129,12 @@ docker compose exec web python manage.py createsuperuser
 ```
 
 The trusted administrator can use `/admin/` for Django user administration. Deck/Card admin views are read-only; learner-facing mutations apply source, history and scheduling rules. Password changes use Django's hashing and session invalidation. For noninteractive account creation, `createlearner NAME --password-env VARIABLE_NAME` reads a password from a named process environment variable without putting its value in command arguments.
+
+Learners use **Settings** in their account area to enable/disable [selection add](specs/selection-add.md) and save a default
+language pair. These are personal learning preferences, not provider/key controls. They apply across devices on page load;
+disabling is also enforced by every selection-create request from an older page. The last successful destination Deck
+stays browser-local and account-scoped. Blocked storage uses page-local memory; clearing browser storage forgets only the
+destination, not cards or account preferences. Reload to refresh active Deck choices after changes in another tab.
 
 ### Five independent model tasks
 

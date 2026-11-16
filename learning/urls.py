@@ -5,6 +5,8 @@ urlpatterns = [
     path("api/v1/decks/<int:deck_id>/vocabulary-cards/", api.create_vocabulary, name="api_vocabulary_create"),
     path("api/v1/vocabulary-cards/<int:card_id>/", api.vocabulary, name="api_vocabulary"),
     path("", views.dashboard, name="dashboard"), path("health/", views.health, name="health"),
+    path("settings/", views.personal_settings, name="settings"),
+    path("selection-add/", views.selection_create, name="selection_create"),
     path("decks/", views.library, name="library"), path("decks/<int:deck_id>/", views.deck_view, name="deck"),
     path("decks/<int:deck_id>/edit/", views.deck_edit, name="deck_edit"),
     path("decks/<int:deck_id>/archive/", views.deck_archive, name="deck_archive"),
