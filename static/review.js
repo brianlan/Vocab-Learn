@@ -7,7 +7,8 @@
   const csrf = () => document.querySelector("input[name=csrfmiddlewaretoken]").value;
   let phase = card.dataset.state, recorder = null, stream = null, acquisition = 0;
   let frozenBlob = null, frozenDuration = null, frozenAction = null, polling = null;
-  let baseElapsed = 0, excluded = 0, waitStart = null, clockLost = false, waitSince = null;
+  let baseElapsed = 0, excluded = 0, waitStart = null, clockLost = false;
+  let stoppedAt = null, checked15 = false, checking = false;
   const started = performance.now();
   let lastPayload = "", busy = false;
   const tell = message => { $("#technical-message").textContent = message; $("#technical-message").hidden = !message; };
@@ -80,6 +81,8 @@
   function stop() {
     if (phase !== "recording") return;
     frozenDuration = elapsed(); rememberPending(); phase = "uploading"; frontControls();
+    // The issue's 15-second budget is measured from here, through upload and server processing.
+    stoppedAt = performance.now(); checked15 = false;
     $("#recording-indicator").textContent = "Saving your fixed response…";
     recorder.stop();
   }
@@ -102,8 +105,8 @@
     const collection = document.querySelector("[data-collection-label]");
     if (collection && data.collection) { collection.textContent = data.collection === "Forgot" ? "Forgot collection" : "Normal review"; collection.classList.toggle("warm", data.collection === "Forgot"); }
     try { localStorage.removeItem(key); } catch (_) { /* Submitted timing is durable on the server. */ }
-    if (["submitted", "processing"].includes(phase)) { if (waitSince === null) waitSince = performance.now(); startPolling(); }
-    else { waitSince = null; clearInterval(polling); polling = null; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
+    if (["submitted", "processing"].includes(phase)) startPolling();
+    else { clearInterval(polling); polling = null; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
   }
   function reconnect(message) {
     tell(message + " The server outcome is unconfirmed. Check status or retry the same request.");
@@ -115,11 +118,17 @@
     const body = new FormData(); body.append("action", action);
     if (action === "speak") {
       body.append("audio", frozenBlob, "response.webm"); body.append("duration", String(frozenDuration));
+      if (stoppedAt !== null) body.append("budget", String((performance.now()-stoppedAt)/1000));
     }
     phase = "uploading"; frontControls();
     try { show(await api(card.dataset.actionUrl, body)); } catch (error) { reconnect(error.message); }
   }
-  async function check() { try { show(await api(card.dataset.statusUrl)); } catch (error) { reconnect(error.message); } }
+  async function check() {
+    if (checking) return;
+    checking = true;
+    try { show(await api(card.dataset.statusUrl)); } catch (error) { reconnect(error.message); }
+    finally { checking = false; }
+  }
   function startPolling() { if (!polling) polling = setInterval(check, 1200); }
   card.addEventListener("click", async event => {
     const button = event.target.closest("[data-action]");
@@ -130,7 +139,11 @@
     if (action === "stop") { stop(); return; }
     if (["skip", "forgot"].includes(action) && phase === "question") { saveClock(); submit(action); return; }
     if (action === "check") { check(); return; }
-    if (action === "resend") { if (frozenAction) submit(frozenAction); else check(); return; }
+    if (action === "resend") {
+      // A resent fixed submission restarts its own budget measurement.
+      if (frozenAction) { stoppedAt = performance.now(); checked15 = false; submit(frozenAction); } else check();
+      return;
+    }
     busy = true; button.disabled = true;
     try {
       if (action === "retry") show(await api(card.dataset.retryUrl, new URLSearchParams()));
@@ -139,13 +152,15 @@
     finally { busy = false; button.disabled = false; }
   });
   if (phase === "question") readClock();
-  else if (["submitted", "processing"].includes(phase)) { waitSince = performance.now(); startPolling(); }
+  else if (["submitted", "processing"].includes(phase)) startPolling();
   setInterval(() => {
     saveClock();
-    if (waitSince !== null && performance.now()-waitSince >= 15000) {
-      // The server expires the execution at the same budget; fetch its timeout/recovery state immediately.
-      waitSince = -1e15;
-      tell("This is taking longer than the 15-second assessment budget. Waiting for the server's timeout or result…");
+    if (stoppedAt !== null && !checked15 && performance.now()-stoppedAt >= 15000 &&
+        !["assessed", "skipped", "closed_unassessed"].includes(phase)) {
+      // One-shot watchdog from Stop & check: even a hung upload or stalled response exposes recovery.
+      checked15 = true;
+      tell("This is taking longer than the 15-second assessment budget. You can keep waiting or use the recovery options.");
+      $("#reconnect-controls").hidden = false;
       check();
     }
     if (phase === "recording" && recorder) {

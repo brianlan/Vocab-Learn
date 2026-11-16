@@ -378,6 +378,12 @@ def action(request, presentation_id):
                 duration = None
         except ValueError:
             pass
+        try:
+            upload_elapsed = float(request.POST.get("budget", ""))
+            if not math.isfinite(upload_elapsed) or upload_elapsed < 0:
+                upload_elapsed = None
+        except ValueError:
+            upload_elapsed = None
         name = uuid.uuid4().hex+".audio"
         try:
             fd = os.open(settings.AUDIO_DIR/name, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)
@@ -391,7 +397,7 @@ def action(request, presentation_id):
                 os.fsync(directory)
             finally:
                 os.close(directory)
-            a = review.submit(p, choice, duration, name)
+            a = review.submit(p, choice, duration, name, upload_elapsed)
         except Exception:
             (settings.AUDIO_DIR/name).unlink(missing_ok=True)
             raise

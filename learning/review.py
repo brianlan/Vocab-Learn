@@ -141,15 +141,19 @@ def valid_presentation_for_restart(p):
 
 
 @transaction.atomic
-def submit(p, action, duration=None, audio_name=""):
+def submit(p, action, duration=None, audio_name="", upload_elapsed=None):
     p = Presentation.objects.get(pk=p.pk)
     existing = Attempt.objects.filter(presentation=p).first()
     if existing:
         return existing
     now = timezone.now()
+    # The issue's 15-second budget starts at Stop & check: the upload that already elapsed reduces it.
+    budget_seconds = settings.ASSESSMENT_TIMEOUT_SECONDS
+    if upload_elapsed is not None:
+        budget_seconds = max(1.0, budget_seconds - min(upload_elapsed, 60.0))
     a = Attempt.objects.create(presentation=p, action=action, state="submitted", submitted_at=now,
         duration=duration, audio_name=audio_name, audio_expires_at=now+timedelta(hours=24) if action == "speak" else None,
-        deadline=now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS) if action == "speak" else None)
+        deadline=now+timedelta(seconds=budget_seconds) if action == "speak" else None)
     if not valid_presentation(p, now):
         a.state, a.error = "closed_unassessed", "This presentation is stale or no longer eligible. Your progress was preserved."
         defer(p)

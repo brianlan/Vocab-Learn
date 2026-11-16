@@ -93,6 +93,15 @@ class ProviderTests(ProviderBase):
                     ("doubao","doubao-seed-2-1-lite-260915","https://ark.cn-beijing.volces.com/api/v3/chat/completions"))
                 with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"https://api.minimax.cn/v1/chat/completions"}):
                     self.assertEqual(p.profile("AUDIO_ASSESS").key,"audio-key")  # no shared MiniMax fallback for audio origins
+        # Compose sets optional overrides to explicit empty strings; they must resolve to provider defaults.
+        for provider,model,endpoint in [("qwen","qwen3.8-omni-flash","https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
+                                        ("doubao","doubao-seed-2-1-lite-260915","https://ark.cn-beijing.volces.com/api/v3/chat/completions")]:
+            with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_PROVIDER":provider,
+                    "AUDIO_ASSESS_ENDPOINT":"","AUDIO_ASSESS_MODEL":""},clear=True):
+                resolved = p.profile("AUDIO_ASSESS")
+                self.assertEqual((resolved.protocol,resolved.model,resolved.endpoint),(provider,model,endpoint))
+        with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_PROVIDER":""},clear=True):
+            self.assertEqual(p.profile("AUDIO_ASSESS").protocol,"qwen")
         # The explicit disabled-thinking setting is adapter-owned; configuring it is rejected, never silently changed.
         with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_THINKING":"disabled"},clear=True):
             with self.assertRaises(p.StageError) as error: p.profile("AUDIO_ASSESS")
@@ -126,15 +135,18 @@ class ProviderTests(ProviderBase):
                 task=json.loads(parts[0]["text"])
                 self.assertEqual(task["expected_unit_ids"],[1]); self.assertNotIn("transcript",task)
                 encoded=base64.b64encode(payload).decode()
+                # Both dialects send input_audio WAV parts; Qwen takes a data URI, Doubao raw base64.
+                self.assertEqual(parts[1]["type"],"input_audio")
+                self.assertEqual(parts[1]["input_audio"]["format"],"wav")
                 if provider=="qwen":
                     self.assertEqual(body["reasoning_effort"],"none")
                     self.assertNotIn("thinking",body); self.assertNotIn("service_tier",body)
-                    self.assertEqual(parts[1],{"type":"input_audio","input_audio":{"data":encoded,"format":"wav"}})
+                    self.assertEqual(parts[1]["input_audio"]["data"],"data:audio/wav;base64,"+encoded)
                 else:
                     self.assertEqual(body["thinking"],{"type":"disabled"})
                     self.assertEqual(body["service_tier"],"default")
                     self.assertNotIn("reasoning_effort",body)
-                    self.assertEqual(parts[1],{"type":"audio_url","audio_url":{"url":"data:audio/wav;base64,"+encoded}})
+                    self.assertEqual(parts[1]["input_audio"]["data"],encoded)
 
     def test_assessment_rejects_missing_transcript_refusals_and_unassessable(self):
         good={"id":1,"outcome":"complete","reason":"Okay"}

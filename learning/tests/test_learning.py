@@ -195,6 +195,34 @@ class LearningTests(TestCase):
         self.assertEqual(GenerationJob.objects.get().state,"queued")
         self.assertEqual(deadline,a.submitted_at+timedelta(seconds=15))
 
+    def test_upload_elapsed_reduces_and_legacy_deadlines_never_extend_the_budget(self):
+        decks=[]
+        for index in range(5):
+            deck=Deck.objects.create(owner=self.user,name=f"Budget {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Budget fixture {index}?"})
+            decks.append(deck)
+        first=review.submit(review.next_question(self.user,decks[0]),"speak",2,"unused",10.0)
+        self.assertEqual(first.deadline,first.submitted_at+timedelta(seconds=5))
+        second=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused",500.0)
+        self.assertEqual(second.deadline,second.submitted_at+timedelta(seconds=1))
+        third=review.submit(review.next_question(self.user,decks[2]),"speak",2,"unused")
+        self.assertEqual(third.deadline,third.submitted_at+timedelta(seconds=15))
+        # A legacy nonterminal attempt with an old long deadline is clamped at claim time.
+        legacy=review.submit(review.next_question(self.user,decks[3]),"speak",2,"unused")
+        Attempt.objects.filter(pk=legacy.pk).update(deadline=legacy.submitted_at+timedelta(seconds=300))
+        for attempt in [first,second,third]:
+            review.exit_attempt(attempt)
+        receipt=work.claim_work()
+        self.assertEqual(receipt[1],legacy.pk)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.deadline,legacy.submitted_at+timedelta(seconds=15))
+        review.exit_attempt(legacy)
+        # An already-past ceiling is skipped by the claim and expires through the normal fencing.
+        expired=review.submit(review.next_question(self.user,decks[4]),"speak",2,"unused",14.0)
+        Attempt.objects.filter(pk=expired.pk).update(deadline=timezone.now()-timedelta(seconds=1))
+        self.assertIsNone(work.claim_work())
+        self.assertEqual(Attempt.objects.get(pk=expired.pk).state,"submitted")
+
     def test_explicit_preparation_requeue_is_scoped_and_idempotent(self):
         def failed(card):
             job=card.generation_jobs.get()

@@ -314,6 +314,12 @@ def claim_work():
         kind = "generation"
     if not job:
         return None
+    if kind == "assessment":
+        # Legacy nonterminal attempts must never keep a budget longer than the current Stop-based one.
+        ceiling = job.submitted_at+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
+        if job.deadline > ceiling:
+            job.deadline = ceiling
+            job.save(update_fields=["deadline"])
     job.state = "processing"
     fields = ["state"]
     if kind == "generation":

@@ -62,12 +62,15 @@ class Profile:
 
 def profile(task):
     audio = task == "AUDIO_ASSESS"
-    provider = os.getenv("AUDIO_ASSESS_PROVIDER", "qwen").strip().lower() if audio else ""
+    # Compose sets optional overrides to explicit empty strings; only the selected provider's defaults may replace them.
+    provider = (os.getenv("AUDIO_ASSESS_PROVIDER") or "qwen").strip().lower() if audio else ""
     if audio and provider not in AUDIO_PROVIDERS:
         raise StageError(task, "AUDIO_ASSESS_PROVIDER must be qwen or doubao.", "configuration")
-    endpoint = os.getenv(task + "_ENDPOINT", {"GENERATOR": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    audio_defaults = AUDIO_PROVIDERS[provider] if audio else {}
+    default_endpoint = {"GENERATOR": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
         "EXAMPLE_REVIEWER": "https://api.minimax.cn/v1/chat/completions"}.get(task,
-        AUDIO_PROVIDERS[provider]["endpoint"] if audio else "https://api.minimax.cn/v1/chat/completions"))
+        audio_defaults.get("endpoint", "https://api.minimax.cn/v1/chat/completions"))
+    endpoint = os.getenv(task + "_ENDPOINT", default_endpoint).strip() or default_endpoint
     try:
         url = urlsplit(endpoint)
     except ValueError:
@@ -102,8 +105,8 @@ def profile(task):
             raise ValueError
     except ValueError:
         raise StageError(task, "Provider budgets must be positive numbers.", "configuration") from None
-    return Profile(task, endpoint, os.getenv(task + "_MODEL",
-        {"GENERATOR": "glm-5.3-flash"}.get(task, AUDIO_PROVIDERS[provider]["model"] if audio else "MiniMax-M3.1-Flash")),
+    model_default = {"GENERATOR": "glm-5.3-flash"}.get(task, audio_defaults.get("model", "MiniMax-M3.1-Flash"))
+    return Profile(task, endpoint, os.getenv(task + "_MODEL", model_default).strip() or model_default,
         key, timeout, tokens, protocol, thinking, effort)
 
 
@@ -144,9 +147,9 @@ def request(p, **kwargs):
 
 def audio_part(p, audio):
     encoded = base64.b64encode(audio).decode()
-    if p.protocol == "qwen":
-        return {"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}}
-    return {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64," + encoded}}
+    # Both chat contracts use input_audio parts; Qwen takes a data URI, Doubao takes raw base64.
+    data = "data:audio/wav;base64," + encoded if p.protocol == "qwen" else encoded
+    return {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}}
 
 
 def chat(p, system, payload, audio=None):
