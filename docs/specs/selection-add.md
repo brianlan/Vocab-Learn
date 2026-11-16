@@ -51,7 +51,9 @@ Supported pairs are English → Chinese, English → Spanish and Spanish → Chi
 1. An explicit temporary picker choice wins for that operation, without changing Settings.
 2. Otherwise reliable metadata describes the **visible selected text**, combined with the configured native language.
    An invalid combination, such as Spanish content with native Spanish, requires an explicit supported pair.
-3. Unknown-language regions, including Generic authored content, use the configured default pair.
+3. Unknown-language regions, including Generic content and authored/legacy Vocabulary explanations, use the configured
+   default pair. A card's target language does not establish its authored explanation's language. Generated definitions
+   retain the target-language tag from existing completion provenance, frozen with the definition on practice backs.
 
 Known unsupported target-language regions offer no add action. A Chinese Production cue is Chinese, not its hidden
 English/Spanish expected answer. Practice metadata comes only from the frozen visible cue; legacy unknown metadata
@@ -100,7 +102,8 @@ python manage.py test learning.tests.browser_selection_integration --noinput
 
 The first module exercises real browser selections, copy/keyboard/focus, popup bounds, storage, language precedence
 and asynchronous request states against isolated intercepted responses. The second serves the real Django application,
-uses session cookies and CSRF, and verifies Settings/stale-disable, creation/duplicates, all frozen cue languages and
-dynamic practice answers. Its synthetic microphone checks that selection add neither acquires nor stops recording,
-pauses the existing clock nor changes a submitted recording, assessment input, schedule or frozen snapshot.
+uses session cookies and CSRF, and verifies Settings/stale-disable, creation/duplicates, all frozen cue languages,
+authored-explanation fallback on detail/frozen backs and dynamic practice answers. Its synthetic microphone checks that
+selection add neither acquires nor stops recording, pauses the existing clock nor changes a submitted recording,
+assessment input, schedule or frozen snapshot.
 These checks do not certify physical audio hardware, screen readers, mobile browsers or Safari.

@@ -314,3 +314,33 @@ class SelectionAddIntegrationTests(StaticLiveServerTestCase):
                         await expect(page.locator("#selection-add-language option:checked")).to_have_text("English → Spanish")
                     await page.keyboard.press("Escape")
                     await expect(page.locator("#selection-add")).to_be_hidden()
+
+    def test_unverified_explanation_uses_settings_on_detail_and_frozen_back(self):
+        # This Spanish card has an English authored explanation, without per-field language provenance.
+        card, presentation = self.vocabulary("Spanish")
+        frozen = presentation.snapshot.copy()
+        review.submit(presentation, "skip")
+        async_to_sync(self.explanation_language_flow)(card, presentation)
+        self.assertEqual(list(Card.objects.filter(deck=self.destination).values_list(
+            "word", "target_language", "native_language", "explanation")), [("light", "English", "Chinese", "")])
+        self.assertEqual(GenerationJob.objects.filter(card__deck=self.destination).count(), 1)
+        presentation.refresh_from_db()
+        self.assertEqual(presentation.snapshot, frozen)
+
+    async def explanation_language_flow(self, card, presentation):
+        async with self.browser_page() as page:
+            for view, pk, status in [("card", card.pk, 201), ("presentation", presentation.pk, 200)]:
+                with self.subTest(view=view):
+                    url = self.live_server_url + reverse(view, args=[pk])
+                    await page.goto(url)
+                    await self.select(page, ".explanation strong")
+                    await self.choose_destination(page)
+                    await expect(page.locator("#selection-add-expression")).to_have_text("light")
+                    await expect(page.locator("#selection-add-language option:checked")).to_have_text("English → Chinese")
+                    response = await self.submit(page)
+                    self.assertEqual(response.status, status)
+                    self.assertEqual(response.request.post_data_json, {
+                        "deck_id": self.destination.pk, "text": "light",
+                        "target_language": "English", "native_language": "Chinese",
+                    })
+                    self.assertEqual(page.url, url)

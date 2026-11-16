@@ -28,7 +28,7 @@ class SelectionContentTests(TestCase):
         self.user = get_user_model().objects.create_user("content-learner")
         self.client.force_login(self.user)
 
-    def vocabulary(self, target, native, direction):
+    def vocabulary(self, target, native, direction, *, generated=False):
         deck = Deck.objects.create(owner=self.user, name=f"{target}/{native}/{direction}")
         word = "hiddenreference" if target == "English" else "referenciaoculta"
         card = authoring.save_card(deck, "vocabulary", {"word": word, "explanation": "Private teaching definition.",
@@ -43,6 +43,8 @@ class SelectionContentTests(TestCase):
         card.active_pair, card.ready = pair, True
         card.direction_block = [direction, "production" if direction == "recognition" else "recognition"]
         card.save()
+        if generated:
+            card.generation_jobs.update(provenance={"definition_generated": True})
         return card, review.next_question(self.user, deck)
 
     def test_front_uses_frozen_visible_language_for_every_pair_and_direction(self):
@@ -77,19 +79,22 @@ class SelectionContentTests(TestCase):
         self.assertNotIn(card.word, response.content.decode())
 
     def test_detail_and_dynamic_back_keep_target_and_native_regions_distinct(self):
-        card, p = self.vocabulary("English", "Chinese", "production")
-        response = self.client.get(reverse("card", args=[card.pk]))
-        self.assertEqual(Regions(response.content.decode()).languages, ["English", "English", "Chinese", "English"])
-        frozen = p.snapshot.copy()
-        attempt = review.submit(p, "speak", 2)
-        # The displayed back belongs to the frozen presentation, not mutable parent language fields.
-        Card.objects.filter(pk=card.pk).update(target_language="Spanish")
-        payload = self.client.get(reverse("status", args=[p.pk])).json()
-        self.assertEqual(payload["state"], "submitted")
-        self.assertEqual(Regions(payload["back_html"]).languages, ["English", "English", "English", "Chinese"])
-        p.refresh_from_db(); attempt.refresh_from_db()
-        self.assertEqual(p.snapshot, frozen)
-        self.assertEqual(attempt.duration, 2)
+        for generated in [False, True]:
+            with self.subTest(generated=generated):
+                card, p = self.vocabulary("English", "Chinese", "production", generated=generated)
+                language = "English" if generated else ""
+                response = self.client.get(reverse("card", args=[card.pk]))
+                self.assertEqual(Regions(response.content.decode()).languages, ["English", "English", "Chinese", language])
+                frozen = p.snapshot.copy()
+                attempt = review.submit(p, "speak", 2)
+                # The displayed back belongs to the frozen presentation, not mutable parent language fields.
+                Card.objects.filter(pk=card.pk).update(target_language="Spanish")
+                payload = self.client.get(reverse("status", args=[p.pk])).json()
+                self.assertEqual(payload["state"], "submitted")
+                self.assertEqual(Regions(payload["back_html"]).languages, ["English", language, "English", "Chinese"])
+                p.refresh_from_db(); attempt.refresh_from_db()
+                self.assertEqual(p.snapshot, frozen)
+                self.assertEqual(attempt.duration, 2)
 
     def test_generic_content_has_no_invented_language_and_bootstrap_is_safe_text(self):
         name = '</script><img src=x onerror="alert(1)">'
