@@ -3,6 +3,7 @@ import json
 import os
 import random
 import tempfile
+import time
 import uuid
 import wave
 from itertools import product
@@ -14,11 +15,11 @@ from django.core.management import call_command, CommandError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings, Client
+from django.test import TestCase, override_settings, Client, RequestFactory
 from django.db import OperationalError
 from django.urls import reverse
 from django.utils import timezone
-from learning import authoring, review, work
+from learning import authoring, review, views, work
 from learning.models import Deck, Card, Presentation, Attempt, ExamplePair, GenerationJob, ScoredReview
 from learning.providers import StageError, PROMPT_VERSIONS
 from learning.rendering import render, recall_budget
@@ -203,25 +204,144 @@ class LearningTests(TestCase):
             decks.append(deck)
         first=review.submit(review.next_question(self.user,decks[0]),"speak",2,"unused",10.0)
         self.assertEqual(first.deadline,first.submitted_at+timedelta(seconds=5))
+        # An upload that consumed the whole budget grants no scoreable time: the receipt expires immediately.
         second=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused",500.0)
-        self.assertEqual(second.deadline,second.submitted_at+timedelta(seconds=1))
+        self.assertEqual(second.deadline,second.submitted_at)
         third=review.submit(review.next_question(self.user,decks[2]),"speak",2,"unused")
         self.assertEqual(third.deadline,third.submitted_at+timedelta(seconds=15))
-        # A legacy nonterminal attempt with an old long deadline is clamped at claim time.
+        # A legacy nonterminal attempt with an old long deadline is bounded at claim time.
         legacy=review.submit(review.next_question(self.user,decks[3]),"speak",2,"unused")
         Attempt.objects.filter(pk=legacy.pk).update(deadline=legacy.submitted_at+timedelta(seconds=300))
         for attempt in [first,second,third]:
             review.exit_attempt(attempt)
+        claim_now=timezone.now()
         receipt=work.claim_work()
         self.assertEqual(receipt[1],legacy.pk)
         legacy.refresh_from_db()
-        self.assertEqual(legacy.deadline,legacy.submitted_at+timedelta(seconds=15))
+        gap=legacy.deadline-claim_now
+        self.assertGreater(gap,timedelta(0))  # still claimable, and never beyond one budget from the claim moment
+        self.assertLessEqual(gap,timedelta(seconds=15,milliseconds=100))
         review.exit_attempt(legacy)
         # An already-past ceiling is skipped by the claim and expires through the normal fencing.
         expired=review.submit(review.next_question(self.user,decks[4]),"speak",2,"unused",14.0)
         Attempt.objects.filter(pk=expired.pk).update(deadline=timezone.now()-timedelta(seconds=1))
         self.assertIsNone(work.claim_work())
         self.assertEqual(Attempt.objects.get(pk=expired.pk).state,"submitted")
+
+    def test_legacy_deadlines_are_bounded_and_expire_on_shared_paths_without_a_worker(self):
+        decks=[]
+        for index in range(2):
+            deck=Deck.objects.create(owner=self.user,name=f"Legacy {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Legacy fixture {index}?"})
+            decks.append(deck)
+        processing=self.spoken(review.next_question(self.user,decks[0]))
+        Attempt.objects.filter(pk=processing.pk).update(deadline=processing.submitted_at+timedelta(seconds=300))
+        bounded=review.expire_attempt(processing)  # the shared expiry/status path bounds before expiring
+        bounded.refresh_from_db()
+        self.assertEqual(bounded.state,"processing")
+        self.assertLessEqual(bounded.deadline,timezone.now()+timedelta(seconds=15))
+        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(seconds=16)):
+            expired=review.expire_attempt(bounded)
+        expired.refresh_from_db()
+        self.assertEqual((expired.state,expired.error_stage,expired.retryable),("failed","timeout",True))
+        submitted=self.spoken(review.next_question(self.user,decks[1]))
+        submitted.state="submitted"; submitted.save(update_fields=["state"])
+        Attempt.objects.filter(pk=submitted.pk).update(deadline=submitted.submitted_at+timedelta(seconds=300))
+        bounded=review.expire_attempt(submitted)
+        bounded.refresh_from_db()
+        self.assertEqual(bounded.state,"submitted")
+        self.assertLessEqual(bounded.deadline,timezone.now()+timedelta(seconds=15))  # bounded at first touch
+        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(seconds=16)):
+            review.expire_attempt(bounded)  # and expired within one budget of that touch
+        submitted.refresh_from_db()
+        self.assertEqual(submitted.state,"failed")
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_retry_after_original_deadline_claims_and_commits_a_fresh_execution(self):
+        """R6: an explicit retry keeps its fresh budget through the real claim path and commits exactly once."""
+        card=self.generic(); p=self.present()
+        Card.objects.filter(pk=card.pk).update(due=timezone.now()-timedelta(seconds=60))  # due well before the receipt
+        a=self.spoken(p)
+        original_claim=a.claim
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary"))
+        # The original execution window fully passed before the learner pressed Retry.
+        past=timezone.now()-timedelta(seconds=30)
+        Attempt.objects.filter(pk=a.pk).update(submitted_at=past,deadline=past+timedelta(seconds=15))
+        a=review.retry_attempt(a)
+        self.assertEqual((a.state,a.execution),("submitted",2))
+        self.assertNotEqual(a.claim,original_claim)
+        self.assertEqual(a.submitted_at,past)  # the original scheduling receipt is preserved
+        fresh_deadline=a.deadline
+        receipt=work.claim_work()
+        self.assertEqual(receipt[1],a.pk)
+        a.refresh_from_db()
+        self.assertEqual(a.deadline,fresh_deadline)  # claiming did not shrink the valid retry budget
+        self.assertEqual(a.state,"processing")
+        review.commit_grade(a.pk,original_claim,"E",[],"stale claim")
+        a.refresh_from_db()
+        self.assertEqual((a.state,a.transcript),("processing",""))  # old-claim fencing refused the stale commit
+        units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
+        with patch("learning.providers.audio_assessment",return_value=("four",units,{"model":"fake-audio"})) as assessment:
+            work.process_assessment(a.pk,a.claim)
+            self.assertEqual(assessment.call_count,1)  # exactly one assessor call for this execution
+        a.refresh_from_db()
+        self.assertEqual((a.state,a.grade,a.transcript),("assessed","E","four"))
+        self.assertEqual(ScoredReview.objects.count(),1)
+
+    def post_speak_with_delayed_upload(self, p, seconds):
+        """Drive the real speak view with a body whose parse (transfer) is artificially delayed."""
+        request=self.factory.post(reverse("action",args=[p.pk]),
+            {"action":"speak","duration":"2","audio":SimpleUploadedFile("r.webm",audio_bytes())})
+        request.user=self.user
+        original_read=request.read
+        def slow_read(*args,**kwargs):
+            time.sleep(seconds)
+            return original_read(*args,**kwargs)
+        request.read=slow_read
+        return views.action(request,p.pk)
+
+    def test_the_view_measures_the_actual_upload_and_expired_uploads_score_nothing(self):
+        """R3a: the deadline accounts for the server-observed transfer, and an exhausted budget cannot commit."""
+        self.factory=RequestFactory()
+        first_deck=Deck.objects.create(owner=self.user,name="Upload timing")
+        authoring.save_card(first_deck,"generic",{**GENERIC,"question":"Upload fixture 1?"})
+        p=review.next_question(self.user,first_deck)
+        response=self.post_speak_with_delayed_upload(p,0.3)
+        data=json.loads(response.content)
+        a=Attempt.objects.get(presentation=p)
+        self.assertEqual(data["state"],"submitted")
+        self.assertEqual(data["deadline"],a.deadline.isoformat())
+        # The parse interval reduced the deadline below the full 15-second budget.
+        self.assertLess(a.deadline,a.submitted_at+timedelta(seconds=15))
+        self.assertGreater(a.deadline,a.submitted_at+timedelta(seconds=14))
+        # An ambiguous replay of the same submission returns the original attempt unchanged.
+        replay=json.loads(self.post_speak_with_delayed_upload(p,0.0).content)
+        self.assertEqual(replay["deadline"],data["deadline"])
+        self.assertEqual(Attempt.objects.filter(presentation=p).count(),1)
+        review.exit_attempt(a)
+        # An upload that consumes the whole budget leaves nothing scoreable: immediate expiry, fenced commits.
+        second_deck=Deck.objects.create(owner=self.user,name="Upload exhaustion")
+        exhausted=authoring.save_card(second_deck,"generic",{**GENERIC,"question":"Upload fixture 2?"})
+        Card.objects.filter(pk=exhausted.pk).update(due=timezone.now()-timedelta(seconds=30))
+        p2=review.next_question(self.user,second_deck)
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=0.5):
+            data=json.loads(self.post_speak_with_delayed_upload(p2,1.0).content)
+        a2=Attempt.objects.get(presentation=p2)
+        self.assertEqual((data["state"],a2.state,a2.error_stage,a2.retryable),("failed","failed","timeout",True))
+        self.assertTrue((Path(self.folder.name)/a2.audio_name).exists())  # the recording stays retryable
+        review.commit_grade(a2.pk,a2.claim,"E",[],"after expiry")
+        a2.refresh_from_db()
+        self.assertEqual(a2.state,"failed")
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_payload_exposes_the_deadline_only_while_an_execution_is_live(self):
+        self.factory=RequestFactory()
+        self.generic(); p=self.present()
+        a=self.spoken(p)
+        status_request=self.factory.get("/"); status_request.user=self.user
+        self.assertIsNotNone(views.payload(status_request,a)["deadline"])
+        review.commit_grade(a.pk,a.claim,"E",[],"committed")
+        self.assertIsNone(views.payload(status_request,a)["deadline"])
 
     def test_explicit_preparation_requeue_is_scoped_and_idempotent(self):
         def failed(card):

@@ -315,8 +315,9 @@ def claim_work():
     if not job:
         return None
     if kind == "assessment":
-        # Legacy nonterminal attempts must never keep a budget longer than the current Stop-based one.
-        ceiling = job.submitted_at+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
+        # Bound any stored deadline beyond the current budget (legacy/config-shrunk rows) so the
+        # claimed execution cannot run longer; valid submissions and retries are never shortened.
+        ceiling = now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
         if job.deadline > ceiling:
             job.deadline = ceiling
             job.save(update_fields=["deadline"])

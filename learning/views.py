@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import time
 import uuid
 from collections import Counter
 from datetime import timedelta
@@ -327,6 +328,7 @@ def payload(request, a):
     a.presentation = p
     card = Card.objects.get(pk=p.card_id)
     return {"state": a.state, "transcript": a.transcript, "grade": a.grade, "next_due": a.next_due.isoformat() if a.next_due else None,
+        "deadline": a.deadline.isoformat() if a.deadline and a.state in ("submitted", "processing") else None,
         "metrics": counts(request.user, p.scope_deck), "collection": card.collection,
         "back_html": render_to_string("learning/back.html", {"attempt": a, "p": p, "back": p.snapshot,
         "explanation_html": render(p.snapshot["explanation"]).html, "label": review.LABELS.get(a.grade),
@@ -350,7 +352,8 @@ def presentation_view(request, presentation_id):
     data = payload(request, attempt) if attempt else None
     first_display = Presentation.objects.filter(pk=p.pk, clock_claimed=False).update(clock_claimed=True) == 1 if not attempt else False
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",
-        "first_display": first_display, "initial_state": data["state"] if data else "question", "nav": "study", **counts(request.user, p.scope_deck)})
+        "initial_state": data["state"] if data else "question", "initial_deadline": data["deadline"] if data else "",
+        "first_display": first_display, "nav": "study", **counts(request.user, p.scope_deck)})
 
 
 def owned_presentation(request, presentation_id):
@@ -364,11 +367,14 @@ def action(request, presentation_id):
     existing = Attempt.objects.filter(presentation=p).first()
     if existing:
         return JsonResponse(payload(request, existing))
+    # The first body access parses the uploaded recording; measure it as the actual in-flight upload.
+    upload_started = time.monotonic()
     choice = request.POST.get("action")
     if choice not in ["skip", "forgot", "speak"]:
         return JsonResponse({"error": "Choose Skip, Speak or Forgot."}, status=400)
-    name, duration = "", None
+    name, duration, upload_elapsed = "", None, None
     if choice == "speak":
+        upload_elapsed = time.monotonic()-upload_started
         upload = request.FILES.get("audio")
         if not upload or not 0 < upload.size <= 50*1024*1024:
             return JsonResponse({"error": "Supply a complete recording up to 50 MB."}, status=400)
@@ -378,12 +384,6 @@ def action(request, presentation_id):
                 duration = None
         except ValueError:
             pass
-        try:
-            upload_elapsed = float(request.POST.get("budget", ""))
-            if not math.isfinite(upload_elapsed) or upload_elapsed < 0:
-                upload_elapsed = None
-        except ValueError:
-            upload_elapsed = None
         name = uuid.uuid4().hex+".audio"
         try:
             fd = os.open(settings.AUDIO_DIR/name, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)

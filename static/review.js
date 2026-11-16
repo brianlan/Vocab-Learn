@@ -8,7 +8,8 @@
   let phase = card.dataset.state, recorder = null, stream = null, acquisition = 0;
   let frozenBlob = null, frozenDuration = null, frozenAction = null, polling = null;
   let baseElapsed = 0, excluded = 0, waitStart = null, clockLost = false;
-  let stoppedAt = null, checked15 = false, checking = false;
+  let stoppedAt = null, deadlineAt = card.dataset.deadline ? Date.parse(card.dataset.deadline) : null,
+      announced = false, checking = false;
   const started = performance.now();
   let lastPayload = "", busy = false;
   const tell = message => { $("#technical-message").textContent = message; $("#technical-message").hidden = !message; };
@@ -81,23 +82,43 @@
   function stop() {
     if (phase !== "recording") return;
     frozenDuration = elapsed(); rememberPending(); phase = "uploading"; frontControls();
-    // The issue's 15-second budget is measured from here, through upload and server processing.
-    stoppedAt = performance.now(); checked15 = false;
+    // The upload phase keeps a client-side window only for recovery display; the server owns the real deadline.
+    stoppedAt = performance.now(); announced = false;
     $("#recording-indicator").textContent = "Saving your fixed response…";
     recorder.stop();
   }
   async function api(url, data) {
-    const response = await fetch(url, {method: data ? "POST" : "GET", body: data,
-      headers: data ? {"X-CSRFToken": csrf()} : {}, credentials: "same-origin"});
-    if (!response.headers.get("content-type")?.includes("application/json")) throw new Error("Your session may have expired. Reload or log in, then resume this question.");
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "The server could not confirm this request.");
-    return result;
+    // Bound transport and response parsing so a stalled request cannot wedge recovery.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(url, {method: data ? "POST" : "GET", body: data, signal: controller.signal,
+        headers: data ? {"X-CSRFToken": csrf()} : {}, credentials: "same-origin"});
+      if (!response.headers.get("content-type")?.includes("application/json")) throw new Error("Your session may have expired. Reload or log in, then resume this question.");
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "The server could not confirm this request.");
+      return result;
+    } catch (error) {
+      if (error.name === "AbortError") throw new Error("The server took too long to respond. Its outcome stays unconfirmed; check again shortly.");
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+  const terminal = () => ["assessed", "skipped", "closed_unassessed"].includes(phase);
+  const overdue = () => deadlineAt !== null && Date.now() >= deadlineAt && !terminal();
+  const uploadOverdue = () => phase === "uploading" && stoppedAt !== null && performance.now()-stoppedAt >= 15000;
+  function announceOverdue() {
+    // Overdue recovery stays visible across late pending responses and reloads until a terminal
+    // result or a confirmed new execution (whose fresh deadline clears the overdue state) arrives.
+    $("#reconnect-controls").hidden = false;
+    if (!announced) { announced = true; tell("This is taking longer than the 15-second assessment budget. You can keep waiting or use the recovery options."); }
   }
   function show(data) {
     if (data.state === "not_submitted") { tell("No accepted submission is visible yet. Retry the same submission; do not replace its recording."); return; }
     phase = data.state; $("#front").hidden = true; $("#back").hidden = false;
-    $("#clock-recovery").hidden = true; $("#reconnect-controls").hidden = true; tell("");
+    $("#clock-recovery").hidden = true;
+    stoppedAt = null;
+    deadlineAt = data.deadline ? Date.parse(data.deadline) : null;
+    if (deadlineAt !== null && Date.now() < deadlineAt) announced = false;  // A confirmed new execution restarts announcements.
     if (data.back_html !== lastPayload) { $("#back").innerHTML = data.back_html; lastPayload = data.back_html; }
     for (const [name,value] of Object.entries(data.metrics || {})) {
       document.querySelectorAll('[data-metric="'+name+'"]').forEach(node => { node.textContent = value ?? "—"; });
@@ -106,7 +127,11 @@
     if (collection && data.collection) { collection.textContent = data.collection === "Forgot" ? "Forgot collection" : "Normal review"; collection.classList.toggle("warm", data.collection === "Forgot"); }
     try { localStorage.removeItem(key); } catch (_) { /* Submitted timing is durable on the server. */ }
     if (["submitted", "processing"].includes(phase)) startPolling();
-    else { clearInterval(polling); polling = null; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
+    else { clearInterval(polling); polling = null; deadlineAt = null; }
+    if (!terminal()) {
+      if (overdue()) announceOverdue();
+      else { $("#reconnect-controls").hidden = true; tell(""); }
+    } else { $("#reconnect-controls").hidden = true; announced = false; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
   }
   function reconnect(message) {
     tell(message + " The server outcome is unconfirmed. Check status or retry the same request.");
@@ -118,7 +143,6 @@
     const body = new FormData(); body.append("action", action);
     if (action === "speak") {
       body.append("audio", frozenBlob, "response.webm"); body.append("duration", String(frozenDuration));
-      if (stoppedAt !== null) body.append("budget", String((performance.now()-stoppedAt)/1000));
     }
     phase = "uploading"; frontControls();
     try { show(await api(card.dataset.actionUrl, body)); } catch (error) { reconnect(error.message); }
@@ -140,8 +164,8 @@
     if (["skip", "forgot"].includes(action) && phase === "question") { saveClock(); submit(action); return; }
     if (action === "check") { check(); return; }
     if (action === "resend") {
-      // A resent fixed submission restarts its own budget measurement.
-      if (frozenAction) { stoppedAt = performance.now(); checked15 = false; submit(frozenAction); } else check();
+      // An ambiguous replay never resets the deadline; the server returns the original attempt unchanged.
+      if (frozenAction) submit(frozenAction); else check();
       return;
     }
     busy = true; button.disabled = true;
@@ -155,14 +179,7 @@
   else if (["submitted", "processing"].includes(phase)) startPolling();
   setInterval(() => {
     saveClock();
-    if (stoppedAt !== null && !checked15 && performance.now()-stoppedAt >= 15000 &&
-        !["assessed", "skipped", "closed_unassessed"].includes(phase)) {
-      // One-shot watchdog from Stop & check: even a hung upload or stalled response exposes recovery.
-      checked15 = true;
-      tell("This is taking longer than the 15-second assessment budget. You can keep waiting or use the recovery options.");
-      $("#reconnect-controls").hidden = false;
-      check();
-    }
+    if (!terminal() && (overdue() || uploadOverdue())) { announceOverdue(); check(); }
     if (phase === "recording" && recorder) {
       const seconds = Math.floor((performance.now()-recorder.started)/1000);
       $("#recording-indicator").textContent = "Recording · " + Math.floor(seconds/60) + ":" + String(seconds%60).padStart(2,"0");

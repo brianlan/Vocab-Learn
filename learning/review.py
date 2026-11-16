@@ -147,10 +147,11 @@ def submit(p, action, duration=None, audio_name="", upload_elapsed=None):
     if existing:
         return existing
     now = timezone.now()
-    # The issue's 15-second budget starts at Stop & check: the upload that already elapsed reduces it.
+    # The issue's 15-second budget starts at Stop & check; the server-measured in-flight upload reduces it.
+    # An upload that consumed the whole budget leaves no scoreable time: deadline = receipt expires immediately.
     budget_seconds = settings.ASSESSMENT_TIMEOUT_SECONDS
-    if upload_elapsed is not None:
-        budget_seconds = max(1.0, budget_seconds - min(upload_elapsed, 60.0))
+    if upload_elapsed is not None and math.isfinite(upload_elapsed) and upload_elapsed > 0:
+        budget_seconds = max(0.0, budget_seconds - upload_elapsed)
     a = Attempt.objects.create(presentation=p, action=action, state="submitted", submitted_at=now,
         duration=duration, audio_name=audio_name, audio_expires_at=now+timedelta(hours=24) if action == "speak" else None,
         deadline=now+timedelta(seconds=budget_seconds) if action == "speak" else None)
@@ -225,6 +226,13 @@ def grade_units(units, duration, budget):
 @transaction.atomic
 def expire_attempt(a):
     a = Attempt.objects.get(pk=a.pk)
+    if a.state in ("submitted", "processing") and a.deadline:
+        # A stored deadline beyond the current budget belongs to a legacy or config-shrunk execution;
+        # fresh submissions and valid retries never exceed it, so bounding cannot shorten them (R3c/R6).
+        ceiling = timezone.now()+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
+        if a.deadline > ceiling:
+            a.deadline = ceiling
+            a.save(update_fields=["deadline"])
     if a.state in ("submitted", "processing") and a.deadline <= timezone.now():
         a.state, a.claim, a.error_stage, a.error = "failed", uuid.uuid4(), "timeout", "Processing expired. Retry this fixed input or continue unassessed."
         a.error_category, a.retryable = "timeout", True

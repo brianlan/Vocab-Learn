@@ -89,7 +89,8 @@ def run(options):
         page.locator("#next-card").click(); page.wait_for_selector("#review-card")
         if not scored_first:
             # The exited card is deferred for 30 minutes; the newly added multi-blank card is next.
-            assert "call off" in page.locator(".prompt").inner_text()
+            prompt=page.locator(".prompt").inner_text()
+            assert "[1]" in prompt and "[2]" in prompt,prompt  # Visible blanks only; the reference stays hidden.
         page.wait_for_selector(".cloze-blank")
         assert page.locator(".cloze-blank").count()==2
         assert page.locator(".prompt strong .cloze-blank").count()==1
