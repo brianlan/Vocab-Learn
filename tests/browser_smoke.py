@@ -27,7 +27,7 @@ def run(options):
         checks.append(name); print("PASS:",name,flush=True)
     def write_results():
         result={"status":"passed","checks":checks,"errors":errors,
-            "browser":"Headless Chromium, synthetic microphone; physical device and Edge remain manual checks"}
+            "browser":browser_agent+"; synthetic microphone; physical-device and native-permission checks remain manual"}
         if options.generic_only:
             result.update(scope="generic-only",assessment="scored" if scored_first else "deadline-failure")
         (output/"browser-results.json").write_text(json.dumps(result,indent=2)+"\n")
@@ -51,6 +51,7 @@ def run(options):
         browser=playwright.chromium.launch(headless=True,executable_path=options.chromium,args=args)
         context=browser.new_context(viewport={"width":1440,"height":1050},permissions=["microphone"])
         page=context.new_page(); page.on("pageerror",lambda error:errors.append(str(error)))
+        browser_agent=page.evaluate("navigator.userAgent")
         page.goto(target+"/login/"); page.screenshot(path=str(output/"login.png"),full_page=True)
         page.locator("#id_username").fill(access["username"]); page.locator("#id_password").fill(access["password"])
         page.get_by_role("button",name="Log in").click(); page.wait_for_url(target+"/")
@@ -81,6 +82,11 @@ def run(options):
         # released by this test, so the controller's automatic watchdog and poller cadence cannot race it.
         # No server attempt is involved; all evidence is labelled synthetic. ---
         status_url=page.locator("#review-card").get_attribute("data-status-url")
+        def continue_to_fixture(route,url):
+            # Rewrites cross ports, so respect the application's same-origin referrer policy.
+            headers=route.request.headers
+            headers.pop("referer",None)
+            route.continue_(url=url,headers=headers)
         @contextmanager
         def stalled_transport(path,partial=False):
             arrived=queue.Queue(); release=threading.Event()
@@ -97,7 +103,7 @@ def run(options):
             stall_url=f"{loopback_scheme}://127.0.0.1:{server.server_address[1]}/stall"
             thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
             def rewrite(route):
-                route.continue_(url=stall_url)
+                continue_to_fixture(route,stall_url)
             try:
                 page.route("**"+path,rewrite)
                 yield stall_url,arrived
@@ -335,7 +341,7 @@ def run(options):
                     def observe_failure(request):
                         if request.url==status_stall_url: status_failures.append(request.failure)
                     def stale_navigation(route):
-                        route.continue_(url=replay_url)
+                        continue_to_fixture(route,replay_url)
                     page.on("requestfailed",observe_failure)
                     try:
                         page.route(navigation_url,stale_navigation)
