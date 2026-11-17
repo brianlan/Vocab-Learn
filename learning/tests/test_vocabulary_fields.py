@@ -395,7 +395,8 @@ class VocabularyFieldsTests(TestCase):
         p = providers.Profile("AUDIO_ASSESS", "https://example.test/chat", "test-model", "test-only", 10, protocol="qwen")
         recording = self.path.parent / "answer.wav"
         recording.write_bytes(b"RIFF")
-        with patch("learning.providers.chat", return_value={"transcript": "同义词词典", "units": [{"id": 1, "outcome": "complete", "reason": "Test response."}]}) as chat:
+        with patch("learning.providers.transcode_mp3", return_value=b"transcoded"), \
+                patch("learning.providers.chat", return_value={"transcript": "同义词词典", "units": [{"id": 1, "outcome": "complete", "reason": "Test response."}]}) as chat:
             providers.audio_assessment(frozen, recording, p)
         self.assertEqual(chat.call_args.args[2]["explanation"], CODE_DEFINITION)
 

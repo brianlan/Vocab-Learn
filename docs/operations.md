@@ -151,8 +151,11 @@ production release.
 Spoken assessment is one audio-capable model request per execution. `AUDIO_ASSESS_PROVIDER` selects the request dialect:
 `qwen` (default; DashScope compatible-mode endpoint, `qwen3.8-omni-flash`, `reasoning_effort="none"`) or `doubao`
 (Ark v3 endpoint, `doubao-seed-2-1-lite-260915`, explicit `thinking={"type":"disabled"}`, `service_tier="default"`
-regular inference). Both send the normalized WAV inline as base64 with a JSON response format and validate the
-returned transcript plus units locally. `AUDIO_ASSESS_API_KEY` is always required for the selected origin; its
+regular inference). Both send the normalized mono 16-kHz audio inline with a JSON response format and validate the
+returned transcript plus units locally. Qwen transports that audio as MP3 (a provider-documented format) because its
+documented inline limit is an encoded Base64 string under 10 MB and the accepted 500-second range is about 16 MB as
+PCM; the staged normalized WAV artifact is unchanged and an oversized encoding fails unscored. Doubao receives the
+normalized WAV as raw base64. `AUDIO_ASSESS_API_KEY` is always required for the selected origin; its
 thinking settings are fixed by the provider and cannot be configured.
 
 The current Generator prompt is tracked as `lexical-pair-v7-a`: the original scope-workflow D plus the
@@ -263,7 +266,7 @@ Due Forgot cards come first, followed by due reviewed Normal cards, then a rando
 
 Skip and a confirmed unassessed exit set the card aside for 30 minutes across visits and scopes. Its stored FSRS due, memory, collection, streak and review direction remain unchanged. Due now excludes temporarily deferred cards; **Available again** shows when practice can resume. At expiry the card becomes eligible if its scheduler due permits. Repeating the same action does not extend the timer, and stale work cannot postpone newer progress. Already accepted work may still finish, subject to the existing terminal/progress guards.
 
-Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal and starts the 15-second budget; the server measures transfer, parsing and durable staging from before the body-consuming middleware. Read the back while processing; once the execution is overdue, recovery (Check submission, same-input Retry, unassessed exit) stays visible even when an upload or response stalls, and a service error permits the same paths earlier. Typed transcript changes and replacement recordings after reveal cannot affect the score.
+Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal and starts the 15-second budget; the server anchors the execution deadline to the request before the body-consuming middleware, deducts the measured transfer, parsing and staging interval there, and database lock waiting cannot extend it. Read the back while processing; once the execution is overdue, recovery (Check submission, same-input Retry, unassessed exit) stays visible even when an upload or response stalls (the browser aborts stalled requests at ten seconds and keeps the outcome unconfirmed), and a service error permits the same paths earlier. Typed transcript changes and replacement recordings after reveal cannot affect the score. Upgrading deploys a migration that conservatively invalidates pending spoken attempts from before the request-anchored budget; receipt, audio and history are preserved and only explicit Retry re-enters.
 
 Vocabulary backs show the authored target and original explanation. Recognition accepts concise equivalent meanings such as 吸收 for absorb; a correct word does not have to expand every property in its definition. Production still requires the target expression for complete recall. Generated example pairs contain sentences and minimal highlights only, with no separate translated definition.
 

@@ -1,5 +1,7 @@
 import time
 
+from django.utils import timezone
+
 
 class UploadTiming:
     """Record the earliest request moment: CSRF (and any body-consuming middleware) reads the
@@ -9,6 +11,7 @@ class UploadTiming:
 
     def __call__(self, request):
         request.upload_started = time.monotonic()
+        request.upload_started_wall = timezone.now()
         return self.get_response(request)
 
 

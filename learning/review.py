@@ -141,20 +141,20 @@ def valid_presentation_for_restart(p):
 
 
 @transaction.atomic
-def submit(p, action, duration=None, audio_name="", upload_elapsed=None):
+def submit(p, action, duration=None, audio_name="", deadline=None):
     p = Presentation.objects.get(pk=p.pk)
     existing = Attempt.objects.filter(presentation=p).first()
     if existing:
         return existing
     now = timezone.now()
-    # The issue's 15-second budget starts at Stop & check; the server-measured in-flight upload reduces it.
-    # An upload that consumed the whole budget leaves no scoreable time: deadline = receipt expires immediately.
-    budget_seconds = settings.ASSESSMENT_TIMEOUT_SECONDS
-    if upload_elapsed is not None and math.isfinite(upload_elapsed) and upload_elapsed > 0:
-        budget_seconds = max(0.0, budget_seconds - upload_elapsed)
+    # The issue's 15-second budget starts at Stop & check. With a request anchor, the view passes the
+    # immutable request-anchored deadline (transfer, parsing and staging already deducted there, so
+    # database lock waiting cannot extend the scoring window). Without one, the full budget starts now.
+    if action == "speak" and deadline is None:
+        deadline = now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
     a = Attempt.objects.create(presentation=p, action=action, state="submitted", submitted_at=now,
         duration=duration, audio_name=audio_name, audio_expires_at=now+timedelta(hours=24) if action == "speak" else None,
-        deadline=now+timedelta(seconds=budget_seconds) if action == "speak" else None)
+        deadline=deadline if action == "speak" else None)
     if not valid_presentation(p, now):
         a.state, a.error = "closed_unassessed", "This presentation is stale or no longer eligible. Your progress was preserved."
         defer(p)
@@ -172,7 +172,9 @@ def submit(p, action, duration=None, audio_name="", upload_elapsed=None):
 @transaction.atomic
 def commit_grade(attempt_id, claim, grade, outcomes, reason, candidate=None):
     a = Attempt.objects.select_related("presentation").get(pk=attempt_id)
-    if a.state in TERMINAL or a.claim != claim or (a.deadline and a.deadline <= timezone.now()):
+    now = timezone.now()
+    if a.state in TERMINAL or a.claim != claim or a.deadline and (a.deadline <= now
+            or a.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)):
         return a
     p = a.presentation
     if not valid_presentation(p, a.submitted_at):

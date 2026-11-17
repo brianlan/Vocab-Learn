@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import time
+import wave
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
@@ -109,8 +110,7 @@ class ProviderTests(ProviderBase):
         with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_REASONING_EFFORT":"max"},clear=True):
             with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
 
-    def test_audio_request_dialects_send_wav_and_explicit_nonthinking(self):
-        payload = b"RIFFfake-wav-bytes"
+    def test_audio_request_dialects_send_provider_audio_and_explicit_nonthinking(self):
         seen = []
         def handler(request):
             seen.append(json.loads(request.content))
@@ -118,7 +118,11 @@ class ProviderTests(ProviderBase):
                 json.dumps({"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
         snapshots = {"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
         with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/"answer.wav"; path.write_bytes(payload)
+            path=Path(folder)/"answer.wav"
+            with wave.open(str(path),"wb") as fixture:
+                fixture.setnchannels(1); fixture.setsampwidth(2); fixture.setframerate(16000)
+                fixture.writeframes(b"\x00\x01"*16000)  # one real second of mono 16kHz PCM
+            payload=path.read_bytes()
             for provider in ["qwen","doubao"]:
                 seen.clear()
                 with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":provider,"AUDIO_ASSESS_API_KEY":"k"},clear=True):
@@ -134,19 +138,21 @@ class ProviderTests(ProviderBase):
                 self.assertEqual(parts[0]["type"],"text")
                 task=json.loads(parts[0]["text"])
                 self.assertEqual(task["expected_unit_ids"],[1]); self.assertNotIn("transcript",task)
-                encoded=base64.b64encode(payload).decode()
-                # Both dialects send input_audio WAV parts; Qwen takes a data URI, Doubao raw base64.
+                # Both dialects send input_audio parts: Qwen takes the normalized audio as an MP3 data URI
+                # (its documented inline limit is a Base64 string under 10MB), Doubao the WAV raw base64.
                 self.assertEqual(parts[1]["type"],"input_audio")
-                self.assertEqual(parts[1]["input_audio"]["format"],"wav")
                 if provider=="qwen":
+                    encoded=parts[1]["input_audio"]["data"].removeprefix("data:audio/mpeg;base64,")
+                    self.assertEqual(parts[1]["input_audio"]["format"],"mp3")
+                    self.assertLess(len(encoded),p.QWEN_INLINE_LIMIT)
                     self.assertEqual(body["reasoning_effort"],"none")
                     self.assertNotIn("thinking",body); self.assertNotIn("service_tier",body)
-                    self.assertEqual(parts[1]["input_audio"]["data"],"data:audio/wav;base64,"+encoded)
                 else:
+                    self.assertEqual(parts[1]["input_audio"]["format"],"wav")
+                    self.assertEqual(parts[1]["input_audio"]["data"],base64.b64encode(payload).decode())
                     self.assertEqual(body["thinking"],{"type":"disabled"})
                     self.assertEqual(body["service_tier"],"default")
                     self.assertNotIn("reasoning_effort",body)
-                    self.assertEqual(parts[1]["input_audio"]["data"],encoded)
 
     def test_assessment_rejects_missing_transcript_refusals_and_unassessable(self):
         good={"id":1,"outcome":"complete","reason":"Okay"}
@@ -194,7 +200,7 @@ class ProviderTests(ProviderBase):
         result={"transcript":"吸收","units":[{"id":1,"outcome":"complete","reason":"Equivalent lexical meaning."}]}
         with tempfile.TemporaryDirectory() as folder:
             recording=Path(folder)/"answer.wav"; recording.write_bytes(b"RIFF")
-            with patch("learning.providers.chat",return_value=result) as chat:
+            with patch("learning.providers.transcode_mp3", return_value=b"transcoded"), patch("learning.providers.chat",return_value=result) as chat:
                 transcript,units,metadata=p.audio_assessment(legacy,recording,self.profile("AUDIO_ASSESS","qwen"))
             payload=chat.call_args.args[2]
             self.assertEqual(transcript,"吸收")
@@ -204,11 +210,11 @@ class ProviderTests(ProviderBase):
             for hidden in ["reference","gloss","native_sentence","native_highlight","transcript"]:
                 self.assertNotIn(hidden,payload)
             self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["AUDIO_ASSESS"])
-            with patch("learning.providers.chat",return_value=result) as chat:
+            with patch("learning.providers.transcode_mp3", return_value=b"transcoded"), patch("learning.providers.chat",return_value=result) as chat:
                 p.audio_assessment({**legacy,"highlight_start":11},recording,self.profile("AUDIO_ASSESS","qwen"))
             self.assertEqual(chat.call_args.args[2]["highlight_start"],11)
             generic={"kind":"generic","reference":"call off","units":1}
-            with patch("learning.providers.chat",return_value=result) as chat:
+            with patch("learning.providers.transcode_mp3", return_value=b"transcoded"), patch("learning.providers.chat",return_value=result) as chat:
                 p.audio_assessment(generic,recording,self.profile("AUDIO_ASSESS","qwen"))
             self.assertEqual(chat.call_args.args[2]["reference"],"call off")
 

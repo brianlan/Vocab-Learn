@@ -80,7 +80,11 @@ def cleanup_audio():
 @transaction.atomic
 def save_stage(attempt_id, claim, **fields):
     a = Attempt.objects.select_related("presentation").get(pk=attempt_id)
-    if a.state != "processing" or a.claim != claim or a.deadline <= timezone.now():
+    now = timezone.now()
+    # The budget invariant is shared with persistence: a processing result under a deadline beyond the
+    # current budget (legacy/config-shrunk) is refused, not scored (R3c).
+    if a.state != "processing" or a.claim != claim or a.deadline <= now \
+            or a.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS):
         return False
     if not valid_presentation(a.presentation, a.submitted_at):
         a.state, a.claim = "closed_unassessed", uuid.uuid4()

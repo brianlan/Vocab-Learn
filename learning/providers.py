@@ -5,6 +5,7 @@ import json
 import os
 import re
 import math
+import subprocess
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -70,7 +71,11 @@ def profile(task):
     default_endpoint = {"GENERATOR": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
         "EXAMPLE_REVIEWER": "https://api.minimax.cn/v1/chat/completions"}.get(task,
         audio_defaults.get("endpoint", "https://api.minimax.cn/v1/chat/completions"))
-    endpoint = os.getenv(task + "_ENDPOINT", default_endpoint).strip() or default_endpoint
+    endpoint = os.getenv(task + "_ENDPOINT", default_endpoint).strip()
+    # Compose sets optional overrides to explicit empty strings; only audio's selected provider may
+    # replace them with defaults. Other tasks keep base behavior: an empty endpoint fails validation.
+    if audio and not endpoint:
+        endpoint = default_endpoint
     try:
         url = urlsplit(endpoint)
     except ValueError:
@@ -106,7 +111,11 @@ def profile(task):
     except ValueError:
         raise StageError(task, "Provider budgets must be positive numbers.", "configuration") from None
     model_default = {"GENERATOR": "glm-5.3-flash"}.get(task, audio_defaults.get("model", "MiniMax-M3.1-Flash"))
-    return Profile(task, endpoint, os.getenv(task + "_MODEL", model_default).strip() or model_default,
+    model = os.getenv(task + "_MODEL", model_default).strip()
+    # Same audio-only fallback: unrelated tasks keep base behavior for empty model overrides.
+    if audio and not model:
+        model = model_default
+    return Profile(task, endpoint, model,
         key, timeout, tokens, protocol, thinking, effort)
 
 
@@ -145,11 +154,37 @@ def request(p, **kwargs):
         raise StageError(p.task, "Provider returned unreadable output.") from None
 
 
+def transcode_mp3(audio_path):
+    """Qwen's documented inline-audio input limit is an encoded Base64 string under 10MB, while the
+    normalized PCM of the accepted 500-second range is about 16MB. The Qwen request therefore
+    transports the same normalized mono 16kHz audio as MP3 (a documented input format); the staged
+    normalized WAV artifact and the normalization contract are unchanged."""
+    source, target = Path(audio_path), Path(str(audio_path)+".mp3")
+    if target.is_file():
+        return target.read_bytes()  # retries reuse the derived encoding of the immutable staged audio
+    try:
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source), "-map", "0:a:0",
+            "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "48k", str(target)],
+            capture_output=True, timeout=20, check=True)
+        return target.read_bytes()
+    except (subprocess.SubprocessError, OSError):
+        raise StageError("AUDIO_ASSESS", "Audio could not be encoded for the provider. Continue unassessed or retry the fixed recording.") from None
+    finally:
+        target.unlink(missing_ok=True)
+
+
+QWEN_INLINE_LIMIT = 10*1000*1000  # Documented: the encoded Base64 audio string must stay under 10MB.
+
+
 def audio_part(p, audio):
+    # Both chat contracts use input_audio parts; Qwen takes a data URI (MP3-transported, see
+    # transcode_mp3), Doubao takes the normalized WAV as raw base64.
     encoded = base64.b64encode(audio).decode()
-    # Both chat contracts use input_audio parts; Qwen takes a data URI, Doubao takes raw base64.
-    data = "data:audio/wav;base64," + encoded if p.protocol == "qwen" else encoded
-    return {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}}
+    if p.protocol == "qwen":
+        if len(encoded) >= QWEN_INLINE_LIMIT:
+            raise StageError(p.task, "The recording exceeds the provider's inline-audio limit. Continue unassessed or retry the fixed recording.", "provider")
+        return {"type": "input_audio", "input_audio": {"data": "data:audio/mpeg;base64," + encoded, "format": "mp3"}}
+    return {"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}}
 
 
 def chat(p, system, payload, audio=None):
@@ -351,7 +386,7 @@ def audio_assessment(snapshot, audio_path, p=None):
     """One audio-capable request returns the required transcript and validated answer units."""
     p = p or profile("AUDIO_ASSESS")
     expected = list(range(1, snapshot["units"] + 1))
-    audio = Path(audio_path).read_bytes()
+    audio = transcode_mp3(audio_path) if p.protocol == "qwen" else Path(audio_path).read_bytes()
     data = chat(p, AUDIO_ASSESS_RULES, {**assessment_task(snapshot), "expected_unit_ids": expected}, audio=audio)
     transcript, units = validate_assessment(data, expected)
     return transcript, units, p.metadata()

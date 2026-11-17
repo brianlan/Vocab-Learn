@@ -238,6 +238,7 @@ class ConcurrencyTests(TransactionTestCase):
                 name=uuid.uuid4().hex+".audio"
                 (audio_dir/name).write_bytes(audio_bytes())
                 (audio_dir/(name+".wav")).write_bytes(audio_bytes())  # normalized derivative ready; conversion variant needs no ffmpeg here
+                (audio_dir/(name+".wav.mp3")).write_bytes(audio_bytes())  # provider-encoding derivative ready; no ffmpeg here either
                 b=review.submit(p,"speak",1,name); created.append(b.pk)
             finally: connections.close_all()
         enqueuer=threading.Thread(target=enqueue)

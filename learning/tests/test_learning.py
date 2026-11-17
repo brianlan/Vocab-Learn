@@ -3,7 +3,10 @@ import json
 import os
 import random
 import socket
+import sqlite3
+import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import wave
@@ -18,10 +21,10 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, LiveServerTestCase, override_settings, Client, RequestFactory
-from django.db import OperationalError
+from django.db import OperationalError, connection
 from django.urls import reverse
 from django.utils import timezone
-from learning import authoring, review, views, work
+from learning import authoring, providers, review, views, work
 from learning.models import Deck, Card, Presentation, Attempt, ExamplePair, GenerationJob, ScoredReview
 from learning.providers import StageError, PROMPT_VERSIONS
 from learning.rendering import render, recall_budget
@@ -198,17 +201,20 @@ class LearningTests(TestCase):
         self.assertEqual(GenerationJob.objects.get().state,"queued")
         self.assertEqual(deadline,a.submitted_at+timedelta(seconds=15))
 
-    def test_upload_elapsed_reduces_and_legacy_deadlines_never_extend_the_budget(self):
+    def test_request_anchored_deadline_and_legacy_deadlines_never_extend_the_budget(self):
         decks=[]
         for index in range(5):
             deck=Deck.objects.create(owner=self.user,name=f"Budget {index}")
             authoring.save_card(deck,"generic",{**GENERIC,"question":f"Budget fixture {index}?"})
             decks.append(deck)
-        first=review.submit(review.next_question(self.user,decks[0]),"speak",2,"unused",10.0)
-        self.assertEqual(first.deadline,first.submitted_at+timedelta(seconds=5))
-        # An upload that consumed the whole budget grants no scoreable time: the receipt expires immediately.
-        second=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused",500.0)
-        self.assertEqual(second.deadline,second.submitted_at)
+        # The view passes the immutable request-anchored deadline (transfer and staging already deducted
+        # before transaction acquisition); database lock waiting cannot extend the scoring window.
+        first=review.submit(review.next_question(self.user,decks[0]),"speak",2,"unused",timezone.now()+timedelta(seconds=5))
+        self.assertGreater(first.deadline,first.submitted_at+timedelta(seconds=4))
+        self.assertLessEqual(first.deadline,first.submitted_at+timedelta(seconds=5))
+        # An anchor whose transfer already consumed the whole budget sits at the request itself: no scoreable time.
+        second=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused",timezone.now()-timedelta(seconds=1))
+        self.assertLess(second.deadline,second.submitted_at)
         third=review.submit(review.next_question(self.user,decks[2]),"speak",2,"unused")
         self.assertEqual(third.deadline,third.submitted_at+timedelta(seconds=15))
         # A legacy execution whose deadline exceeds the current budget is obsolete: it expires
@@ -228,7 +234,7 @@ class LearningTests(TestCase):
         self.assertIsNone(work.claim_work())  # the obsolete execution is invalidated, not claimed
         self.assertEqual(ScoredReview.objects.count(),0)
         # An already-past ceiling is skipped by the claim and expires through the normal fencing.
-        expired=review.submit(review.next_question(self.user,decks[4]),"speak",2,"unused",14.0)
+        expired=review.submit(review.next_question(self.user,decks[4]),"speak",2,"unused")
         Attempt.objects.filter(pk=expired.pk).update(deadline=timezone.now()-timedelta(seconds=1))
         self.assertIsNone(work.claim_work())
         self.assertEqual(Attempt.objects.get(pk=expired.pk).state,"submitted")
@@ -256,6 +262,59 @@ class LearningTests(TestCase):
         submitted.refresh_from_db()
         self.assertEqual(submitted.state,"failed")  # only explicit Retry may create the new opportunity
         self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_persistence_paths_refuse_results_under_obsolete_deadlines_without_prior_contact(self):
+        """R3c residual: the budget invariant is shared with result persistence — a processing result
+        that arrives with no status/supervisor contact under a deadline beyond the budget never scores,
+        and first contact near an obsolete deadline still invalidates immediately."""
+        decks=[]
+        for index in range(2):
+            deck=Deck.objects.create(owner=self.user,name=f"Guard {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Guard fixture {index}?"})
+            decks.append(deck)
+        late=self.spoken(review.next_question(self.user,decks[0]))
+        Attempt.objects.filter(pk=late.pk).update(state="processing")
+        late=Attempt.objects.get(pk=late.pk)
+        near=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused")
+        Attempt.objects.filter(pk=near.pk).update(deadline=timezone.now()+timedelta(seconds=10))
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=1):
+            # An unobserved late result under the obsolete deadline is refused at both persistence guards.
+            self.assertFalse(work.save_stage(late.pk,late.claim,transcript="late stage"))
+            self.assertEqual(review.commit_grade(late.pk,late.claim,"E",[],"late unobserved result").state,"processing")
+            self.assertEqual(ScoredReview.objects.count(),0)
+            # First contact near the obsolete deadline invalidates instead of claiming or scoring.
+            self.assertIsNone(work.claim_work())
+            near.refresh_from_db()
+            self.assertEqual((near.state,near.error_stage,near.retryable),("failed","timeout",True))
+            review.expire_attempt(late)
+            late.refresh_from_db()
+            self.assertEqual((late.state,late.error_stage,late.retryable),("failed","timeout",True))
+            self.assertIsNone(work.claim_work())
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_upgrade_migration_conservatively_invalidates_unverifiable_pending_attempts(self):
+        import importlib
+        migration=importlib.import_module("learning.migrations.0012_invalidate_legacy_pending_attempts")
+        decks=[]
+        for index in range(3):
+            deck=Deck.objects.create(owner=self.user,name=f"Upgrade {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Upgrade fixture {index}?"})
+            decks.append(deck)
+        pending=self.spoken(review.next_question(self.user,decks[0]))
+        processing=self.spoken(review.next_question(self.user,decks[1]))
+        Attempt.objects.filter(pk=processing.pk).update(state="processing")
+        done=review.submit(review.next_question(self.user,decks[2]),"forgot")
+        from django.apps import apps as registry
+        migration.invalidate_unverifiable_legacy(registry,None)
+        for row in [Attempt.objects.get(pk=pending.pk),Attempt.objects.get(pk=processing.pk)]:
+            # History, receipt and audio are preserved; only explicit Retry re-enters.
+            self.assertEqual((row.state,row.error_stage,row.error_category,row.retryable),("failed","timeout","timeout",True))
+            self.assertIsNotNone(row.submitted_at)
+            self.assertEqual(row.duration,2)
+        self.assertNotEqual(Attempt.objects.get(pk=pending.pk).claim,pending.claim)
+        self.assertNotEqual(Attempt.objects.get(pk=processing.pk).claim,processing.claim)
+        self.assertEqual(Attempt.objects.get(pk=done.pk).state,"assessed")  # terminal history is untouched
+        self.assertEqual(ScoredReview.objects.count(),1)
 
     def test_retry_after_original_deadline_claims_and_commits_a_fresh_execution(self):
         """R6: an explicit retry keeps its fresh budget through the real claim path and commits exactly once."""
@@ -294,6 +353,7 @@ class LearningTests(TestCase):
             {"action":"speak","duration":"2","audio":SimpleUploadedFile("r.webm",audio_bytes())})
         request.user=self.user
         request.upload_started=time.monotonic()  # what UploadTiming records before CSRF consumes the body
+        request.upload_started_wall=timezone.now()
         original_read=request.read
         def slow_read(*args,**kwargs):
             time.sleep(seconds)
@@ -307,14 +367,16 @@ class LearningTests(TestCase):
         first_deck=Deck.objects.create(owner=self.user,name="Upload timing")
         authoring.save_card(first_deck,"generic",{**GENERIC,"question":"Upload fixture 1?"})
         p=review.next_question(self.user,first_deck)
+        t_start=timezone.now()
         response=self.post_speak_with_delayed_upload(p,0.3)
         data=json.loads(response.content)
         a=Attempt.objects.get(presentation=p)
         self.assertEqual(data["state"],"submitted")
         self.assertEqual(data["deadline"],a.deadline.isoformat())
-        # The parse interval reduced the deadline below the full 15-second budget.
-        self.assertLess(a.deadline,a.submitted_at+timedelta(seconds=15))
-        self.assertGreater(a.deadline,a.submitted_at+timedelta(seconds=14))
+        # The parse interval reduced the deadline below the full 15-second budget: the deadline is
+        # anchored to the request (wall anchor + budget − measured interval), not to insertion time.
+        self.assertLess(a.deadline,t_start+timedelta(seconds=14.6))
+        self.assertGreater(a.deadline,t_start+timedelta(seconds=12.9))
         # An ambiguous replay of the same submission returns the original attempt unchanged.
         replay=json.loads(self.post_speak_with_delayed_upload(p,0.0).content)
         self.assertEqual(replay["deadline"],data["deadline"])
@@ -750,6 +812,47 @@ class LearningTests(TestCase):
             self.assertEqual(chat.call_count,1)  # one paid request per execution
         a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"audio-retry")
         self.assertEqual(a.asr_provenance,{"model":"original-asr"})
+
+    def test_qwen_request_transports_the_whole_accepted_range_under_the_provider_inline_limit(self):
+        """R7: Qwen's documented inline limit is an encoded Base64 string under 10MB, while the
+        accepted 500-second recording normalizes to about 16MB of PCM. The documented one-request
+        representation is MP3 (a documented input format) encoding of the same normalized audio."""
+        import base64 as b64
+        p=providers.profile("AUDIO_ASSESS")
+        self.assertEqual(p.protocol,"qwen")
+        seconds=500
+        buffer=io.BytesIO()
+        with wave.open(buffer,"wb") as fixture:
+            fixture.setnchannels(1); fixture.setsampwidth(2); fixture.setframerate(16000)
+            fixture.writeframes(b"\x00\x01"*16000*seconds)  # 500s mono 16kHz: ~16MB normalized PCM
+        source=Path(self.folder.name)/(uuid.uuid4().hex+".audio.wav"); source.write_bytes(buffer.getvalue())
+        self.assertGreater(source.stat().st_size,10*1000*1000)  # the WAV itself exceeds the documented limit
+        mp3=providers.transcode_mp3(source)
+        encoded=b64.b64encode(mp3).decode()
+        self.assertLess(len(encoded),providers.QWEN_INLINE_LIMIT)
+        part=providers.audio_part(p,mp3)
+        self.assertEqual((part["input_audio"]["format"],part["input_audio"]["data"].startswith("data:audio/mpeg;base64,")),("mp3",True))
+        with wave.open(str(source),"rb") as original:
+            with tempfile.NamedTemporaryFile(suffix=".mp3") as check:
+                check.write(mp3); check.flush()
+                probe=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",check.name],
+                    capture_output=True,text=True,check=True)
+                self.assertAlmostEqual(float(probe.stdout.strip()),original.getnframes()/original.getframerate(),delta=1.0)
+        # The guard keeps oversized payloads unscored even if encoding ever changes.
+        with self.assertRaises(StageError):
+            providers.audio_part(p,b"\0"*(providers.QWEN_INLINE_LIMIT+1))
+
+    def test_unrelated_tasks_keep_base_empty_override_behavior(self):
+        """P1: only AUDIO_ASSESS may replace explicit-empty endpoint/model overrides with provider defaults."""
+        with patch.dict(os.environ,{"DEFINITION_ENDPOINT":"","DEFINITION_MODEL":"replacement-model",
+                "DEFINITION_API_KEY":"test-only"}):
+            with self.assertRaises(StageError):
+                providers.profile("DEFINITION")  # base behavior: an empty endpoint fails configuration
+        with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"","AUDIO_ASSESS_MODEL":"","AUDIO_ASSESS_API_KEY":"test-only",
+                "AUDIO_ASSESS_PROVIDER":"doubao"}):
+            audio=providers.profile("AUDIO_ASSESS")
+            self.assertEqual((audio.endpoint,audio.model,audio.protocol),
+                (providers.AUDIO_PROVIDERS["doubao"]["endpoint"],providers.AUDIO_PROVIDERS["doubao"]["model"],"doubao"))
 
     def test_forgot_timeline_and_preserved_scheduler_memory(self):
         """SRS-TIMELINE / DELAY-ANCHOR / NEXT-REVIEW."""
@@ -1936,15 +2039,18 @@ class UploadTransferHttpTests(LiveServerTestCase):
         return status, raw.split("\r\n\r\n",1)[1]
 
     def test_transfer_and_staging_reduce_the_budget_and_exhausted_uploads_score_nothing(self):
+        t0 = timezone.now()
         status, body_text = self.speak_over_http(self.card, delay=2.0)
         self.assertEqual(status, 200, body_text[:400])
         data=json.loads(body_text)
         a=Attempt.objects.get()
         self.assertEqual(data["state"],"submitted")
         self.assertEqual(data["deadline"],a.deadline.isoformat())
-        measured=a.submitted_at+timedelta(seconds=15)-a.deadline
-        self.assertGreaterEqual(measured,timedelta(seconds=1.5))  # the delayed transfer was measured, not a cached lookup
-        self.assertLess(measured,timedelta(seconds=2.9))
+        # The deadline is anchored to the request: anchor ≈ t0, minus the measured transfer/staging interval,
+        # regardless of when the insert commits.
+        self.assertGreater(a.deadline,t0+timedelta(seconds=12))
+        self.assertLessEqual(a.deadline,t0+timedelta(seconds=13.5))
+        self.assertLess(a.deadline,a.submitted_at+timedelta(seconds=13))
         self.assertEqual(ScoredReview.objects.count(),0)
         # CSRF stays enforced: without the token the request is rejected before any timing or storage.
         status, _ = self.speak_over_http(self.card, delay=0.0, token=False)
@@ -1962,4 +2068,38 @@ class UploadTransferHttpTests(LiveServerTestCase):
         review.commit_grade(a2.pk,a2.claim,"E",[],"after expiry")
         a2.refresh_from_db()
         self.assertEqual(a2.state,"failed")
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def hold_write_lock(self, seconds):
+        """Hold BEGIN IMMEDIATE on the shared test database so the server's submit transaction waits."""
+        hold = sqlite3.connect(connection.settings_dict["NAME"], uri=True, timeout=5, isolation_level=None, check_same_thread=False)
+        def guard():
+            try:
+                hold.execute("BEGIN IMMEDIATE")
+                time.sleep(seconds)
+                hold.execute("COMMIT")
+            finally:
+                hold.close()
+        thread = threading.Thread(target=guard, daemon=True)
+        thread.start()
+        thread.join(1.0)  # BEGIN IMMEDIATE on an uncontested database acquires immediately
+
+    def test_writer_lock_waiting_cannot_extend_the_request_anchored_deadline(self):
+        """R3a residual: the deadline is fixed to the request anchor; waiting on the database
+        writer lock grants no extra scoring time and an exhausted execution never claims or scores."""
+        self.assertEqual(Attempt.objects.count(), 0)
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=1.0):
+            self.hold_write_lock(2.5)
+            t1 = timezone.now()  # the request starts here; the anchor sits within ~ε after it
+            status, body_text = self.speak_over_http(self.card, delay=0.2)
+        self.assertEqual(status, 200, body_text[:400])
+        a = Attempt.objects.get()
+        self.assertEqual((json.loads(body_text)["state"],a.state,a.error_stage,a.retryable),("failed","failed","timeout",True))
+        # The stored deadline sits at the request anchor + budget, not at post-lock insertion time.
+        self.assertGreater(a.deadline, t1)
+        self.assertLessEqual(a.deadline, t1+timedelta(seconds=1.05))
+        # No claim, no assessment call and no score for the exhausted execution.
+        self.assertIsNone(work.claim_work())
+        self.assertEqual(ScoredReview.objects.count(),0)
+        review.commit_grade(a.pk,a.claim,"E",[],"late under expired deadline")
         self.assertEqual(ScoredReview.objects.count(),0)

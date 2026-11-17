@@ -370,7 +370,7 @@ def action(request, presentation_id):
     choice = request.POST.get("action")  # already parsed by body-consuming middleware (e.g. CSRF)
     if choice not in ["skip", "forgot", "speak"]:
         return JsonResponse({"error": "Choose Skip, Speak or Forgot."}, status=400)
-    name, duration, upload_elapsed = "", None, None
+    name, duration = "", None
     if choice == "speak":
         upload = request.FILES.get("audio")
         if not upload or not 0 < upload.size <= 50*1024*1024:
@@ -397,8 +397,15 @@ def action(request, presentation_id):
             # One immutable Stop-based window: from the earliest request moment (before any
             # body-consuming middleware) through durable staging of the recording.
             upload_started = getattr(request, "upload_started", None)
-            upload_elapsed = time.monotonic()-upload_started if upload_started is not None else None
-            a = review.submit(p, choice, duration, name, upload_elapsed)
+            # The execution deadline is anchored to the request, not to transaction acquisition:
+            # waiting on a database writer lock must not grant extra scoring time (R3a).
+            submission_deadline = None
+            if upload_started is not None:
+                anchor = getattr(request, "upload_started_wall", None)
+                if anchor is not None:
+                    elapsed = time.monotonic()-upload_started
+                    submission_deadline = anchor+timedelta(seconds=max(0.0, settings.ASSESSMENT_TIMEOUT_SECONDS-elapsed))
+            a = review.submit(p, choice, duration, name, submission_deadline)
         except Exception:
             (settings.AUDIO_DIR/name).unlink(missing_ok=True)
             raise
