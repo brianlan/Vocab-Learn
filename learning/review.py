@@ -226,14 +226,15 @@ def grade_units(units, duration, budget):
 @transaction.atomic
 def expire_attempt(a):
     a = Attempt.objects.get(pk=a.pk)
+    now = timezone.now()
     if a.state in ("submitted", "processing") and a.deadline:
-        # A stored deadline beyond the current budget belongs to a legacy or config-shrunk execution;
-        # fresh submissions and valid retries never exceed it, so bounding cannot shorten them (R3c/R6).
-        ceiling = timezone.now()+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
-        if a.deadline > ceiling:
-            a.deadline = ceiling
+        # An execution whose deadline exceeds the current budget predates it (legacy or config-shrunk);
+        # its Stop-anchored window is unrecoverable, so it expires now instead of granting the old claim
+        # new scoring time. Fresh submissions and valid retries never exceed the budget (R3c/R6).
+        if a.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS):
+            a.deadline = now
             a.save(update_fields=["deadline"])
-    if a.state in ("submitted", "processing") and a.deadline <= timezone.now():
+    if a.state in ("submitted", "processing") and a.deadline <= now:
         a.state, a.claim, a.error_stage, a.error = "failed", uuid.uuid4(), "timeout", "Processing expired. Retry this fixed input or continue unassessed."
         a.error_category, a.retryable = "timeout", True
         a.save(update_fields=["state", "claim", "error_stage", "error", "error_category", "retryable"])

@@ -2,6 +2,7 @@ import io
 import json
 import os
 import random
+import socket
 import tempfile
 import time
 import uuid
@@ -11,11 +12,12 @@ from html.parser import HTMLParser
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
+from django.conf import settings
 from django.core.management import call_command, CommandError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings, Client, RequestFactory
+from django.test import TestCase, LiveServerTestCase, override_settings, Client, RequestFactory
 from django.db import OperationalError
 from django.urls import reverse
 from django.utils import timezone
@@ -209,52 +211,50 @@ class LearningTests(TestCase):
         self.assertEqual(second.deadline,second.submitted_at)
         third=review.submit(review.next_question(self.user,decks[2]),"speak",2,"unused")
         self.assertEqual(third.deadline,third.submitted_at+timedelta(seconds=15))
-        # A legacy nonterminal attempt with an old long deadline is bounded at claim time.
+        # A legacy execution whose deadline exceeds the current budget is obsolete: it expires
+        # against its receipt anchor immediately and the old claim can never score.
         legacy=review.submit(review.next_question(self.user,decks[3]),"speak",2,"unused")
+        original_claim=legacy.claim
         Attempt.objects.filter(pk=legacy.pk).update(deadline=legacy.submitted_at+timedelta(seconds=300))
         for attempt in [first,second,third]:
             review.exit_attempt(attempt)
-        claim_now=timezone.now()
-        receipt=work.claim_work()
-        self.assertEqual(receipt[1],legacy.pk)
-        legacy.refresh_from_db()
-        gap=legacy.deadline-claim_now
-        self.assertGreater(gap,timedelta(0))  # still claimable, and never beyond one budget from the claim moment
-        self.assertLessEqual(gap,timedelta(seconds=15,milliseconds=100))
-        review.exit_attempt(legacy)
+        obsolete=review.expire_attempt(legacy)
+        obsolete.refresh_from_db()
+        self.assertEqual((obsolete.state,obsolete.error_stage,obsolete.retryable),("failed","timeout",True))
+        self.assertNotEqual(obsolete.claim,original_claim)
+        review.commit_grade(obsolete.pk,original_claim,"E",[],"late legacy result")
+        obsolete.refresh_from_db()
+        self.assertEqual(obsolete.state,"failed")  # the stale claim cannot store a late result
+        self.assertIsNone(work.claim_work())  # the obsolete execution is invalidated, not claimed
+        self.assertEqual(ScoredReview.objects.count(),0)
         # An already-past ceiling is skipped by the claim and expires through the normal fencing.
         expired=review.submit(review.next_question(self.user,decks[4]),"speak",2,"unused",14.0)
         Attempt.objects.filter(pk=expired.pk).update(deadline=timezone.now()-timedelta(seconds=1))
         self.assertIsNone(work.claim_work())
         self.assertEqual(Attempt.objects.get(pk=expired.pk).state,"submitted")
 
-    def test_legacy_deadlines_are_bounded_and_expire_on_shared_paths_without_a_worker(self):
+    def test_obsolete_legacy_executions_are_invalidated_on_shared_paths_without_a_worker(self):
         decks=[]
         for index in range(2):
             deck=Deck.objects.create(owner=self.user,name=f"Legacy {index}")
             authoring.save_card(deck,"generic",{**GENERIC,"question":f"Legacy fixture {index}?"})
             decks.append(deck)
         processing=self.spoken(review.next_question(self.user,decks[0]))
+        original_claim=processing.claim
         Attempt.objects.filter(pk=processing.pk).update(deadline=processing.submitted_at+timedelta(seconds=300))
-        bounded=review.expire_attempt(processing)  # the shared expiry/status path bounds before expiring
-        bounded.refresh_from_db()
-        self.assertEqual(bounded.state,"processing")
-        self.assertLessEqual(bounded.deadline,timezone.now()+timedelta(seconds=15))
-        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(seconds=16)):
-            expired=review.expire_attempt(bounded)
-        expired.refresh_from_db()
-        self.assertEqual((expired.state,expired.error_stage,expired.retryable),("failed","timeout",True))
+        invalidated=review.expire_attempt(processing)  # the shared expiry/status path invalidates on first touch
+        invalidated.refresh_from_db()
+        self.assertEqual((invalidated.state,invalidated.error_stage,invalidated.retryable),("failed","timeout",True))
+        self.assertNotEqual(invalidated.claim,original_claim)  # the old claim loses its fencing token
+        review.commit_grade(invalidated.pk,original_claim,"E",[],"late processing result")
+        invalidated.refresh_from_db()
+        self.assertEqual((invalidated.state,invalidated.grade),("failed",""))
         submitted=self.spoken(review.next_question(self.user,decks[1]))
         submitted.state="submitted"; submitted.save(update_fields=["state"])
         Attempt.objects.filter(pk=submitted.pk).update(deadline=submitted.submitted_at+timedelta(seconds=300))
-        bounded=review.expire_attempt(submitted)
-        bounded.refresh_from_db()
-        self.assertEqual(bounded.state,"submitted")
-        self.assertLessEqual(bounded.deadline,timezone.now()+timedelta(seconds=15))  # bounded at first touch
-        with patch("learning.review.timezone.now",return_value=timezone.now()+timedelta(seconds=16)):
-            review.expire_attempt(bounded)  # and expired within one budget of that touch
+        review.expire_attempt(submitted)
         submitted.refresh_from_db()
-        self.assertEqual(submitted.state,"failed")
+        self.assertEqual(submitted.state,"failed")  # only explicit Retry may create the new opportunity
         self.assertEqual(ScoredReview.objects.count(),0)
 
     def test_retry_after_original_deadline_claims_and_commits_a_fresh_execution(self):
@@ -289,10 +289,11 @@ class LearningTests(TestCase):
         self.assertEqual(ScoredReview.objects.count(),1)
 
     def post_speak_with_delayed_upload(self, p, seconds):
-        """Drive the real speak view with a body whose parse (transfer) is artificially delayed."""
+        """Drive the speak view with the middleware anchor and a body whose parse (transfer) is artificially delayed."""
         request=self.factory.post(reverse("action",args=[p.pk]),
             {"action":"speak","duration":"2","audio":SimpleUploadedFile("r.webm",audio_bytes())})
         request.user=self.user
+        request.upload_started=time.monotonic()  # what UploadTiming records before CSRF consumes the body
         original_read=request.read
         def slow_read(*args,**kwargs):
             time.sleep(seconds)
@@ -1881,3 +1882,84 @@ class LearningTests(TestCase):
         self.assertIn("Regenerate examples",html)  # a fresh request bound to the new pair is offered
         fresh=self.manual_regeneration(card)
         self.assertEqual(fresh.provenance["requested_pair_id"],replacement.pk)
+
+
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class UploadTransferHttpTests(LiveServerTestCase):
+    """R3a full path: transfer and staging are measured from the pre-middleware anchor over real HTTP with CSRF enabled."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
+        self.override.enable(); self.addCleanup(self.override.disable)
+        self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+        self.environ.start(); self.addCleanup(self.environ.stop)
+        self.user = get_user_model().objects.create_user("learner", password="test-password")
+        self.deck = Deck.objects.create(owner=self.user, name="Transfer timing")
+        self.card = authoring.save_card(self.deck, "generic", {**GENERIC, "question": "Transfer fixture?"})
+        Card.objects.filter(pk=self.card.pk).update(due=timezone.now()-timedelta(seconds=1))
+        self.presentation = review.next_question(self.user, self.deck)
+        self.browser = Client()
+        self.browser.force_login(self.user)
+        self.browser.get("/login/")  # renders a form, which sets the CSRF cookie
+        self.session_cookie = self.browser.cookies[settings.SESSION_COOKIE_NAME].value
+        self.csrf = self.browser.cookies[settings.CSRF_COOKIE_NAME].value
+
+    def speak_over_http(self, card, delay, token=True):
+        host, port = self.live_server_url.split("//",1)[1].rsplit(":",1)
+        path = reverse("action", args=[card.presentation_set.get().pk])
+        boundary = "----vocab" + uuid.uuid4().hex
+        parts = [f"--{boundary}\r\nContent-Disposition: form-data; name=\"action\"\r\n\r\nspeak\r\n",
+                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"duration\"\r\n\r\n2\r\n",
+                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"r.webm\"\r\nContent-Type: audio/webm\r\n\r\n"]
+        body = "".join(parts).encode() + audio_bytes() + f"\r\n--{boundary}--\r\n".encode()
+        headers = (f"POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: multipart/form-data; boundary={boundary}\r\n"
+            f"Content-Length: {len(body)}\r\nCookie: {settings.SESSION_COOKIE_NAME}={self.session_cookie}; {settings.CSRF_COOKIE_NAME}={self.csrf}\r\n")
+        if token:
+            headers += "X-CSRFToken: " + self.csrf + "\r\n"  # environ key is settings.CSRF_HEADER_NAME; the wire header is X-CSRFToken
+        headers += "Connection: close\r\n\r\n"
+        with socket.create_connection((host, int(port)), timeout=30) as connection:
+            connection.sendall(headers.encode())
+            half = len(body)//2
+            connection.sendall(body[:half])
+            time.sleep(delay)  # the transfer stays in flight; the pre-middleware anchor must observe it
+            connection.sendall(body[half:])
+            received=[]
+            while True:
+                chunk=connection.recv(65536)
+                if not chunk: break
+                received.append(chunk)
+        raw=b"".join(received).decode(errors="replace")
+        status=int(raw.split(" ",1)[1].split(" ",1)[0])
+        return status, raw.split("\r\n\r\n",1)[1]
+
+    def test_transfer_and_staging_reduce_the_budget_and_exhausted_uploads_score_nothing(self):
+        status, body_text = self.speak_over_http(self.card, delay=2.0)
+        self.assertEqual(status, 200, body_text[:400])
+        data=json.loads(body_text)
+        a=Attempt.objects.get()
+        self.assertEqual(data["state"],"submitted")
+        self.assertEqual(data["deadline"],a.deadline.isoformat())
+        measured=a.submitted_at+timedelta(seconds=15)-a.deadline
+        self.assertGreaterEqual(measured,timedelta(seconds=1.5))  # the delayed transfer was measured, not a cached lookup
+        self.assertLess(measured,timedelta(seconds=2.9))
+        self.assertEqual(ScoredReview.objects.count(),0)
+        # CSRF stays enforced: without the token the request is rejected before any timing or storage.
+        status, _ = self.speak_over_http(self.card, delay=0.0, token=False)
+        self.assertEqual(status, 403)
+        # An upload that consumes the whole budget leaves nothing scoreable: immediate expiry, fenced commits.
+        second_deck = Deck.objects.create(owner=self.user, name="Transfer exhaustion")
+        exhausted = authoring.save_card(second_deck, "generic", {**GENERIC, "question": "Transfer fixture 2?"})
+        Card.objects.filter(pk=exhausted.pk).update(due=timezone.now()-timedelta(seconds=1))
+        review.next_question(self.user, second_deck)
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=0.5):
+            status, body_text = self.speak_over_http(exhausted, delay=1.0)
+        self.assertEqual(status, 200)
+        a2=Attempt.objects.get(presentation__card=exhausted)
+        self.assertEqual((json.loads(body_text)["state"],a2.state,a2.error_stage,a2.retryable),("failed","failed","timeout",True))
+        review.commit_grade(a2.pk,a2.claim,"E",[],"after expiry")
+        a2.refresh_from_db()
+        self.assertEqual(a2.state,"failed")
+        self.assertEqual(ScoredReview.objects.count(),0)

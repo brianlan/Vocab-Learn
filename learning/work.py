@@ -306,6 +306,7 @@ def retry_generation(job):
 
 @transaction.atomic
 def claim_work():
+    from .review import expire_attempt
     now = timezone.now()
     job = Attempt.objects.filter(state="submitted", deadline__gt=now).order_by("submitted_at").first()
     kind = "assessment"
@@ -314,13 +315,11 @@ def claim_work():
         kind = "generation"
     if not job:
         return None
-    if kind == "assessment":
-        # Bound any stored deadline beyond the current budget (legacy/config-shrunk rows) so the
-        # claimed execution cannot run longer; valid submissions and retries are never shortened.
-        ceiling = now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
-        if job.deadline > ceiling:
-            job.deadline = ceiling
-            job.save(update_fields=["deadline"])
+    if kind == "assessment" and job.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS):
+        # Obsolete execution (legacy/config-shrunk): its Stop-anchored budget is unrecoverable,
+        # so it is invalidated instead of claimed; only explicit Retry re-enters the queue.
+        expire_attempt(job)
+        return None
     job.state = "processing"
     fields = ["state"]
     if kind == "generation":

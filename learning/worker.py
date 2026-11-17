@@ -70,7 +70,7 @@ def run_worker(once=False, concurrency=None):
                     active.remove(item)
             for a in Attempt.objects.filter(state__in=["submitted", "processing"], deadline__lte=now):
                 expire_attempt(a)
-            # Bound legacy/config-shrunk executions carrying a deadline beyond the current budget.
+            # Invalidate legacy/config-shrunk executions carrying a deadline beyond the current budget.
             for a in Attempt.objects.filter(state__in=["submitted", "processing"],
                     deadline__gt=now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)):
                 expire_attempt(a)

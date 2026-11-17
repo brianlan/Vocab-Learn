@@ -46,6 +46,43 @@ def run(options):
         assert "four" not in page.content().lower()
         page.screenshot(path=str(output/"review-front.png"),full_page=True)
         checked("Manual entry, deck-scoped practice, front has no hidden reference")
+        # --- Synthetic recovery probes: controlled transport payloads, no server attempt involved. ---
+        status_url=page.locator("#review-card").get_attribute("data-status-url")
+        def synthetic(state,deadline):
+            return json.dumps({"state":state,"grade":None,"transcript":None,"next_due":None,
+                "deadline":deadline,"metrics":{},"collection":"","back_html":""})
+        terminal=synthetic("assessed",None)
+        responses=[synthetic("processing",page.evaluate("new Date(Date.now()-5000).toISOString()")),
+                   synthetic("processing",page.evaluate("new Date(Date.now()-5000).toISOString()")),
+                   synthetic("processing",page.evaluate("new Date(Date.now()+60000).toISOString()")),
+                   terminal]
+        page.route("**"+status_url,lambda route: route.fulfill(status=200,content_type="application/json",
+            body=responses.pop(0) if responses else terminal))
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=5000)
+        assert "15-second" in page.locator("#technical-message").inner_text()
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_timeout(400)
+        assert page.locator("#reconnect-controls").is_visible()  # recovery survives a late pending response
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_timeout(400)
+        assert page.locator("#reconnect-controls").is_hidden()  # a confirmed new execution clears overdue
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_timeout(400)
+        assert page.locator("#reconnect-controls").is_hidden()  # an authoritative terminal result hides it
+        page.unroute("**"+status_url)
+        checked("Synthetic probe: overdue recovery persists across late pending responses, clears on a confirmed new execution and hides at a terminal result")
+        page.route("**"+status_url,lambda route: route.abort())
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
+        assert "unconfirmed" in page.locator("#technical-message").inner_text()
+        page.unroute("**"+status_url)
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_timeout(400)
+        assert "No accepted submission" in page.locator("#technical-message").inner_text()  # the guard released
+        page.reload(); page.wait_for_selector("#review-card")
+        assert page.locator("#reconnect-controls").is_hidden()  # a clean page starts without recovery
+        checked("Synthetic probe: an aborted status request stays unconfirmed, releases the check guard and reload starts clean")
         page.wait_for_timeout(13000)
         page.get_by_role("button",name=re.compile("Speak")).click()
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
@@ -56,6 +93,12 @@ def run(options):
         assert page.locator("#back button",has_text="Next card").is_disabled()
         page.screenshot(path=str(output/"checking.png"),full_page=True)
         checked("Actual MediaRecorder upload reveals reference before model completion")
+        # Durable recovery across reload: the server-owned deadline survives without a new submission.
+        page.wait_for_timeout(1500); page.reload(); page.wait_for_selector("#back:not([hidden])",timeout=15000)
+        pending_state=page.locator("#review-card").get_attribute("data-state")
+        assert pending_state in ("submitted","processing"),pending_state
+        assert page.locator("#review-card").get_attribute("data-deadline"),"Reloaded page lacks the execution deadline"
+        checked("Processing reload keeps the server deadline and resumes the pending display")
         deadline=time.monotonic()+30
         while time.monotonic()<deadline:
             verdict=page.locator(".recall-result h3").inner_text()
@@ -142,7 +185,9 @@ def run(options):
         checked("Forgot and persisted one-minute due; temporarily empty practice rechecks availability")
         deck_id=re.search(r"/decks/(\d+)/",deck_url)[1]
         page.goto(target+"/progress/?window=all&deck="+deck_id)
-        expected_metrics=["2","2","50%"] if scored_first else ["1","1","100%"]
+        # Timeout branch: the closed_unassessed card and the Skip are excluded; the only scored
+        # answer is Forgot/A, so accuracy is 0%. Success branch: D/E plus A gives 50%.
+        expected_metrics=["2","2","50%"] if scored_first else ["1","1","0%"]
         metrics=page.locator(".metric").all_text_contents(); assert metrics==expected_metrics,metrics
         page.screenshot(path=str(output/"progress.png"),full_page=True)
         checked("Distinct-card/scored-review/accuracy metrics exclude Skip")
