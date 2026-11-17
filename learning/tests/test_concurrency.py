@@ -226,7 +226,9 @@ class ConcurrencyTests(TransactionTestCase):
         a.save()
         binary=audio_dir/"ffmpeg"
         pidfile=audio_dir/"child.pid"
-        binary.write_text("#!/usr/bin/python3\nimport os,time\nfrom pathlib import Path\nPath("+repr(str(pidfile))+").write_text(str(os.getpid()))\ntime.sleep(300)\n")
+        binary.write_text("#!/usr/bin/python3\nimport os,sys,time\nfrom pathlib import Path\n"
+            "if sys.argv[-1]=='pipe:1':\n    sys.stdout.buffer.write(b'fake-mp3')\n"
+            "else:\n    Path("+repr(str(pidfile))+").write_text(str(os.getpid()))\n    time.sleep(300)\n")
         binary.chmod(0o700)
         deck=Deck.objects.create(owner=self.user,name="Healthy")
         authoring.save_card(deck,"generic",GENERIC)
@@ -238,7 +240,6 @@ class ConcurrencyTests(TransactionTestCase):
                 name=uuid.uuid4().hex+".audio"
                 (audio_dir/name).write_bytes(audio_bytes())
                 (audio_dir/(name+".wav")).write_bytes(audio_bytes())  # normalized derivative ready; conversion variant needs no ffmpeg here
-                (audio_dir/(name+".wav.mp3")).write_bytes(audio_bytes())  # provider-encoding derivative ready; no ffmpeg here either
                 b=review.submit(p,"speak",1,name); created.append(b.pk)
             finally: connections.close_all()
         enqueuer=threading.Thread(target=enqueue)

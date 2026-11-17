@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import subprocess
 import tempfile
 import time
 import wave
@@ -153,6 +154,78 @@ class ProviderTests(ProviderBase):
                     self.assertEqual(body["thinking"],{"type":"disabled"})
                     self.assertEqual(body["service_tier"],"default")
                     self.assertNotIn("reasoning_effort",body)
+
+    def test_stale_mp3_leftovers_are_never_trusted(self):
+        """R7a: encoding publishes no shared file, so an interrupted or overlapping derivative of the
+        immutable recording can never be assessed; the request always carries freshly encoded bytes."""
+        seen=[]
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":
+                json.dumps({"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
+        snapshots={"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"answer.wav"
+            with wave.open(str(path),"wb") as fixture:
+                fixture.setnchannels(1);fixture.setsampwidth(2);fixture.setframerate(16000)
+                fixture.writeframes(b"\x00\x01"*16000)
+            Path(str(path)+".mp3").write_bytes(b"truncated-leftover-bytes")  # simulated interrupted writer
+            with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k"},clear=True):
+                with self.transport(handler):
+                    p.audio_assessment(snapshots,path)
+            sent=seen[0]["messages"][1]["content"][1]["input_audio"]["data"].removeprefix("data:audio/mpeg;base64,")
+            self.assertNotEqual(base64.b64decode(sent),b"truncated-leftover-bytes")
+            with tempfile.NamedTemporaryFile(suffix=".mp3") as check:
+                check.write(base64.b64decode(sent));check.flush()
+                probe=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",check.name],
+                    capture_output=True,text=True,check=True)
+                self.assertAlmostEqual(float(probe.stdout.strip()),1.0,delta=0.5)  # the complete recording was sent
+            self.assertEqual(Path(str(path)+".mp3").read_bytes(),b"truncated-leftover-bytes")  # encoding left the stale file untouched
+
+    def test_concurrent_encodings_each_return_complete_output(self):
+        import threading
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"answer.wav"
+            with wave.open(str(path),"wb") as fixture:
+                fixture.setnchannels(1);fixture.setsampwidth(2);fixture.setframerate(16000)
+                fixture.writeframes(b"\x00\x01"*16000)
+            barrier=threading.Barrier(2);results=[]
+            def worker():
+                barrier.wait()
+                results.append(p.transcode_mp3(path,20))
+            threads=[threading.Thread(target=worker) for _ in range(2)]
+            for thread in threads:thread.start()
+            for thread in threads:thread.join(30)
+            self.assertEqual(len(results),2)
+            self.assertEqual(results[0],results[1])  # overlapping encodings each get their own complete bytes
+            with tempfile.NamedTemporaryFile(suffix=".mp3") as check:
+                check.write(results[0]);check.flush()
+                probe=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",check.name],
+                    capture_output=True,text=True,check=True)
+                self.assertAlmostEqual(float(probe.stdout.strip()),1.0,delta=0.5)
+            self.assertFalse(Path(str(path)+".mp3").exists())
+
+    def test_encoding_exhaustion_blocks_the_provider_call(self):
+        """R7b: encoding consumes the remaining execution budget; an exhausted window fails unscored
+        before any model request is dispatched."""
+        requests=[]
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]})
+        snapshots={"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
+        def slow_transcode(path,budget):
+            time.sleep(0.6)  # the encoding alone exceeds the whole remaining budget
+            return b"encoded-audio"
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"answer.wav";path.write_bytes(b"RIFF")
+            with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k"},clear=True):
+                profile=self.profile("AUDIO_ASSESS","qwen",timeout=0.5)
+                with patch("learning.providers.transcode_mp3",side_effect=slow_transcode):
+                    with self.transport(handler):
+                        with self.assertRaises(p.StageError) as error:
+                            p.audio_assessment(snapshots,path,profile)
+            self.assertEqual(error.exception.category,"timeout")
+            self.assertEqual(requests,[])  # zero model requests for the exhausted execution
 
     def test_assessment_rejects_missing_transcript_refusals_and_unassessable(self):
         good={"id":1,"outcome":"complete","reason":"Okay"}

@@ -154,23 +154,23 @@ def request(p, **kwargs):
         raise StageError(p.task, "Provider returned unreadable output.") from None
 
 
-def transcode_mp3(audio_path):
+def transcode_mp3(audio_path, budget):
     """Qwen's documented inline-audio input limit is an encoded Base64 string under 10MB, while the
     normalized PCM of the accepted 500-second range is about 16MB. The Qwen request therefore
     transports the same normalized mono 16kHz audio as MP3 (a documented input format); the staged
-    normalized WAV artifact and the normalization contract are unchanged."""
-    source, target = Path(audio_path), Path(str(audio_path)+".mp3")
-    if target.is_file():
-        return target.read_bytes()  # retries reuse the derived encoding of the immutable staged audio
+    normalized WAV artifact and the normalization contract are unchanged. Complete MP3 bytes come
+    back on FFmpeg's stdout: no shared output file exists that an interrupted or overlapping write
+    could leave partially written for another execution to trust, and the subprocess is bounded by
+    the remaining execution budget."""
     try:
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source), "-map", "0:a:0",
-            "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "48k", str(target)],
-            capture_output=True, timeout=20, check=True)
-        return target.read_bytes()
+        result = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(audio_path), "-map", "0:a:0",
+            "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "48k", "-f", "mp3", "pipe:1"],
+            capture_output=True, timeout=max(0.05, budget), check=True)
+    except subprocess.TimeoutExpired:
+        raise StageError("AUDIO_ASSESS", "Audio encoding ran out of its execution window. Continue unassessed or retry the fixed recording.", "timeout") from None
     except (subprocess.SubprocessError, OSError):
         raise StageError("AUDIO_ASSESS", "Audio could not be encoded for the provider. Continue unassessed or retry the fixed recording.") from None
-    finally:
-        target.unlink(missing_ok=True)
+    return result.stdout
 
 
 QWEN_INLINE_LIMIT = 10*1000*1000  # Documented: the encoded Base64 audio string must stay under 10MB.
@@ -386,8 +386,15 @@ def audio_assessment(snapshot, audio_path, p=None):
     """One audio-capable request returns the required transcript and validated answer units."""
     p = p or profile("AUDIO_ASSESS")
     expected = list(range(1, snapshot["units"] + 1))
-    audio = transcode_mp3(audio_path) if p.protocol == "qwen" else Path(audio_path).read_bytes()
-    data = chat(p, AUDIO_ASSESS_RULES, {**assessment_task(snapshot), "expected_unit_ids": expected}, audio=audio)
+    # Encoding and any transport read consume the remaining execution budget; the provider call
+    # receives only what is left, and an exhausted window fails before any request is dispatched.
+    started = time.monotonic()
+    audio = transcode_mp3(audio_path, p.timeout) if p.protocol == "qwen" else Path(audio_path).read_bytes()
+    remaining = p.timeout-(time.monotonic()-started)
+    if remaining <= 0:
+        raise StageError(p.task, f"{TASK_LABELS[p.task]} ran out of its execution window before the provider call. Continue unassessed or retry the fixed recording.", "timeout")
+    data = chat(replace(p, timeout=remaining), AUDIO_ASSESS_RULES,
+        {**assessment_task(snapshot), "expected_unit_ids": expected}, audio=audio)
     transcript, units = validate_assessment(data, expected)
     return transcript, units, p.metadata()
 

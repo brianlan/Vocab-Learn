@@ -396,15 +396,11 @@ def action(request, presentation_id):
                 os.close(directory)
             # One immutable Stop-based window: from the earliest request moment (before any
             # body-consuming middleware) through durable staging of the recording.
-            upload_started = getattr(request, "upload_started", None)
-            # The execution deadline is anchored to the request, not to transaction acquisition:
-            # waiting on a database writer lock must not grant extra scoring time (R3a).
-            submission_deadline = None
-            if upload_started is not None:
-                anchor = getattr(request, "upload_started_wall", None)
-                if anchor is not None:
-                    elapsed = time.monotonic()-upload_started
-                    submission_deadline = anchor+timedelta(seconds=max(0.0, settings.ASSESSMENT_TIMEOUT_SECONDS-elapsed))
+            # The execution deadline is the request anchor plus the total budget, stored unchanged
+            # through transaction acquisition: transfer, staging and database lock waiting each count
+            # against that absolute deadline exactly once (R3a).
+            anchor = getattr(request, "upload_started_wall", None)
+            submission_deadline = anchor+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS) if anchor is not None else None
             a = review.submit(p, choice, duration, name, submission_deadline)
         except Exception:
             (settings.AUDIO_DIR/name).unlink(missing_ok=True)

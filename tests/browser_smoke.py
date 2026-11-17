@@ -1,6 +1,7 @@
 """Run against a dedicated preview account; real voice submission uses configured providers."""
 import argparse
 import json
+import queue
 import re
 import time
 from pathlib import Path
@@ -50,14 +51,23 @@ def run(options):
         # released by this test, so the controller's automatic watchdog and poller cadence cannot race it.
         # No server attempt is involved; all evidence is labelled synthetic. ---
         status_url=page.locator("#review-card").get_attribute("data-status-url")
-        import queue as queue_mod
         def synthetic(state,deadline):
             return json.dumps({"state":state,"grade":None,"transcript":None,"next_due":None,
                 "deadline":deadline,"metrics":{},"collection":"","back_html":""})
-        replies=[]; held=queue_mod.Queue()
+        replies=[]; held=queue.Queue()
         def gate(route):
             if replies: route.fulfill(status=200,content_type="application/json",body=replies.pop(0))
             else: held.put(route)  # the fetch stays pending until the test releases a reply
+        def wait_held(timeout=15.0):
+            # Synchronous Playwright dispatches route callbacks only while a command is in flight:
+            # pump the event loop with wait_for_timeout instead of blocking the dispatcher thread.
+            limit=time.monotonic()+timeout
+            while time.monotonic()<limit:
+                try:
+                    return held.get_nowait()
+                except queue.Empty:
+                    page.wait_for_timeout(100)
+            raise AssertionError("no held status request arrived")
         page.route("**"+status_url,gate)
         overdue_past=synthetic("processing",page.evaluate("new Date(Date.now()-5000).toISOString()"))
         fresh=synthetic("processing",page.evaluate("new Date(Date.now()+60000).toISOString()"))
@@ -68,18 +78,18 @@ def run(options):
         page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=5000)
         assert "15-second" in page.locator("#technical-message").inner_text()
         # 2. A delayed pending reply arrives 1.2s late; overdue recovery stays visible across it.
-        watchdog=held.get(timeout=5)  # the controller's next automatic status check is held pending
+        watchdog=wait_held()  # the controller's next automatic status check is held pending
         page.wait_for_timeout(1200)
         assert page.locator("#reconnect-controls").is_visible()
         watchdog.fulfill(status=200,content_type="application/json",body=overdue_past)
         page.wait_for_timeout(300)
         assert page.locator("#reconnect-controls").is_visible()
         # 3. A confirmed new execution (fresh deadline) clears the overdue recovery.
-        confirmed=held.get(timeout=5)
+        confirmed=wait_held()
         confirmed.fulfill(status=200,content_type="application/json",body=fresh)
         page.wait_for_selector("#reconnect-controls",state="hidden",timeout=5000)
         # 4. An authoritative terminal result keeps recovery hidden.
-        final=held.get(timeout=5)  # the 1.2s pending poller asks again
+        final=wait_held()  # the 1.2s pending poller asks again
         final.fulfill(status=200,content_type="application/json",body=terminal)
         page.wait_for_timeout(400)
         assert page.locator("#reconnect-controls").is_hidden()
@@ -93,6 +103,7 @@ def run(options):
         page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
         assert "unconfirmed" in page.locator("#technical-message").inner_text()
         page.unroute("**"+status_url)
+        page.evaluate("document.querySelector('[data-action=check]').click()")  # trigger a real subsequent check
         for _ in range(40):
             if "No accepted submission" in page.locator("#technical-message").inner_text(): break
             page.wait_for_timeout(100)
@@ -114,6 +125,26 @@ def run(options):
         assert page.locator("#reconnect-controls").is_hidden()
         assert page.locator("#review-card").get_attribute("data-state")=="question"  # no attempt was created
         checked("Synthetic probe: a stalled upload aborts at ten seconds, stays unconfirmed and submits nothing")
+        # 7. A response body that never completes (headers promise far more than is sent) still keeps
+        # the outcome unconfirmed and releases the guard through a real subsequent check.
+        page.get_by_role("button",name=re.compile("Speak")).click()
+        page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
+        page.wait_for_timeout(800)
+        page.route("**"+status_url,lambda route: route.fulfill(status=200,content_type="application/json",
+            headers={"content-length":"100000"},body=b"{"))
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
+        assert "unconfirmed" in page.locator("#technical-message").inner_text()
+        page.unroute("**"+status_url)
+        page.evaluate("document.querySelector('[data-action=check]').click()")
+        for _ in range(40):
+            if "No accepted submission" in page.locator("#technical-message").inner_text(): break
+            page.wait_for_timeout(100)
+        assert "No accepted submission" in page.locator("#technical-message").inner_text()  # the guard released
+        page.reload(); page.wait_for_selector("#review-card")
+        assert page.locator("#reconnect-controls").is_hidden()
+        assert page.locator("#review-card").get_attribute("data-state")=="question"
+        checked("Synthetic probe: a response body that never completes keeps the outcome unconfirmed and releases the check guard")
         page.wait_for_timeout(13000)
         page.get_by_role("button",name=re.compile("Speak")).click()
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
@@ -125,12 +156,13 @@ def run(options):
         page.screenshot(path=str(output/"checking.png"),full_page=True)
         checked("Actual MediaRecorder upload reveals reference before model completion")
         # Pending-reload and overdue-recovery probes run only while the execution is genuinely pending
-        # (the controlled no-worker timeout path); a fast successful assessment may already be terminal
-        # during the same wait and is allowed to replay its completed result without these probes.
-        if page.locator("#review-card").get_attribute("data-state") in ("submitted","processing"):
+        # (live state: the rendered verdict heading), which is the controlled no-worker timeout path;
+        # a fast successful assessment may already be terminal during the same wait and is allowed to
+        # replay its completed result without these probes.
+        verdict_heading=page.locator(".recall-result h3")
+        if verdict_heading.count() and "Checking" in verdict_heading.inner_text():
             page.reload(); page.wait_for_selector("#back:not([hidden])",timeout=15000)
-            pending_state=page.locator("#review-card").get_attribute("data-state")
-            assert pending_state in ("submitted","processing"),pending_state
+            assert "Checking" in page.locator(".recall-result h3").inner_text(),"Reloaded page left the pending display"
             assert page.locator("#review-card").get_attribute("data-deadline"),"Reloaded page lacks the execution deadline"
             checked("Processing reload keeps the server deadline and resumes the pending display")
             # Overdue reload with an unresponsive transport: held polls abort at ten seconds and recovery stays visible.
