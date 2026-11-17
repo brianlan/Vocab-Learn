@@ -6,11 +6,11 @@ from datetime import timedelta
 from pathlib import Path
 from unittest import TestCase
 from django.contrib.auth import get_user_model
-from django.db import connections
+from django.db import connections, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 from fsrs import Card as MemoryCard, Rating, Scheduler
-from learning.models import Attempt, Card, Deck, Presentation
+from learning.models import Attempt, Card, Deck, Presentation, ScoredReview
 
 
 class ContinuousPracticeMigrationTests(TestCase):
@@ -362,7 +362,7 @@ class AssessmentBudgetMigrationTests(TestCase):
         budget — receipt, audio and history preserved, old claim rotated, only explicit Retry
         re-enters — through the executor's own connection, leaving other databases untouched."""
         alias="assessment_budget_migration_test"
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, transaction.atomic():
             config=copy.deepcopy(connections["default"].settings_dict)
             config["NAME"]=str(Path(folder)/"legacy.sqlite3")
             connections.databases[alias]=config
@@ -371,18 +371,20 @@ class AssessmentBudgetMigrationTests(TestCase):
                 # A current-contract pending attempt in the default database, seeded before any executor
                 # state rendering so the historical registry never shadows the current model classes:
                 # the executor migrates only the alias, and 0012 must not mutate another connection.
-                owner=get_user_model().objects.create_user(username="current-learner",password="!")
+                owner=get_user_model().objects.create_user(username="current-learner-"+uuid.uuid4().hex[:10],password="!")
                 current_deck=Deck.objects.create(owner=owner,name="Current")
                 current_card=Card.objects.create(deck=current_deck,kind="generic",identity="current",
                     question="Current fixture?",answer="four",explanation="Addition.",ready=True)
-                frozen={"kind":"generic","reference":"four","units":1,"question_text":"Two plus two?"}
+                frozen={"kind":"generic","reference":"four","units":1,"question_text":"Two plus two?",
+                    "direction":"generic","explanation":"Addition.","source_version":1}
                 current_p=Presentation.objects.create(user=owner,card=current_card,source_version=1,
                     progress_version=0,snapshot=frozen,budget=12)
                 now=timezone.now()
-                current=Attempt.objects.create(presentation=current_p,action="speak",state="processing",
+                Attempt.objects.create(presentation=current_p,action="speak",state="processing",
                     duration=2,audio_name="current.audio",submitted_at=now,deadline=now+timedelta(seconds=15),
                     audio_expires_at=now+timedelta(hours=23),claim=uuid.uuid4())
-                default_before=dict(Attempt.objects.filter(pk=current.pk).values().get())
+                default_models=(get_user_model(),Deck,Card,Presentation,Attempt,ScoredReview)
+                default_before={model.__name__:list(model.objects.order_by("pk").values()) for model in default_models}
                 executor=MigrationExecutor(connection)
                 old_target=[("learning","0011_learner_preferences")]
                 executor.migrate(old_target)
@@ -390,28 +392,61 @@ class AssessmentBudgetMigrationTests(TestCase):
                 user=old.get_model("auth","User").objects.using(alias).create(username="learner",password="!")
                 deck=old.get_model("learning","Deck").objects.using(alias).create(owner_id=user.pk,name="Private")
                 card=old.get_model("learning","Card").objects.using(alias).create(deck_id=deck.pk,kind="generic",
-                    identity="two-plus-two",question="Two plus two?",answer="four",explanation="Addition.",ready=True)
+                    identity="two-plus-two",question="Two plus two?",answer="four",explanation="Addition.",ready=True,
+                    due=now+timedelta(days=3),fsrs={"original":"memory"},review_count=1,progress_version=1,streak=1)
                 presentation=old.get_model("learning","Presentation").objects.using(alias).create(user_id=user.pk,
-                    card_id=card.pk,source_version=1,progress_version=0,snapshot=frozen,budget=12)
+                    card_id=card.pk,source_version=1,progress_version=1,snapshot=frozen,budget=12)
                 legacy=old.get_model("learning","Attempt").objects.using(alias).create(presentation_id=presentation.pk,
-                    action="speak",state="processing",duration=2,audio_name="legacy.audio",
+                    action="speak",state="processing",duration=2,audio_name="processing.audio",transcript="original processing transcript",
+                    asr_provenance={"model":"legacy-asr"},judge_provenance={"model":"legacy-judge"},
                     submitted_at=now-timedelta(minutes=1),audio_expires_at=now+timedelta(hours=23),
                     deadline=now+timedelta(seconds=300),claim=uuid.uuid4())
-                legacy_claim=legacy.claim
+                submitted=old.get_model("learning","Attempt").objects.using(alias).create(
+                    presentation_id=old.get_model("learning","Presentation").objects.using(alias).create(
+                        user_id=user.pk,card_id=card.pk,source_version=1,progress_version=1,snapshot=frozen,budget=12).pk,
+                    action="speak",state="submitted",duration=3,audio_name="submitted.audio",
+                    submitted_at=now-timedelta(minutes=3),audio_expires_at=now+timedelta(hours=22),
+                    deadline=now+timedelta(seconds=300),claim=uuid.uuid4())
+                assessed_presentation=old.get_model("learning","Presentation").objects.using(alias).create(
+                    user_id=user.pk,card_id=card.pk,source_version=1,progress_version=0,snapshot=frozen,budget=12)
+                assessed=old.get_model("learning","Attempt").objects.using(alias).create(presentation_id=assessed_presentation.pk,
+                    action="speak",state="assessed",duration=2,audio_name="assessed.audio",transcript="four",grade="D",
+                    reason="Original feedback.",outcomes=[{"id":1,"outcome":"complete","reason":"Original feedback."}],
+                    asr_provenance={"model":"original-asr"},judge_provenance={"model":"original-judge"},
+                    next_due=now+timedelta(days=3),
+                    submitted_at=now-timedelta(minutes=2),audio_expires_at=now+timedelta(hours=23),
+                    deadline=now-timedelta(seconds=1),claim=uuid.uuid4())
+                reviewed_at=now-timedelta(minutes=2)
+                old.get_model("learning","ScoredReview").objects.using(alias).create(attempt_id=assessed.pk,
+                    card_id=card.pk,user_id=user.pk,grade="D",reviewed_at=reviewed_at,next_due=now+timedelta(days=3),
+                    snapshot=frozen,fsrs_log={"original":"review log"},duration=2,budget=12)
+                old_attempts=old.get_model("learning","Attempt").objects.using(alias)
+                pending_before={a.pk:old_attempts.values().get(pk=a.pk) for a in (legacy,submitted)}
+                assessed_before=old_attempts.values().get(pk=assessed.pk)
+                unchanged_names=("Deck","Card","Presentation","ScoredReview")
+                unchanged_before={name:list(old.get_model("learning",name).objects.using(alias).order_by("pk").values())
+                    for name in unchanged_names}
                 executor=MigrationExecutor(connection)
                 target=[("learning","0012_invalidate_legacy_pending_attempts")]
                 executor.migrate(target)
                 new=executor.loader.project_state(target).apps
-                after=new.get_model("learning","Attempt").objects.using(alias).get(pk=legacy.pk)
-                self.assertEqual((after.state,after.error_stage,after.error_category,after.retryable),
-                    ("failed","timeout","timeout",True))
-                self.assertNotEqual(after.claim,legacy_claim)  # the old claim loses
-                self.assertIsNone(after.deadline)
-                self.assertEqual((after.duration,after.audio_name,after.submitted_at),
-                    (2,"legacy.audio",now-timedelta(minutes=1)))  # receipt, audio and history preserved
-                self.assertEqual(new.get_model("learning","ScoredReview").objects.using(alias).count(),0)
-                default_after=dict(Attempt.objects.filter(pk=current.pk).values().get())
-                self.assertEqual(default_after,default_before)  # the default database is untouched
+                new_attempts=new.get_model("learning","Attempt").objects.using(alias)
+                changed={"state","claim","deadline","error_stage","error","error_category","retryable"}
+                for pk,before in pending_before.items():
+                    after=new_attempts.values().get(pk=pk)
+                    self.assertEqual((after["state"],after["error_stage"],after["error_category"],after["retryable"],after["deadline"]),
+                        ("failed","timeout","timeout",True,None))
+                    self.assertTrue(after["error"])
+                    self.assertNotEqual(after["claim"],before["claim"])
+                    self.assertEqual({k:v for k,v in after.items() if k not in changed},
+                        {k:v for k,v in before.items() if k not in changed})
+                self.assertEqual(new_attempts.values().get(pk=assessed.pk),assessed_before)
+                self.assertEqual(len(unchanged_before["ScoredReview"]),1)
+                for name in unchanged_names:
+                    self.assertEqual(list(new.get_model("learning",name).objects.using(alias).order_by("pk").values()),
+                        unchanged_before[name],name)
+                for model in default_models:
+                    self.assertEqual(list(model.objects.order_by("pk").values()),default_before[model.__name__],model.__name__)
                 with connection.cursor() as cursor:
                     self.assertEqual(cursor.execute("PRAGMA integrity_check").fetchone()[0],"ok")
                     self.assertEqual(cursor.execute("PRAGMA foreign_key_check").fetchall(),[])
@@ -419,3 +454,4 @@ class AssessmentBudgetMigrationTests(TestCase):
                 connection.close()
                 del connections[alias]
                 del connections.databases[alias]
+                transaction.set_rollback(True)  # Also undo any accidental writes to the default database.

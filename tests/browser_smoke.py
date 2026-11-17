@@ -1,10 +1,20 @@
 """Run against a dedicated preview account; real voice submission uses configured providers."""
 import argparse
+import base64
+import hashlib
 import json
 import queue
 import re
+import socketserver
+import ssl
+import subprocess
+import tempfile
+import threading
 import time
+from contextlib import ExitStack, contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
 
 
@@ -15,10 +25,30 @@ def run(options):
     errors=[]; checks=[]
     def checked(name):
         checks.append(name); print("PASS:",name,flush=True)
-    with sync_playwright() as playwright:
-        browser=playwright.chromium.launch(headless=True,executable_path=options.chromium,
-            args=["--no-sandbox","--use-fake-ui-for-media-stream","--use-fake-device-for-media-stream",
-                  "--use-file-for-fake-audio-capture="+str(options.audio.resolve())])
+    def write_results():
+        result={"status":"passed","checks":checks,"errors":errors,
+            "browser":"Headless Chromium, synthetic microphone; physical device and Edge remain manual checks"}
+        if options.generic_only:
+            result.update(scope="generic-only",assessment="scored" if scored_first else "deadline-failure")
+        (output/"browser-results.json").write_text(json.dumps(result,indent=2)+"\n")
+    with ExitStack() as cleanup:
+        tls=None; loopback_scheme="http"; fixture_pin=None
+        if urlsplit(target).scheme=="https":
+            folder=Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="vocab-smoke-")))
+            key=folder/"loopback.key"; cert=folder/"loopback.crt"
+            subprocess.run(["openssl","req","-x509","-newkey","rsa:2048","-nodes","-keyout",str(key),
+                "-out",str(cert),"-days","1","-subj","/CN=127.0.0.1","-addext","subjectAltName=IP:127.0.0.1"],
+                check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            public_key=subprocess.check_output(["openssl","pkey","-in",str(key),"-pubout","-outform","DER"])
+            fixture_pin=base64.b64encode(hashlib.sha256(public_key).digest()).decode()
+            tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); tls.load_cert_chain(cert,key)
+            loopback_scheme="https"
+        playwright=cleanup.enter_context(sync_playwright())
+        args=["--no-sandbox","--use-fake-ui-for-media-stream","--use-fake-device-for-media-stream",
+              "--use-file-for-fake-audio-capture="+str(options.audio.resolve())]
+        # Trust only this run's loopback fixture key; the application's HTTPS certificate remains verified.
+        if fixture_pin: args.append("--ignore-certificate-errors-spki-list="+fixture_pin)
+        browser=playwright.chromium.launch(headless=True,executable_path=options.chromium,args=args)
         context=browser.new_context(viewport={"width":1440,"height":1050},permissions=["microphone"])
         page=context.new_page(); page.on("pageerror",lambda error:errors.append(str(error)))
         page.goto(target+"/login/"); page.screenshot(path=str(output/"login.png"),full_page=True)
@@ -51,6 +81,31 @@ def run(options):
         # released by this test, so the controller's automatic watchdog and poller cadence cannot race it.
         # No server attempt is involved; all evidence is labelled synthetic. ---
         status_url=page.locator("#review-card").get_attribute("data-status-url")
+        @contextmanager
+        def stalled_transport(path,partial=False):
+            arrived=queue.Queue(); release=threading.Event()
+            class Stall(socketserver.BaseRequestHandler):
+                def handle(self):
+                    if partial:
+                        chunk=b'{"state":"processing"'
+                        self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                            b"Access-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n"
+                            +format(len(chunk),"x").encode()+b"\r\n"+chunk+b"\r\n")
+                    arrived.put(time.monotonic()); release.wait()
+            server=socketserver.ThreadingTCPServer(("127.0.0.1",0),Stall)
+            if tls: server.socket=tls.wrap_socket(server.socket,server_side=True)
+            stall_url=f"{loopback_scheme}://127.0.0.1:{server.server_address[1]}/stall"
+            thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+            def rewrite(route):
+                route.continue_(url=stall_url)
+            try:
+                page.route("**"+path,rewrite)
+                yield stall_url,arrived
+            finally:
+                try:
+                    page.unroute("**"+path,rewrite)
+                finally:
+                    release.set(); server.shutdown(); server.server_close(); thread.join()
         def synthetic(state,deadline):
             return json.dumps({"state":state,"grade":None,"transcript":None,"next_due":None,
                 "deadline":deadline,"metrics":{},"collection":"","back_html":""})
@@ -93,16 +148,17 @@ def run(options):
         final.fulfill(status=200,content_type="application/json",body=terminal)
         page.wait_for_timeout(400)
         assert page.locator("#reconnect-controls").is_hidden()
+        while not held.empty(): held.get_nowait().abort()
         page.unroute("**"+status_url)
         page.reload(); page.wait_for_selector("#review-card")
         assert page.locator("#reconnect-controls").is_hidden()
         checked("Synthetic probe: overdue recovery persists across a delayed pending reply, clears on a confirmed new execution and stays hidden at a terminal result")
         # 5. A status request that stalls until the ten-second abort stays unconfirmed and releases the guard.
-        page.route("**"+status_url,lambda route: None)  # never fulfilled: the fetch stalls
-        page.evaluate("document.querySelector('[data-action=check]').click()")
-        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
-        assert "unconfirmed" in page.locator("#technical-message").inner_text()
-        page.unroute("**"+status_url)
+        with stalled_transport(status_url) as (_,arrived):
+            page.evaluate("document.querySelector('[data-action=check]').click()")
+            page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
+            assert not arrived.empty(),"The stalled status request never reached loopback"
+            assert "unconfirmed" in page.locator("#technical-message").inner_text()
         page.evaluate("document.querySelector('[data-action=check]').click()")  # trigger a real subsequent check
         for _ in range(40):
             if "No accepted submission" in page.locator("#technical-message").inner_text(): break
@@ -116,26 +172,50 @@ def run(options):
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
         page.wait_for_timeout(800)
         action_url=page.locator("#review-card").get_attribute("data-action-url")
-        page.route("**"+action_url,lambda route: None)  # the submission upload stalls
-        page.get_by_role("button",name="Stop & check").click()
-        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
-        assert "unconfirmed" in page.locator("#technical-message").inner_text()
-        page.unroute("**"+action_url)
+        with stalled_transport(action_url) as (_,arrived):
+            page.get_by_role("button",name="Stop & check").click()
+            page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
+            assert not arrived.empty(),"The stalled upload never reached loopback"
+            assert "unconfirmed" in page.locator("#technical-message").inner_text()
         page.reload(); page.wait_for_selector("#review-card")
         assert page.locator("#reconnect-controls").is_hidden()
         assert page.locator("#review-card").get_attribute("data-state")=="question"  # no attempt was created
-        checked("Synthetic probe: a stalled upload aborts at ten seconds, stays unconfirmed and submits nothing")
-        # 7. A response body that never completes (headers promise far more than is sent) still keeps
-        # the outcome unconfirmed and releases the guard through a real subsequent check.
-        page.get_by_role("button",name=re.compile("Speak")).click()
-        page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
-        page.wait_for_timeout(800)
-        page.route("**"+status_url,lambda route: route.fulfill(status=200,content_type="application/json",
-            headers={"content-length":"100000"},body=b"{"))
-        page.evaluate("document.querySelector('[data-action=check]').click()")
-        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
-        assert "unconfirmed" in page.locator("#technical-message").inner_text()
-        page.unroute("**"+status_url)
+        # The ambiguous upload saved a pending marker: the lost-clock guard disables Speak until the
+        # explicit Restart question flow starts the next independent scenario with fresh route URLs.
+        assert page.locator("#clock-recovery").is_visible()
+        assert page.locator("#speak").is_disabled()
+        old_presentation=page.locator("#review-card").get_attribute("data-presentation")
+        old_status_url,old_action_url=status_url,action_url
+        page.get_by_role("button",name="Restart question").click(); page.wait_for_selector("#review-card")
+        assert page.locator("#review-card").get_attribute("data-presentation")!=old_presentation
+        status_url=page.locator("#review-card").get_attribute("data-status-url")  # presentation-dependent URLs are refreshed
+        action_url=page.locator("#review-card").get_attribute("data-action-url")
+        assert status_url!=old_status_url and action_url!=old_action_url
+        checked("Synthetic probe: a stalled upload aborts at ten seconds, stays unconfirmed, submits nothing and the explicit restart flow reopens the question")
+        # 7. A genuinely open response body: JSON headers and the first bytes arrive, completion is
+        # withheld past the transport deadline, the ten-second abort fires around the body read, and
+        # a real subsequent Check succeeds.
+        with stalled_transport(status_url,partial=True) as (stall_url,arrived):
+            body_headers=[]
+            def observe_body_headers(response):
+                if response.url==stall_url:
+                    body_headers.append((response.status,response.headers.get("content-type","")))
+            page.on("response",observe_body_headers)
+            try:
+                stall_started=time.monotonic()
+                page.evaluate("document.querySelector('[data-action=check]').click()")
+                page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
+                stall_elapsed=time.monotonic()-stall_started
+                assert not arrived.empty(),"The open-body server did not send the partial response"
+                body_sent_at=arrived.get_nowait()
+                assert body_headers and body_headers[0][0]==200 and "application/json" in body_headers[0][1],body_headers
+                assert 9<=stall_elapsed<15,f"The open body aborted after {stall_elapsed:.2f}s instead of the ten-second deadline"
+                message=page.locator("#technical-message").inner_text()
+                assert "took too long" in message and "unconfirmed" in message,message
+                while time.monotonic()-body_sent_at<10.2: page.wait_for_timeout(100)
+                body_open_for=time.monotonic()-body_sent_at
+            finally:
+                page.remove_listener("response",observe_body_headers)
         page.evaluate("document.querySelector('[data-action=check]').click()")
         for _ in range(40):
             if "No accepted submission" in page.locator("#technical-message").inner_text(): break
@@ -144,40 +224,159 @@ def run(options):
         page.reload(); page.wait_for_selector("#review-card")
         assert page.locator("#reconnect-controls").is_hidden()
         assert page.locator("#review-card").get_attribute("data-state")=="question"
-        checked("Synthetic probe: a response body that never completes keeps the outcome unconfirmed and releases the check guard")
+        checked(f"Loopback probe: response body stayed open {body_open_for:.1f}s after bytes; abort at {stall_elapsed:.1f}s stayed unconfirmed and released the check guard")
         page.wait_for_timeout(13000)
         page.get_by_role("button",name=re.compile("Speak")).click()
         page.locator("#recording-indicator").filter(has_text=re.compile("^Recording")).wait_for()
         page.wait_for_timeout(1800)
-        stopped=time.monotonic(); page.get_by_role("button",name="Stop & check").click()
+        with page.expect_response(lambda response: response.url.endswith(action_url) and response.request.method=="POST") as submission:
+            stopped=time.monotonic(); page.get_by_role("button",name="Stop & check").click()
+        submission_deadline=submission.value.json().get("deadline")
         page.wait_for_selector("#back:not([hidden])",timeout=15000)
         assert page.locator(".answer").inner_text()=="four"
-        assert page.locator("#back button",has_text="Next card").is_disabled()
+        display=page.evaluate("""() => ({checking: document.querySelector('.recall-result h3').textContent.includes('Checking'),
+            disabledNext: [...document.querySelectorAll('#back button')].some(b => b.textContent.includes('Next card') && b.disabled)})""")
+        assert not display["checking"] or display["disabledNext"]
         page.screenshot(path=str(output/"checking.png"),full_page=True)
-        checked("Actual MediaRecorder upload reveals reference before model completion")
-        # Pending-reload and overdue-recovery probes run only while the execution is genuinely pending
-        # (live state: the rendered verdict heading), which is the controlled no-worker timeout path;
-        # a fast successful assessment may already be terminal during the same wait and is allowed to
-        # replay its completed result without these probes.
+        checked("MediaRecorder upload revealed the reference while pending" if display["checking"] else "MediaRecorder upload returned a terminal result")
+        # A fast success may already be terminal. The no-worker path remains pending long enough
+        # to reload a real server response and hold its controller until the original deadline.
+        released=None; pending_recovery_checked=False
         verdict_heading=page.locator(".recall-result h3")
         if verdict_heading.count() and "Checking" in verdict_heading.inner_text():
-            page.reload(); page.wait_for_selector("#back:not([hidden])",timeout=15000)
-            assert "Checking" in page.locator(".recall-result h3").inner_text(),"Reloaded page left the pending display"
-            assert page.locator("#review-card").get_attribute("data-deadline"),"Reloaded page lacks the execution deadline"
-            checked("Processing reload keeps the server deadline and resumes the pending display")
-            # Overdue reload with an unresponsive transport: held polls abort at ten seconds and recovery stays visible.
-            page.route("**"+status_url,lambda route: None)
-            page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=30000)
-            recovery_message=page.locator("#technical-message").inner_text()
-            assert "unconfirmed" in recovery_message or "15-second" in recovery_message,recovery_message
-            page.unroute("**"+status_url)
-            checked("Overdue reload with an unresponsive transport keeps recovery visible while the held status request aborts")
+            navigation_url=page.url; pending_html=None
+            with stalled_transport(status_url) as (status_stall_url,arrived):
+                pending_response=page.reload(); page.wait_for_selector("#back:not([hidden])",timeout=15000)
+                assert pending_response.status==200 and pending_response.url==navigation_url
+                pending_state=page.locator("#review-card").get_attribute("data-state")
+                if pending_state in ("submitted","processing"):
+                    deadline_attr=page.locator("#review-card").get_attribute("data-deadline")
+                    assert deadline_attr and deadline_attr==submission_deadline,(deadline_attr,submission_deadline)
+                    assert "Checking" in page.locator(".recall-result h3").inner_text()
+                    pending_html=pending_response.text(); pending_csp=pending_response.headers.get("content-security-policy","")
+                    checked("Real pending reload retains the original submission deadline")
+                    page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=20000)
+                    recovery_elapsed=time.monotonic()-stopped
+                    assert recovery_elapsed<20,f"Recovery took {recovery_elapsed:.1f}s after Stop"
+                    recovery_message=page.locator("#technical-message").inner_text()
+                    assert "unconfirmed" in recovery_message or "15-second" in recovery_message,recovery_message
+                    checked(f"Recovery appeared {recovery_elapsed:.1f}s after Stop while status transport was stalled")
+                    assert not arrived.empty(),"No status request was stalled before the deadline"
+                    script_path=page.locator("script[src$='/review.js']").get_attribute("src")
+                    scripts=[]
+                    def hold_script(route): scripts.append(route)
+                    page.route("**"+script_path,hold_script)
+                    try:
+                        # The server renders pending before expiry; delay its real controller script
+                        # until after expiry rather than substituting a synthetic stale HTML page.
+                        pending_response=page.reload(wait_until="commit")
+                        page.wait_for_selector("#review-card")
+                        for _ in range(50):
+                            if scripts: break
+                            page.wait_for_timeout(100)
+                        assert scripts,"The reloaded controller script was not held"
+                        assert pending_response.status==200 and pending_response.url==navigation_url
+                        pending_state=page.locator("#review-card").get_attribute("data-state")
+                        if pending_state in ("submitted","processing"):
+                            assert page.locator("#review-card").get_attribute("data-deadline")==deadline_attr
+                            assert page.evaluate("deadline => Date.now() < Date.parse(deadline)",deadline_attr)
+                            before_controller=arrived.qsize()
+                            page.wait_for_function("deadline => Date.now() >= Date.parse(deadline)",arg=deadline_attr,timeout=30000)
+                        else:
+                            assert pending_state in ("assessed","failed"),pending_state
+                        scripts.pop(0).continue_()
+                    finally:
+                        for route in scripts: route.abort()
+                        page.unroute("**"+script_path,hold_script)
+                    if pending_state in ("submitted","processing"):
+                        page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=5000)
+                        assert "15-second" in page.locator("#technical-message").inner_text()
+                        assert page.locator("#review-card").get_attribute("data-deadline")==deadline_attr
+                        recovery_delay=page.evaluate("deadline => (Date.now()-Date.parse(deadline))/1000",deadline_attr)
+                        assert 0<=recovery_delay<5,recovery_delay
+                        for _ in range(50):
+                            if arrived.qsize()>before_controller: break
+                            page.wait_for_timeout(100)
+                        assert arrived.qsize()>before_controller,"No status request was stalled after the real pending reload"
+                        assert page.locator("#reconnect-controls").is_visible()
+                        pending_recovery_checked=True
+                        checked(f"Real pending reload started before the deadline; recovery appeared {recovery_delay:.1f}s after it with status still stalled")
+                        # A fresh real server reload after expiry expires pending work instead of
+                        # returning the synthetic stale-pending page used by earlier diagnostics.
+                        pending_response=page.reload()
+                        assert pending_response.status==200 and pending_response.url==navigation_url
+                real_state=page.locator("#review-card").get_attribute("data-state")
+                assert real_state in ("assessed","failed"),real_state
+                assert page.locator("#reconnect-controls").is_hidden()
+                if real_state=="failed":
+                    assert page.get_by_role("button",name=re.compile("Retry")).is_visible()
+                    assert page.get_by_role("button",name="Proceed unassessed").is_visible()
+                else:
+                    assert page.locator("#next-card").is_visible()
+                checked(f"Real server reload returned {real_state} and its recovery/result controls before status was unstalled")
+                if pending_html is not None:
+                    page.wait_for_function("deadline => Date.now() >= Date.parse(deadline)",arg=deadline_attr,timeout=30000)
+                    before_reload=arrived.qsize()
+                    origin=urlsplit(navigation_url); origin=f"{origin.scheme}://{origin.netloc}"
+                    # The rewritten document's CSP self is the replay server; retain access to the app origin.
+                    replay_csp=pending_csp.replace("'self'",f"'self' {origin}")
+                    class Replay(BaseHTTPRequestHandler):
+                        def log_message(self,*args): pass
+                        def do_GET(self):
+                            body=pending_html.encode()
+                            self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8")
+                            if replay_csp: self.send_header("Content-Security-Policy",replay_csp)
+                            self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+                    replay=ThreadingHTTPServer(("127.0.0.1",0),Replay)
+                    if tls: replay.socket=tls.wrap_socket(replay.socket,server_side=True)
+                    replay_url=f"{loopback_scheme}://127.0.0.1:{replay.server_port}/stale"
+                    replay_thread=threading.Thread(target=replay.serve_forever,daemon=True); replay_thread.start()
+                    status_failures=[]
+                    def observe_failure(request):
+                        if request.url==status_stall_url: status_failures.append(request.failure)
+                    def stale_navigation(route):
+                        route.continue_(url=replay_url)
+                    page.on("requestfailed",observe_failure)
+                    try:
+                        page.route(navigation_url,stale_navigation)
+                        stale_response=page.reload(); page.wait_for_selector("#reconnect-controls:not([hidden])",timeout=15000)
+                        assert stale_response.status==200 and stale_response.url==replay_url and page.url==navigation_url
+                        assert page.locator("#review-card").get_attribute("data-deadline")==deadline_attr
+                        assert page.evaluate("deadline => Date.now() >= Date.parse(deadline)",deadline_attr)
+                        for _ in range(50):
+                            if arrived.qsize()>before_reload: break
+                            page.wait_for_timeout(100)
+                        assert arrived.qsize()>before_reload,"No status request was stalled after the synthetic reload"
+                        page.wait_for_timeout(500)
+                        assert not status_failures,status_failures
+                        assert page.locator("#reconnect-controls").is_visible()
+                        stale_message=page.locator("#technical-message").inner_text()
+                        assert "15-second" in stale_message or "unconfirmed" in stale_message,stale_message
+                        checked("Synthetic stale-navigation reload after the stored deadline keeps recovery visible while status remains stalled")
+                    finally:
+                        try:
+                            page.unroute(navigation_url,stale_navigation)
+                        finally:
+                            try:
+                                page.remove_listener("requestfailed",observe_failure)
+                            finally:
+                                replay.shutdown(); replay.server_close(); replay_thread.join()
+                released=time.monotonic()
+            if pending_html is not None:
+                page.reload(); page.wait_for_selector("#back:not([hidden])",timeout=15000)
+                assert page.locator("#review-card").get_attribute("data-state")==real_state
+                assert page.locator("#reconnect-controls").is_hidden()
+                checked("Real server reload after releasing the synthetic stall shows the authoritative terminal state")
         deadline=time.monotonic()+30
         while time.monotonic()<deadline:
             verdict=page.locator(".recall-result h3").inner_text()
             if not verdict.startswith("Checking your response"): break
             page.wait_for_timeout(500)
         assert not verdict.startswith("Checking your response"),"No completed or failed assessment within 30 seconds"
+        if released is not None:
+            release_elapsed=time.monotonic()-released
+            assert release_elapsed<20,f"Verdict took {release_elapsed:.1f}s after the test released its stall"
+            checked(f"Real verdict appeared {release_elapsed:.1f}s after the test released its stalled transport")
         scored_first=verdict in ("Correct recall","Quick recall")
         if scored_first:
             assert page.locator(".transcript").inner_text().strip()
@@ -185,18 +384,22 @@ def run(options):
             assert page.locator('[data-metric="cards_today"]').inner_text()=="1"
             assert page.locator("textarea:not([readonly]),[contenteditable=true]").count()==0
             page.screenshot(path=str(output/"feedback.png"),full_page=True)
-            checked("Real audio assessment complete response receives a D/E recall with transcript, readonly response and persisted Next review")
+            checked("Assessment response shows D/E recall, transcript, readonly response and persisted Next review")
         else:
             assert verdict=="Not assessed",verdict
+            if options.generic_only:
+                assert pending_recovery_checked,"Generic timeout must exercise recovery after a real pending reload"
             # Only a deadline failure counts as the timeout branch; provider errors must fail loudly here.
             error_text=page.locator(".recall-result .quiet").first.inner_text()
             assert "expired" in error_text,error_text
-            elapsed=time.monotonic()-stopped
-            assert elapsed<20,f"Timeout feedback took {elapsed:.1f}s"
+            if released is None:
+                elapsed=time.monotonic()-stopped
+                assert elapsed<20,f"Timeout feedback took {elapsed:.1f}s after Stop"
+                checked(f"Deadline failure appeared {elapsed:.1f}s after Stop")
             assert page.locator("#back button",has_text="Retry").count()==1
             assert page.locator("#back button",has_text="Proceed unassessed").count()==1
             page.screenshot(path=str(output/"feedback-timeout.png"),full_page=True)
-            checked(f"Deadline failure recovered within the 15-second budget ({elapsed:.1f}s); retry and unassessed exit remain available")
+            checked("Deadline failure offers retry and unassessed exit")
             page.get_by_role("button",name="Proceed unassessed").click()
             page.wait_for_selector("#next-card",timeout=15000)
             assert page.locator(".recall-result h3").inner_text()=="Not assessed"
@@ -265,6 +468,13 @@ def run(options):
         page.screenshot(path=str(output/"progress.png"),full_page=True)
         checked("Distinct-card/scored-review/accuracy metrics exclude Skip")
         page.goto(deck_url);page.get_by_role("button",name="Archive deck",exact=True).click()
+        if options.generic_only:
+            page.goto(deck_url)
+            assert page.get_by_role("button",name="Restore deck",exact=True).count()==1
+            assert not errors,errors
+            checked("Private Generic deck archived with no browser runtime errors")
+            browser.close(); write_results()
+            return
         page.goto(target+"/decks/")
         page.locator("#id_name").fill("Vocabulary direction QA "+str(int(time.time())))
         page.get_by_role("button",name="Create deck").click();deck_url=page.url
@@ -311,8 +521,7 @@ def run(options):
         assert not errors,errors
         checked("Private deck archive, no horizontal overflow and no browser runtime errors")
         browser.close()
-    (output/"browser-results.json").write_text(json.dumps({"status":"passed","checks":checks,"errors":errors,
-        "browser":"Headless Chromium, synthetic microphone; physical device and Edge remain manual checks"},indent=2)+"\n")
+    write_results()
 
 
 if __name__=="__main__":
@@ -322,6 +531,7 @@ if __name__=="__main__":
     parser.add_argument("--url")
     parser.add_argument("--chromium")
     parser.add_argument("--output",type=Path,default=Path("docs/implementation/previews"))
+    parser.add_argument("--generic-only",action="store_true",help="Stop after Generic metrics and deck archive.")
     options=parser.parse_args()
     if not options.audio.is_file(): parser.error("The synthetic audio fixture does not exist.")
     run(options)

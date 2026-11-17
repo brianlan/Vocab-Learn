@@ -147,9 +147,8 @@ def submit(p, action, duration=None, audio_name="", deadline=None):
     if existing:
         return existing
     now = timezone.now()
-    # The issue's 15-second budget starts at Stop & check. With a request anchor, the view passes the
-    # immutable request-anchored deadline (transfer, parsing and staging already deducted there, so
-    # database lock waiting cannot extend the scoring window). Without one, the full budget starts now.
+    # The view's request-anchored deadline makes transfer, staging and transaction waits consume
+    # the same budget. Without one, the full budget starts now.
     if action == "speak" and deadline is None:
         deadline = now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
     a = Attempt.objects.create(presentation=p, action=action, state="submitted", submitted_at=now,
