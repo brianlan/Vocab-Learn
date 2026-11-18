@@ -86,20 +86,22 @@ class ProviderTests(ProviderBase):
 
     def test_audio_provider_selection_defaults_and_dialect_ownership(self):
         with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"audio-key"},clear=True):
-            # Unset or empty mode resolves to the documented Responses default per provider.
+            # Unset mode resolves to Chat Completions for either provider.
             qwen = p.profile("AUDIO_ASSESS")
             self.assertEqual((qwen.protocol,qwen.model,qwen.endpoint,qwen.api_mode),
-                ("qwen","qwen3.8-omni-flash","https://dashscope.aliyuncs.com/compatible-mode/v1/responses","responses"))
+                ("qwen","qwen3.8-omni-flash","https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions","chat_completions"))
             with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"doubao"}):
                 doubao = p.profile("AUDIO_ASSESS")
                 self.assertEqual((doubao.protocol,doubao.model,doubao.endpoint,doubao.api_mode),
-                    ("doubao","doubao-seed-2-1-lite-260915","https://ark.cn-beijing.volces.com/api/v3/responses","responses"))
+                    ("doubao","doubao-seed-2-1-lite-260915","https://ark.cn-beijing.volces.com/api/v3/chat/completions","chat_completions"))
                 with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"https://api.minimax.cn/v1/chat/completions"}):
                     self.assertEqual(p.profile("AUDIO_ASSESS").key,"audio-key")  # no shared MiniMax fallback for audio origins
-            # chat_completions explicitly retains the delivered #12 endpoint; the mode is independent of the provider.
-            with patch.dict(os.environ,{"AUDIO_ASSESS_API_MODE":"chat_completions"}):
+            # Responses remains available explicitly; empty mode uses the Chat default.
+            with patch.dict(os.environ,{"AUDIO_ASSESS_API_MODE":"responses"}):
                 self.assertEqual(p.profile("AUDIO_ASSESS").endpoint,
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1/responses")
+            with patch.dict(os.environ,{"AUDIO_ASSESS_API_MODE":""}):
+                self.assertEqual(p.profile("AUDIO_ASSESS").api_mode,"chat_completions")
         # An explicit endpoint is an explicit full URL under every mode: never rewritten, never inferred from.
         for mode in ["responses","chat_completions"]:
             with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_API_MODE":mode,
@@ -132,7 +134,7 @@ class ProviderTests(ProviderBase):
         def handler(request):
             seen.append(json.loads(request.content))
             return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":
-                json.dumps({"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
+                json.dumps({"units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
         snapshots = {"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/"answer.wav"
@@ -145,8 +147,8 @@ class ProviderTests(ProviderBase):
                 with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":provider,"AUDIO_ASSESS_API_KEY":"k",
                         "AUDIO_ASSESS_API_MODE":"chat_completions"},clear=True):
                     with self.transport(handler):
-                        transcript,units,metadata=p.audio_assessment(snapshots,path)
-                self.assertEqual(transcript,"heard answer")
+                        units,metadata=p.audio_assessment(snapshots,path)
+                self.assertEqual(len(seen),1)
                 self.assertEqual(units[0]["outcome"],"complete")
                 self.assertEqual(metadata["prompt_version"],p.PROMPT_VERSIONS["AUDIO_ASSESS"])
                 self.assertEqual(metadata["model"],p.AUDIO_PROVIDERS[provider]["model"])
@@ -174,7 +176,7 @@ class ProviderTests(ProviderBase):
                     self.assertNotIn("reasoning_effort",body)
 
     def test_responses_mode_contracts_for_both_providers(self):
-        answer={"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
+        answer={"units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
         seen=[]
         def handler(request):
             seen.append(json.loads(request.content))
@@ -192,11 +194,12 @@ class ProviderTests(ProviderBase):
             payload=path.read_bytes()
             for provider in ["qwen","doubao"]:
                 seen.clear()
-                with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":provider,"AUDIO_ASSESS_API_KEY":"secret-key"},clear=True):
+                with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":provider,"AUDIO_ASSESS_API_KEY":"secret-key",
+                        "AUDIO_ASSESS_API_MODE":"responses"},clear=True):
                     with self.transport(handler):
-                        transcript,units,metadata=p.audio_assessment(snapshots,path)
+                        units,metadata=p.audio_assessment(snapshots,path)
                 # The same validated contract is satisfied through one Responses request per execution.
-                self.assertEqual((transcript,units[0]["outcome"]),("heard answer","complete"))
+                self.assertEqual(units[0]["outcome"],"complete")
                 self.assertEqual(metadata["api_mode"],"responses")
                 self.assertNotIn("secret-key",str(metadata))
                 self.assertEqual(len(seen),1)  # exactly one request, no fallback to the other family
@@ -274,9 +277,9 @@ class ProviderTests(ProviderBase):
 
     def test_responses_assessment_validation_reaches_real_recordings(self):
         """R2: a real recording must actually reach the dispatched Responses request and the common
-        transcript/unit validation; removing that validation must fail these cases. Refused or
+        judgment-only unit validation; removing that validation must fail these cases. Refused or
         malformed envelopes stay unassessed with exactly one request and no fallback."""
-        valid={"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
+        valid={"units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
         def message(text,extra=None):
             content=[{"type":"output_text","text":text}]+(extra or [])
             return {"type":"message","role":"assistant","status":"completed","content":content}
@@ -287,24 +290,24 @@ class ProviderTests(ProviderBase):
                 fixture.setnchannels(1); fixture.setsampwidth(2); fixture.setframerate(16000)
                 fixture.writeframes(b"\x00\x01"*16000)  # one real second of mono 16kHz PCM
             for name,data in [
-                    ("missing-transcript",{"status":"completed","output":[message(json.dumps(
-                        {"units":[{"id":1,"outcome":"complete","reason":"Matches."}]}))]}),
+                    ("missing-units",{"status":"completed","output":[message(json.dumps({}))]}),
                     ("mixed-refusal",{"status":"completed","output":[message(json.dumps(valid),extra=[
                         {"type":"refusal","refusal":"I cannot grade this recording."}])]}),
                     ("duplicate-units",{"status":"completed","output":[message(json.dumps(
-                        {"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Okay"},
+                        {"units":[{"id":1,"outcome":"complete","reason":"Okay"},
                          {"id":1,"outcome":"complete","reason":"Duplicate"}]}))]}),]:
                 seen=[]
                 def handler(request,data=data):
                     seen.append(json.loads(request.content))
                     return httpx.Response(200,json=data)
-                with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k"},clear=True):
+                with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k",
+                        "AUDIO_ASSESS_API_MODE":"responses"},clear=True):
                     with self.transport(handler):
                         with self.assertRaises(p.StageError) as error: p.audio_assessment(snapshots,path)
                 self.assertEqual(len(seen),1)  # the Responses request was dispatched before validation
                 self.assertEqual(error.exception.stage,"AUDIO_ASSESS")
-                if name=="missing-transcript":
-                    self.assertIn("transcript",str(error.exception))  # specifically the transcript gate
+                if name=="missing-units":
+                    self.assertIn("judgment-only",str(error.exception))
                 if name=="mixed-refusal":
                     self.assertIn("valid JSON answer",str(error.exception))  # refused envelope, not scored
 
@@ -315,7 +318,7 @@ class ProviderTests(ProviderBase):
         def handler(request):
             seen.append(json.loads(request.content))
             return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":
-                json.dumps({"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
+                json.dumps({"units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]})
         snapshots={"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/"answer.wav"
@@ -372,7 +375,8 @@ class ProviderTests(ProviderBase):
             return b"encoded-audio"
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/"answer.wav";path.write_bytes(b"RIFF")
-            with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k"},clear=True):
+            with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k",
+                        "AUDIO_ASSESS_API_MODE":"responses"},clear=True):
                 profile=self.profile("AUDIO_ASSESS","qwen",timeout=0.5)
                 with patch("learning.providers.transcode_mp3",side_effect=slow_transcode):
                     with self.transport(handler):
@@ -381,14 +385,15 @@ class ProviderTests(ProviderBase):
             self.assertEqual(error.exception.category,"timeout")
             self.assertEqual(requests,[])  # zero model requests for the exhausted execution
 
-    def test_assessment_rejects_missing_transcript_refusals_and_unassessable(self):
+    def test_judgment_only_accepts_units_and_rejects_invalid_output(self):
         good={"id":1,"outcome":"complete","reason":"Okay"}
-        for data in [{"units":[good]}, {"transcript":"  ","units":[good]}, {"transcript":5,"units":[good]},
-                     {"transcript":"heard","units":[]}, {"transcript":"heard","unassessable":True}]:
+        self.assertEqual(p.validate_assessment({"units":[good]},[1]),[good])
+        for data in [{}, {"transcript":"heard","units":[good]}, {"units":[]},
+                     {"units":[{**good,"outcome":"correct"}]}, {"units":[{**good,"reason":" "}]},
+                     {"units":[{**good,"id":2}]}, {"units":[good,good]},
+                     {"unassessable":True}, {"unassessable":True,"units":[good]}]:
             with self.subTest(data=data):
                 with self.assertRaises(p.StageError): p.validate_assessment(data,[1])
-        transcript,units=p.validate_assessment({"transcript":" 吸收 ","units":[good]},[1])
-        self.assertEqual((transcript,units[0]["outcome"]),("吸收","complete"))
 
     def test_chat_contract_fence_reasoning_and_failure_variants(self):
         valid={"units":[{"id":1,"outcome":"complete","reason":"Complete content."}]}
@@ -424,13 +429,13 @@ class ProviderTests(ProviderBase):
             "target_highlight":"absorbs", "native_sentence":"海绵把水吸进去并留住了。",
             "native_highlight":"把水吸进去并留住了", "reference":"海绵把水吸进去并留在里面。",
             "gloss":"海绵把水吸进去并留在里面。", "language":"Chinese", "units":1}
-        result={"transcript":"吸收","units":[{"id":1,"outcome":"complete","reason":"Equivalent lexical meaning."}]}
+        result={"units":[{"id":1,"outcome":"complete","reason":"Equivalent lexical meaning."}]}
         with tempfile.TemporaryDirectory() as folder:
             recording=Path(folder)/"answer.wav"; recording.write_bytes(b"RIFF")
             with patch("learning.providers.transcode_mp3", return_value=b"transcoded"), patch("learning.providers.chat",return_value=result) as chat:
-                transcript,units,metadata=p.audio_assessment(legacy,recording,self.profile("AUDIO_ASSESS","qwen"))
+                units,metadata=p.audio_assessment(legacy,recording,self.profile("AUDIO_ASSESS","qwen"))
             payload=chat.call_args.args[2]
-            self.assertEqual(transcript,"吸收")
+            self.assertEqual(units[0]["outcome"],"complete")
             self.assertEqual(payload["explanation"],legacy["explanation"])
             self.assertEqual(payload["word"],"absorb")
             self.assertEqual(payload["expected_unit_ids"],[1])

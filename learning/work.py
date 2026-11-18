@@ -137,8 +137,8 @@ def process_assessment(job_id, claim):
     # The provenance transaction may wait on a writer lock and consume real window; re-bound the
     # already-selected profile against the absolute deadline before any inference is dispatched.
     p = replace(p, timeout=min(p.timeout, remaining(a.deadline)))
-    transcript, units, provenance = providers.audio_assessment(a.presentation.snapshot, normalized, p)
-    if not save_stage(a.pk, claim, transcript=transcript, judge_provenance=provenance):
+    units, provenance = providers.audio_assessment(a.presentation.snapshot, normalized, p)
+    if not save_stage(a.pk, claim, judge_provenance=provenance):
         return
     grade = grade_units(units, a.duration, a.presentation.budget)
     candidate = {}

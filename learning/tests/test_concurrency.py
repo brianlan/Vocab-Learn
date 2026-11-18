@@ -214,7 +214,7 @@ class ConcurrencyTests(TransactionTestCase):
         requests=[]
         def handler(request):
             requests.append(request)
-            result={"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
+            result={"units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
             return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":json.dumps(result)}}]})
         folder=tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
         audio_dir=Path(folder.name)
@@ -355,7 +355,7 @@ class ConcurrencyTests(TransactionTestCase):
                 else:
                     time.sleep(1)
                     inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps(
-                        {"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]})}}]}).encode())
+                        {"units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]})}}]}).encode())
             def log_message(inner,*args): pass
         server=ThreadingHTTPServer(("127.0.0.1",0),Handler); server.daemon_threads=True
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
