@@ -52,7 +52,8 @@ class LearningTests(TestCase):
         self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
         self.override.enable(); self.addCleanup(self.override.disable)
         self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
-            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint",
+            "AUDIO_ASSESS_API_MODE": "chat_completions"})
         self.environ.start(); self.addCleanup(self.environ.stop)
         self.user = get_user_model().objects.create_user("learner", password="test-password")
         self.other = get_user_model().objects.create_user("other", password="test-password")
@@ -829,7 +830,7 @@ class LearningTests(TestCase):
                 "AUDIO_ASSESS_PROVIDER":"doubao"}):
             audio=providers.profile("AUDIO_ASSESS")
             self.assertEqual((audio.endpoint,audio.model,audio.protocol),
-                (providers.AUDIO_PROVIDERS["doubao"]["endpoint"],providers.AUDIO_PROVIDERS["doubao"]["model"],"doubao"))
+                (providers.AUDIO_PROVIDERS["doubao"][audio.api_mode],providers.AUDIO_PROVIDERS["doubao"]["model"],"doubao"))
 
     def test_forgot_timeline_and_preserved_scheduler_memory(self):
         """SRS-TIMELINE / DELAY-ANCHOR / NEXT-REVIEW."""
@@ -1974,7 +1975,8 @@ class UploadTransferHttpTests(LiveServerTestCase):
         self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
         self.override.enable(); self.addCleanup(self.override.disable)
         self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
-            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint",
+            "AUDIO_ASSESS_API_MODE": "chat_completions"})
         self.environ.start(); self.addCleanup(self.environ.stop)
         self.user = get_user_model().objects.create_user("learner", password="test-password")
         self.deck = Deck.objects.create(owner=self.user, name="Transfer timing")

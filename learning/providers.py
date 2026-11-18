@@ -22,10 +22,15 @@ DIALECTS = {"minimax": {"thinking": {"adaptive", "disabled"}, "budget": "max_com
             "openai": {"thinking": {"enabled", "adaptive", "disabled"}, "budget": "max_completion_tokens"},
             "qwen": {"thinking": set(), "budget": "max_tokens"},
             "doubao": {"thinking": set(), "budget": "max_tokens"}}
-AUDIO_PROVIDERS = {"qwen": {"endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-                            "model": "qwen3.8-omni-flash"},
-                   "doubao": {"endpoint": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-                              "model": "doubao-seed-2-1-lite-260915"}}
+# Endpoint defaults follow provider plus API mode; model defaults are mode-independent.
+AUDIO_PROVIDERS = {"qwen": {"model": "qwen3.8-omni-flash",
+                            "responses": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+                            "chat_completions": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
+                   "doubao": {"model": "doubao-seed-2-1-lite-260915",
+                              "responses": "https://ark.cn-beijing.volces.com/api/v3/responses",
+                              "chat_completions": "https://ark.cn-beijing.volces.com/api/v3/chat/completions"}}
+# responses is the documented default (user preference); chat_completions preserves the #12 behavior.
+AUDIO_API_MODES = {"responses", "chat_completions"}
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 THINKING_DEFAULTS = {"GENERATOR": "enabled", "EXAMPLE_REVIEWER": "adaptive"}
 EFFORT_DEFAULTS = {"GENERATOR": "max", "EXAMPLE_REVIEWER": "max"}
@@ -48,10 +53,13 @@ class Profile:
     protocol: str = "openai"
     thinking: str = ""
     effort: str = ""
+    api_mode: str = ""  # request/response family; resolved from configuration for AUDIO_ASSESS only
 
     def metadata(self):
         metadata = {"task": self.task, "endpoint": self.endpoint, "model": self.model,
                 "timeout": self.timeout, "max_completion_tokens": self.tokens, "protocol": self.protocol}
+        if self.api_mode:
+            metadata["api_mode"] = self.api_mode
         if self.thinking:
             metadata["thinking"] = self.thinking
         if self.effort:
@@ -67,10 +75,14 @@ def profile(task):
     provider = (os.getenv("AUDIO_ASSESS_PROVIDER") or "qwen").strip().lower() if audio else ""
     if audio and provider not in AUDIO_PROVIDERS:
         raise StageError(task, "AUDIO_ASSESS_PROVIDER must be qwen or doubao.", "configuration")
+    # Unset or empty selects the documented Responses default; invalid modes fail before any call.
+    api_mode = (os.getenv("AUDIO_ASSESS_API_MODE") or "responses").strip().lower() if audio else ""
+    if audio and api_mode not in AUDIO_API_MODES:
+        raise StageError(task, "AUDIO_ASSESS_API_MODE must be responses or chat_completions.", "configuration")
     audio_defaults = AUDIO_PROVIDERS[provider] if audio else {}
     default_endpoint = {"GENERATOR": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
         "EXAMPLE_REVIEWER": "https://api.minimax.cn/v1/chat/completions"}.get(task,
-        audio_defaults.get("endpoint", "https://api.minimax.cn/v1/chat/completions"))
+        audio_defaults[api_mode] if audio else "https://api.minimax.cn/v1/chat/completions")
     endpoint = os.getenv(task + "_ENDPOINT", default_endpoint).strip()
     # Compose sets optional overrides to explicit empty strings; only audio's selected provider may
     # replace them with defaults. Other tasks keep base behavior: an empty endpoint fails validation.
@@ -116,7 +128,7 @@ def profile(task):
     if audio and not model:
         model = model_default
     return Profile(task, endpoint, model,
-        key, timeout, tokens, protocol, thinking, effort)
+        key, timeout, tokens, protocol, thinking, effort, api_mode)
 
 
 async def _request(p, **kwargs):
@@ -187,6 +199,23 @@ def audio_part(p, audio):
     return {"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}}
 
 
+def json_answer(task, content):
+    """Shared final-answer extraction for both request families: strip an optional fence,
+    require parseable JSON and reject anything that is not a JSON object."""
+    try:
+        if content.startswith("```") and content.endswith("```"):
+            lines = content.splitlines()
+            if lines[0] not in ("```json", "```"):
+                raise ValueError
+            content = "\n".join(lines[1:-1])
+        result = json.loads(content)
+        if not isinstance(result, dict):
+            raise ValueError
+        return result
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+        raise StageError(task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
+
+
 def chat(p, system, payload, audio=None):
     text = json.dumps(payload, ensure_ascii=False)
     body = {"model": p.model, "stream": False, DIALECTS[p.protocol]["budget"]: p.tokens,
@@ -210,16 +239,47 @@ def chat(p, system, payload, audio=None):
         message = choice["message"]
         if choice.get("finish_reason") != "stop" or message.get("refusal") or message.get("tool_calls"):
             raise ValueError
-        content = message["content"].strip()
-        if content.startswith("```") and content.endswith("```"):
-            lines = content.splitlines()
-            if lines[0] not in ("```json", "```"):
-                raise ValueError
-            content = "\n".join(lines[1:-1])
-        result = json.loads(content)
-        if not isinstance(result, dict):
-            raise ValueError
-        return result
+        return json_answer(p.task, message["content"].strip())
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+        raise StageError(p.task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
+
+
+def responses_audio_part(p, audio):
+    # Responses input parts are provider-specific: Qwen takes the MP3-transported audio as a
+    # complete data URI with a format field; Doubao takes its data URI in audio_url with none.
+    encoded = base64.b64encode(audio).decode()
+    if p.protocol == "qwen":
+        if len(encoded) >= QWEN_INLINE_LIMIT:
+            raise StageError(p.task, "The recording exceeds the provider's inline-audio limit. Continue unassessed or retry the fixed recording.", "provider")
+        return {"type": "input_audio", "data": "data:audio/mpeg;base64," + encoded, "format": "mp3"}
+    return {"type": "input_audio", "audio_url": "data:audio/wav;base64," + encoded}
+
+
+def respond(p, system, payload, audio=None):
+    """Responses-family request for the audio task. Standalone nonstreaming call: no tools and no
+    response-history storage; reasoning and tool output items are never treated as the answer."""
+    text = json.dumps(payload, ensure_ascii=False)
+    content = [{"type": "input_text", "text": text}]
+    if audio is not None:
+        content.append(responses_audio_part(p, audio))
+    body = {"model": p.model, "stream": False, "store": False, "max_output_tokens": p.tokens,
+            "text": {"format": {"type": "json_object"}},
+            "input": [{"role": "system", "content": system}, {"role": "user", "content": content}]}
+    # Both providers run nonthinking here; Doubao stays on regular inference.
+    if p.protocol == "qwen":
+        body["reasoning"] = {"effort": "none"}
+    else:
+        body["thinking"] = {"type": "disabled"}
+        body["service_tier"] = "default"
+    data = request(p, json=body)
+    try:
+        if data.get("status") != "completed":
+            raise ValueError  # failed, incomplete, refused or otherwise unfinished output is not scoreable
+        answer = "".join(part["text"] for item in data["output"]
+                         if item.get("type") == "message" and item.get("status") == "completed"
+                         for part in item.get("content", [])
+                         if part.get("type") == "output_text" and isinstance(part.get("text"), str)).strip()
+        return json_answer(p.task, answer)
     except (KeyError, IndexError, ValueError, AttributeError, TypeError):
         raise StageError(p.task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
 
@@ -403,7 +463,9 @@ def audio_assessment(snapshot, audio_path, p=None):
     remaining = p.timeout-(time.monotonic()-started)
     if remaining <= 0:
         raise StageError(p.task, f"{TASK_LABELS[p.task]} ran out of its execution window before the provider call. Continue unassessed or retry the fixed recording.", "timeout")
-    data = chat(replace(p, timeout=remaining), AUDIO_ASSESS_RULES,
+    # The configured API mode selects the request family; there is never a fallback to the other family.
+    caller = respond if p.api_mode == "responses" else chat
+    data = caller(replace(p, timeout=remaining), AUDIO_ASSESS_RULES,
         {**assessment_task(snapshot), "expected_unit_ids": expected}, audio=audio)
     transcript, units = validate_assessment(data, expected)
     return transcript, units, p.metadata()

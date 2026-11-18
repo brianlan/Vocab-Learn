@@ -148,15 +148,33 @@ separately from example generation. The full settings/defaults are in `.env.exam
 [creation increment](specs/vocabulary-creation.md). These new creation capabilities are development-only until a
 production release.
 
-Spoken assessment is one audio-capable model request per execution. `AUDIO_ASSESS_PROVIDER` selects the request dialect:
-`qwen` (default; DashScope compatible-mode endpoint, `qwen3.8-omni-flash`, `reasoning_effort="none"`) or `doubao`
-(Ark v3 endpoint, `doubao-seed-2-1-lite-260915`, explicit `thinking={"type":"disabled"}`, `service_tier="default"`
-regular inference). Both send the normalized mono 16-kHz audio inline with a JSON response format and validate the
-returned transcript plus units locally. Qwen transports that audio as MP3 (a provider-documented format) because its
+Spoken assessment is one audio-capable model request per execution. `AUDIO_ASSESS_PROVIDER` selects the request dialect
+and `AUDIO_ASSESS_API_MODE` selects the request/response family, giving four supported combinations:
+
+| Provider | `responses` (default) | `chat_completions` |
+| --- | --- | --- |
+| `qwen` (default; `qwen3.8-omni-flash`) | `/compatible-mode/v1/responses` | `/compatible-mode/v1/chat/completions` |
+| `doubao` (`doubao-seed-2-1-lite-260915`) | `/api/v3/responses` | `/api/v3/chat/completions` |
+
+An unset or empty mode selects `responses` (the documented preference). `chat_completions` explicitly retains the
+pre-mode-switch behavior; setting `AUDIO_ASSESS_API_MODE=chat_completions` before an upgrade preserves an existing
+deployment's Chat behavior. Invalid values fail startup/profile validation without a paid request. An empty
+`AUDIO_ASSESS_ENDPOINT` resolves to the matching full default above. An explicit endpoint override is never rewritten
+and the mode is never inferred from its path: a deployer who switches modes must also update an explicit URL, for
+example an old `.../chat/completions` override, to the matching `.../responses` path of the same origin.
+
+Both modes disable thinking, request JSON output, send the normalized mono 16-kHz audio inline, use no tools and no
+response-history chaining (Responses requests set `store=false`) and make exactly one model request per execution;
+the returned transcript plus units are validated locally. Thinking is not configurable: Qwen sends `reasoning={"effort":"none"}`
+(Responses) or `reasoning_effort="none"` (Chat), and Doubao sends `thinking={"type":"disabled"}` with regular
+`service_tier="default"` in both modes. Qwen transports that audio as MP3 (a provider-documented format) because its
 documented inline limit is an encoded Base64 string under 10 MB and the accepted 500-second range is about 16 MB as
 PCM; the staged normalized WAV artifact is unchanged and an oversized encoding fails unscored. Doubao receives the
-normalized WAV as raw base64. `AUDIO_ASSESS_API_KEY` is always required for the selected origin; its
-thinking settings are fixed by the provider and cannot be configured.
+normalized WAV as raw base64 in Chat and as a WAV data URI in Responses. A Responses result is scoreable only when
+the provider reports a completed assistant message; failed, incomplete, refused or non-JSON answers stay unassessed
+and reasoning text is never scored. `AUDIO_ASSESS_API_KEY` is always required for the selected origin. The selected
+mode is frozen into each execution's judge provenance (no secrets), and explicit retries use current configuration
+over the unchanged fixed recording.
 
 The current Generator prompt is tracked as `lexical-pair-v7-a`: the original scope-workflow D plus the
 learner-task context required by the example quality review (Recognition shows only the target sentence;
@@ -383,4 +401,4 @@ Tests use a separate file-backed SQLite test database. They include real competi
 python tests/browser_smoke.py --access-file /private/access.json --audio /private/fixture.wav --chromium /path/to/chrome --output /private/browser-results
 ```
 
-`scripts/probe_providers.py --live --output /private/results.json` explicitly opts into paid public-fixture model probes; its generation checks run the full reviewed pipeline (generation plus one Example Quality Review call). `--task audio|generator` limits the task; `--audio-dir` supplies case-named spoken recordings, one `<CASE>.wav` per audio case (for example `GENERIC-MULTI.wav`); missing case files are reported as `missing-audio` without a paid call. The audio report records each model transcript beside its expected utterance for separate human fidelity review. `scripts/probe_generation.py --live --output /private/raw.json` collects raw Generator outputs for explicit human review, and `scripts/probe_generation.py --live --review` runs the clearly identified full reviewed pipeline over the regression corpus. The raw and reviewed modes are separate evaluations; never compare raw results against reviewer verdicts. Human microphone/Edge/client-trust checks remain separate from synthetic/headless evidence.
+`scripts/probe_providers.py --live --output /private/results.json` explicitly opts into paid public-fixture model probes; its generation checks run the full reviewed pipeline (generation plus one Example Quality Review call). `--task audio|generator` limits the task; `--audio-dir` supplies case-named spoken recordings, one `<CASE>.wav` per audio case (for example `GENERIC-MULTI.wav`); missing case files are reported as `missing-audio` without a paid call. The audio report records each model transcript beside its expected utterance for separate human fidelity review. The probe inherits the process environment, so each provider/API-mode combination is probed by exporting `AUDIO_ASSESS_PROVIDER` and `AUDIO_ASSESS_API_MODE` (with an explicit `AUDIO_ASSESS_ENDPOINT` updated to the matching path when one is configured) before an audio run; each result's recorded profile includes the selected `api_mode`, so live evidence stays attributable to the exact combination and is never claimed for an unprobed one. `scripts/probe_generation.py --live --output /private/raw.json` collects raw Generator outputs for explicit human review, and `scripts/probe_generation.py --live --review` runs the clearly identified full reviewed pipeline over the regression corpus. The raw and reviewed modes are separate evaluations; never compare raw results against reviewer verdicts. Human microphone/Edge/client-trust checks remain separate from synthetic/headless evidence.
