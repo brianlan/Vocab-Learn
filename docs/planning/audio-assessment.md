@@ -98,6 +98,20 @@ Checked on 2026-11-16; documentation evidence, not live account verification.
     exit and a later new review; do not retain a text-only Judge path. Preserve
     existing transcripts, completed results, history and learning progress.
 
+## API-mode follow-up (issue #14)
+
+After the initial Chat Completions implementation, the user requested support for
+both Responses and Chat Completions through one additional setting while leaving
+the decisions above unchanged. `AUDIO_ASSESS_API_MODE` selects the request family:
+`responses` is the default when unset or empty (the stated preference for Qwen
+and Doubao), and `chat_completions` explicitly retains the original behavior.
+Endpoint defaults follow provider plus mode; explicit URL overrides are never
+rewritten, so switching modes requires updating an explicit endpoint. Both modes
+keep one request per execution, disabled thinking, regular Doubao inference,
+local transcript/unit validation, fixed-input retry and the latency targets in
+decision 8. There is no automatic API-mode fallback; live compatibility and
+latency evidence must be recorded per combination.
+
 ## Audio storage facts
 
 `learning/work.py:normalize` writes a temporary WAV beside the uploaded recording,

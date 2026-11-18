@@ -52,7 +52,8 @@ class LearningTests(TestCase):
         self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
         self.override.enable(); self.addCleanup(self.override.disable)
         self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
-            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint",
+            "AUDIO_ASSESS_API_MODE": "chat_completions"})
         self.environ.start(); self.addCleanup(self.environ.stop)
         self.user = get_user_model().objects.create_user("learner", password="test-password")
         self.other = get_user_model().objects.create_user("other", password="test-password")
@@ -682,6 +683,32 @@ class LearningTests(TestCase):
         a.refresh_from_db(); self.assertEqual(a.state,"failed"); self.assertEqual(a.transcript,"")
         self.assertEqual(Card.objects.get(pk=p.card_id).fsrs,before)
 
+    def test_responses_refusal_envelope_never_scores_or_changes_progress(self):
+        """R1 through the real worker flow: a completed envelope mixing a refusal part with valid
+        grading JSON stays unassessed — one dispatched request, no score, no schedule change."""
+        import httpx
+        envelope={"status":"completed","output":[{"type":"message","role":"assistant","status":"completed",
+            "content":[{"type":"output_text","text":json.dumps({"transcript":"four","units":[
+                {"id":1,"outcome":"complete","reason":"Complete fixture"}]})},
+                {"type":"refusal","refusal":"I cannot grade this recording."}]}]}
+        seen=[]
+        original=httpx.AsyncClient
+        card=self.generic(); p=self.present(card); before=Card.objects.get(pk=card.pk).fsrs
+        a=self.spoken(p)
+        with patch.dict(os.environ,{"AUDIO_ASSESS_API_MODE":"responses"}), \
+                patch("learning.providers.httpx.AsyncClient",
+                      side_effect=lambda **kw: original(transport=httpx.MockTransport(
+                          lambda request: seen.append(request) or httpx.Response(200,json=envelope)),**kw)):
+            with self.assertRaises(StageError) as error:
+                work.process_assessment(a.pk,a.claim)
+        self.assertEqual(len(seen),1)  # exactly one Responses request, no family fallback
+        self.assertIn("valid JSON answer",str(error.exception))
+        work.fail("assessment",a.pk,a.claim,error.exception)
+        a.refresh_from_db()
+        self.assertEqual((a.state,a.transcript),("failed",""))
+        self.assertEqual(Card.objects.get(pk=card.pk).fsrs,before)
+        self.assertEqual(ScoredReview.objects.count(),0)
+
     def test_pipeline_normalizes_assesses_and_cleans_on_commit(self):
         """AUDIO-NORMALIZE / AUDIO-COMMIT / RESTORE-AUDIO-REQUIRED."""
         self.generic(); a=self.spoken(self.present())
@@ -829,7 +856,7 @@ class LearningTests(TestCase):
                 "AUDIO_ASSESS_PROVIDER":"doubao"}):
             audio=providers.profile("AUDIO_ASSESS")
             self.assertEqual((audio.endpoint,audio.model,audio.protocol),
-                (providers.AUDIO_PROVIDERS["doubao"]["endpoint"],providers.AUDIO_PROVIDERS["doubao"]["model"],"doubao"))
+                (providers.AUDIO_PROVIDERS["doubao"][audio.api_mode],providers.AUDIO_PROVIDERS["doubao"]["model"],"doubao"))
 
     def test_forgot_timeline_and_preserved_scheduler_memory(self):
         """SRS-TIMELINE / DELAY-ANCHOR / NEXT-REVIEW."""
@@ -1974,7 +2001,8 @@ class UploadTransferHttpTests(LiveServerTestCase):
         self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
         self.override.enable(); self.addCleanup(self.override.disable)
         self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
-            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint",
+            "AUDIO_ASSESS_API_MODE": "chat_completions"})
         self.environ.start(); self.addCleanup(self.environ.stop)
         self.user = get_user_model().objects.create_user("learner", password="test-password")
         self.deck = Deck.objects.create(owner=self.user, name="Transfer timing")

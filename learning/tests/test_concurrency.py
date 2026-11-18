@@ -223,7 +223,8 @@ class ConcurrencyTests(TransactionTestCase):
         (audio_dir/(name+".wav")).write_bytes(audio_bytes())
         env={"PATH":os.environ.get("PATH",os.defpath),"AUDIO_ASSESS_PROVIDER":"qwen",
             "AUDIO_ASSESS_ENDPOINT":"http://127.0.0.1:9/assessment","AUDIO_ASSESS_API_KEY":"test-only",
-            "AUDIO_ASSESS_MODEL":"fake-qwen","AUDIO_ASSESS_TIMEOUT_SECONDS":"60","ALLOW_INSECURE_PROVIDER_HTTP":"1"}
+            "AUDIO_ASSESS_MODEL":"fake-qwen","AUDIO_ASSESS_TIMEOUT_SECONDS":"60","ALLOW_INSECURE_PROVIDER_HTTP":"1",
+            "AUDIO_ASSESS_API_MODE":"chat_completions"}
         with override_settings(AUDIO_DIR=audio_dir), patch.dict(os.environ,env,clear=True):
             a=review.submit(self.presentation(),"speak",1,name)
             kind,claimed_pk,claimed_claim,_=work.claim_work()
@@ -387,6 +388,7 @@ class ConcurrencyTests(TransactionTestCase):
         started=time.monotonic(); enqueuer.start()
         try:
             with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":f"http://127.0.0.1:{server.server_port}/judge","AUDIO_ASSESS_API_KEY":"test-only", "ALLOW_INSECURE_PROVIDER_HTTP":"1",
+                           "AUDIO_ASSESS_API_MODE":"chat_completions",
                            "PATH":str(audio_dir)+os.pathsep+os.environ["PATH"] if conversion else os.environ["PATH"]}),override_settings(AUDIO_DIR=audio_dir):
                 run_worker(once=True,concurrency=1)
             enqueuer.join(timeout=2)
