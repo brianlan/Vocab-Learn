@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import time
 import uuid
 from collections import Counter
 from datetime import timedelta
@@ -327,6 +328,7 @@ def payload(request, a):
     a.presentation = p
     card = Card.objects.get(pk=p.card_id)
     return {"state": a.state, "transcript": a.transcript, "grade": a.grade, "next_due": a.next_due.isoformat() if a.next_due else None,
+        "deadline": a.deadline.isoformat() if a.deadline and a.state in ("submitted", "processing") else None,
         "metrics": counts(request.user, p.scope_deck), "collection": card.collection,
         "back_html": render_to_string("learning/back.html", {"attempt": a, "p": p, "back": p.snapshot,
         "explanation_html": render(p.snapshot["explanation"]).html, "label": review.LABELS.get(a.grade),
@@ -350,7 +352,8 @@ def presentation_view(request, presentation_id):
     data = payload(request, attempt) if attempt else None
     first_display = Presentation.objects.filter(pk=p.pk, clock_claimed=False).update(clock_claimed=True) == 1 if not attempt else False
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",
-        "first_display": first_display, "initial_state": data["state"] if data else "question", "nav": "study", **counts(request.user, p.scope_deck)})
+        "initial_state": data["state"] if data else "question", "initial_deadline": data["deadline"] if data else "",
+        "first_display": first_display, "nav": "study", **counts(request.user, p.scope_deck)})
 
 
 def owned_presentation(request, presentation_id):
@@ -364,7 +367,7 @@ def action(request, presentation_id):
     existing = Attempt.objects.filter(presentation=p).first()
     if existing:
         return JsonResponse(payload(request, existing))
-    choice = request.POST.get("action")
+    choice = request.POST.get("action")  # already parsed by body-consuming middleware (e.g. CSRF)
     if choice not in ["skip", "forgot", "speak"]:
         return JsonResponse({"error": "Choose Skip, Speak or Forgot."}, status=400)
     name, duration = "", None
@@ -391,7 +394,14 @@ def action(request, presentation_id):
                 os.fsync(directory)
             finally:
                 os.close(directory)
-            a = review.submit(p, choice, duration, name)
+            # One immutable Stop-based window: from the earliest request moment (before any
+            # body-consuming middleware) through durable staging of the recording.
+            # The execution deadline is the request anchor plus the total budget, stored unchanged
+            # through transaction acquisition: transfer, staging and database lock waiting each count
+            # against that absolute deadline exactly once (R3a).
+            anchor = getattr(request, "upload_started_wall", None)
+            submission_deadline = anchor+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS) if anchor is not None else None
+            a = review.submit(p, choice, duration, name, submission_deadline)
         except Exception:
             (settings.AUDIO_DIR/name).unlink(missing_ok=True)
             raise

@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import signal
 import time
+from datetime import timedelta
 from django.conf import settings
 from django.db import connections
 from django.utils import timezone
@@ -68,6 +69,10 @@ def run_worker(once=False, concurrency=None):
                     fail(kind, job_id, claim, StageError("worker", "Execution ended or expired before committing a result. Retry explicitly.", "timeout"))
                     active.remove(item)
             for a in Attempt.objects.filter(state__in=["submitted", "processing"], deadline__lte=now):
+                expire_attempt(a)
+            # Invalidate legacy/config-shrunk executions carrying a deadline beyond the current budget.
+            for a in Attempt.objects.filter(state__in=["submitted", "processing"],
+                    deadline__gt=now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)):
                 expire_attempt(a)
             expire_generations()
             if time.monotonic()-last_cleanup >= 60:

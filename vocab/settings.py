@@ -12,7 +12,7 @@ ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").s
 CSRF_TRUSTED_ORIGINS = [x for x in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if x]
 INSTALLED_APPS = ["django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
                   "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "learning"]
-MIDDLEWARE = ["django.middleware.security.SecurityMiddleware", "whitenoise.middleware.WhiteNoiseMiddleware",
+MIDDLEWARE = ["learning.middleware.UploadTiming", "django.middleware.security.SecurityMiddleware", "whitenoise.middleware.WhiteNoiseMiddleware",
               "django.contrib.sessions.middleware.SessionMiddleware", "django.middleware.common.CommonMiddleware",
               "django.middleware.csrf.CsrfViewMiddleware", "django.contrib.auth.middleware.AuthenticationMiddleware",
               "django.contrib.messages.middleware.MessageMiddleware", "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -68,7 +68,7 @@ def positive_budget(name, default):
     except ValueError:
         raise ImproperlyConfigured(name+" must be a positive finite number.") from None
 
-ASSESSMENT_TIMEOUT_SECONDS = positive_budget("ASSESSMENT_TIMEOUT_SECONDS", 300)
+ASSESSMENT_TIMEOUT_SECONDS = positive_budget("ASSESSMENT_TIMEOUT_SECONDS", 15)
 GENERATION_TIMEOUT_SECONDS = positive_budget("GENERATION_TIMEOUT_SECONDS", 420)
 WORKER_CLEANUP_GRACE_SECONDS = positive_budget("WORKER_CLEANUP_GRACE_SECONDS", 10)
 try:

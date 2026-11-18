@@ -49,7 +49,7 @@ Local commands read the process environment; they do not automatically source `.
 
 Migration `0007_retain_incomplete_directions` restores cleared direction locks for existing incomplete Vocabulary reviews and Forgot reinforcement. Stop web/worker during upgrade. It restores the latest current-source scored direction against the current active example pair; already held questions remain fixed. It changes only direction index/cue fields, preserving due, memory, collection/streak, counts and history. Reversing this migration retains the restored locks; use a matching cold backup/image for an exact rollback.
 
-The worker is required for ASR, judgment and Vocabulary preparation. Sources and submissions persist if it stops. Generation waits durably in Queued without an execution deadline; claiming starts its 300-second execution budget. The web exposes expired Generating work for explicit retry. Spoken assessments retain their 300-second submission-based deadline, including queue wait. Opening Practice does not silently retry uncertain paid calls.
+The worker is required for spoken assessment and Vocabulary preparation. Sources and submissions persist if it stops. Generation waits durably in Queued without an execution deadline; claiming starts its 300-second execution budget. The web exposes expired Generating work for explicit retry. Spoken assessments retain a 15-second budget measured from browser Stop & check: the server anchors its timer before any body-consuming middleware and stores the execution deadline as that anchor plus the total budget, so transfer, parsing, staging and any database lock wait each count against the absolute deadline exactly once; the browser keeps timeout/recovery visible once overdue even if an upload or response stalls, and obsolete legacy nonterminal attempts are invalidated (explicit Retry re-enters) on the shared expiry/status/claim/startup paths. Opening Practice does not silently retry uncertain paid calls.
 
 Migration `0008_example_highlight_positions` adds and backfills the selected positions for saved example pairs. Stop web/worker for the upgrade. Original sentence/highlight strings, progress, schedules, direction locks and frozen history are preserved. Existing failed tasks require explicit Retry; migration does not call a model or retry them. Use a matching cold backup/image for an exact rollback.
 
@@ -136,33 +136,44 @@ disabling is also enforced by every selection-create request from an older page.
 stays browser-local and account-scoped. Blocked storage uses page-local memory; clearing browser storage forgets only the
 destination, not cards or account preferences. Reload to refresh active Deck choices after changes in another tab.
 
-### Five independent model tasks
+### Independent model tasks
 
-`ASR_*`, `JUDGE_*`, `GENERATOR_*`, `EXAMPLE_REVIEWER_*` and `DEFINITION_*` settings are independent. The LLM defaults
-except generation are `MiniMax-M3.1-Flash`; ASR defaults to native MiniMax `asr-1.0`. Generation defaults to Zhipu
+`AUDIO_ASSESS_*`, `GENERATOR_*`, `EXAMPLE_REVIEWER_*` and `DEFINITION_*` settings are independent. Generation defaults to Zhipu
 `glm-5.3-flash` (`GENERATOR_PROTOCOL=zhipu`, budget sent as `max_tokens`, thinking `{"type":"enabled"}`) and requires an
 explicit `GENERATOR_API_KEY`; review defaults to MiniMax `MiniMax-M3.1-Flash` (`EXAMPLE_REVIEWER_PROTOCOL=minimax`,
 budget as `max_completion_tokens`, thinking `{"type":"adaptive"}`). Both chat roles send `GENERATOR_REASONING_EFFORT=max`
 and `EXAMPLE_REVIEWER_REASONING_EFFORT=max`. The shared MiniMax key is offered only to tasks whose endpoint is the native
-MiniMax origin. `DEFINITION_*` controls new Vocabulary teaching-detail completion, separately from example generation.
-The full settings/defaults are in `.env.example` and the [creation increment](specs/vocabulary-creation.md). These new
-creation capabilities are development-only until a production release.
+MiniMax origin and never to audio assessment origins. `DEFINITION_*` controls new Vocabulary teaching-detail completion,
+separately from example generation. The full settings/defaults are in `.env.example` and the
+[creation increment](specs/vocabulary-creation.md). These new creation capabilities are development-only until a
+production release.
+
+Spoken assessment is one audio-capable model request per execution. `AUDIO_ASSESS_PROVIDER` selects the request dialect:
+`qwen` (default; DashScope compatible-mode endpoint, `qwen3.8-omni-flash`, `reasoning_effort="none"`) or `doubao`
+(Ark v3 endpoint, `doubao-seed-2-1-lite-260915`, explicit `thinking={"type":"disabled"}`, `service_tier="default"`
+regular inference). Both send the normalized mono 16-kHz audio inline with a JSON response format and validate the
+returned transcript plus units locally. Qwen transports that audio as MP3 (a provider-documented format) because its
+documented inline limit is an encoded Base64 string under 10 MB and the accepted 500-second range is about 16 MB as
+PCM; the staged normalized WAV artifact is unchanged and an oversized encoding fails unscored. Doubao receives the
+normalized WAV as raw base64. `AUDIO_ASSESS_API_KEY` is always required for the selected origin; its
+thinking settings are fixed by the provider and cannot be configured.
 
 The current Generator prompt is tracked as `lexical-pair-v7-a`: the original scope-workflow D plus the
 learner-task context required by the example quality review (Recognition shows only the target sentence;
 Production shows only the native sentence, with the explanation and target counterpart hidden). It is distinct from the
-earlier unpromoted experimental `lexical-pair-v6` and from D2. Judge remains `lexical-meaning-v3`; Judge/Definition
-requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt is `example-review-v1`. New
-preparation and ordinary future rotations use D plus one review call. Deploying a prompt does not refresh saved pairs,
-invalidate held questions or reset learning progress; the explicit refresh command below remains a separate operation.
+earlier unpromoted experimental `lexical-pair-v6` and from D2. The audio assessment prompt is tracked as
+`spoken-audio-v2`: Recognition requires the requested native-language meaning; merely repeating the foreign target
+is incorrect. Definition requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt
+is `example-review-v1`. New preparation and ordinary future rotations use D plus one review call. Deploying a prompt
+does not refresh saved pairs, invalidate held questions or reset learning progress; the explicit refresh command below
+remains a separate operation.
 
-For another compatible provider, explicitly configure that task's full endpoint URL, model, protocol and API key. Select
-`ASR_PROTOCOL=openai` for the multipart transcription adapter, including its own `ASR_API_KEY`; the native MiniMax
-language header and transcription language form field are different contracts. Supported chat protocols are `minimax`,
-`zhipu` and `openai`; each fixes its token-budget key and accepted thinking values, and the configured protocol — never
-the model name — selects the dialect. The default MiniMax credential is never sent to another origin.
+For another compatible provider, explicitly configure that task's full endpoint URL, model, protocol and API key.
+Supported chat protocols are `minimax`, `zhipu` and `openai`; audio assessment providers are `qwen` and `doubao`. Each
+protocol fixes its token-budget key and accepted thinking values, and the configured protocol — never the model name —
+selects the dialect. The default MiniMax credential is never sent to another origin.
 
-Worker profiles are validated at startup, and production WSGI startup checks all five profiles without making paid
+Worker profiles are validated at startup, and production WSGI startup checks all four profiles without making paid
 requests. After changing Compose settings, recreate web/worker so their process environments reflect the changes:
 
 ```sh
@@ -256,7 +267,7 @@ Due Forgot cards come first, followed by due reviewed Normal cards, then a rando
 
 Skip and a confirmed unassessed exit set the card aside for 30 minutes across visits and scopes. Its stored FSRS due, memory, collection, streak and review direction remain unchanged. Due now excludes temporarily deferred cards; **Available again** shows when practice can resume. At expiry the card becomes eligible if its scheduler due permits. Repeating the same action does not extend the timer, and stale work cannot postpone newer progress. Already accepted work may still finish, subject to the existing terminal/progress guards.
 
-Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal. Read the back while processing; a service error permits the same-input Retry or a server-confirmed unassessed exit. Typed transcript changes and replacement recordings after reveal cannot affect the score.
+Speak records the whole answer. Cancel is available before submission, including pending microphone permission. Stop & check fixes the complete recording before reference reveal and starts the 15-second budget; the server anchors the execution deadline to the request before the body-consuming middleware as the anchor plus the total budget — transfer, parsing, staging and any database lock wait count against that absolute deadline exactly once, so lock waiting cannot extend it. Read the back while processing; once the execution is overdue, recovery (Check submission, same-input Retry, unassessed exit) stays visible even when an upload or response stalls (the browser aborts stalled requests at ten seconds and keeps the outcome unconfirmed), and a service error permits the same paths earlier. Typed transcript changes and replacement recordings after reveal cannot affect the score. Upgrading deploys a migration that conservatively invalidates pending spoken attempts from before the request-anchored budget; receipt, audio and history are preserved and only explicit Retry re-enters.
 
 Vocabulary backs show the authored target and original explanation. Recognition accepts concise equivalent meanings such as 吸收 for absorb; a correct word does not have to expand every property in its definition. Production still requires the target expression for complete recall. Generated example pairs contain sentences and minimal highlights only, with no separate translated definition.
 
@@ -349,7 +360,7 @@ docker compose -p vocab-restored up -d web worker caddy
 
 Use the exact backup image first; the script rejects an image mismatch. Configure a nonconflicting LAN IP/port if testing a second project on the same server. Restore validates digests and SQLite integrity, retains CA identity, and leaves processes stopped until the operator starts them. Existing empty directory scaffolding is allowed; existing files are not. Required Django/provider secrets are supplied separately, not recovered from the snapshot.
 
-Missing restored audio with no transcript becomes an explicit technical/unassessed path. A durable transcript can support Judge-only Retry while nonterminal. A committed grade replays without another scored review, schedule update, direction slot or rotation. Startup/retry never extends the original audio expiry.
+Missing or expired recording audio always becomes an explicit technical/unassessed path — including for legacy attempts that already hold a saved transcript; there is no transcript-only Retry. A committed grade replays without another scored review, schedule update, direction slot or rotation. Startup/retry never extends the original audio expiry.
 
 Keep the original hostname/CA relationship and update local DNS/hosts for a new server address. Verify account isolation, card/history/progress continuity, actual TLS, browser microphone access and representative review before calling a migration successful.
 
@@ -366,10 +377,10 @@ docker compose exec web python manage.py check --deploy
 
 Tests use a separate file-backed SQLite test database. They include real competing database connections, whole-stage timeout behavior, and supervisor recovery after a stalled provider or conversion child. Fake outputs test application rules, not linguistic accuracy.
 
-`tests/browser_smoke.py` exercises a dedicated account against a running server using a supplied synthetic WAV and Chromium executable. It creates/archives its own QA deck and makes real configured ASR/Judge/Generator calls. Supply a private JSON access file with `username`, `password` and `url`; do not commit credentials.
+`tests/browser_smoke.py` exercises a dedicated account against a running server using a supplied synthetic WAV and Chromium executable. It creates/archives its own QA deck and can make paid calls to configured audio-assessment/Generator providers. `--generic-only` stops after the Generic deck and may still call the assessment provider. Use isolated loopback providers for synthetic verification; this is not live-provider evidence. Supply a private JSON access file with `username`, `password` and `url`, and keep results private. HTTPS runs require OpenSSL on PATH to create an ephemeral certificate trusted only for the loopback fixture; the application certificate is still verified.
 
 ```sh
-python tests/browser_smoke.py --access-file /private/access.json --audio /private/fixture.wav --chromium /path/to/chrome
+python tests/browser_smoke.py --access-file /private/access.json --audio /private/fixture.wav --chromium /path/to/chrome --output /private/browser-results
 ```
 
-`scripts/probe_providers.py --live --output /private/results.json` explicitly opts into paid public-fixture model probes; its generation checks run the full reviewed pipeline (generation plus one Example Quality Review call). `--task judge|generator|asr` limits the task; `--audio-dir` supplies `English.wav`, `Spanish.wav`, `Chinese.wav`. `scripts/probe_generation.py --live --output /private/raw.json` collects raw Generator outputs for explicit human review, and `scripts/probe_generation.py --live --review` runs the clearly identified full reviewed pipeline over the regression corpus. The raw and reviewed modes are separate evaluations; never compare raw results against reviewer verdicts. Human microphone/Edge/client-trust checks remain separate from synthetic/headless evidence.
+`scripts/probe_providers.py --live --output /private/results.json` explicitly opts into paid public-fixture model probes; its generation checks run the full reviewed pipeline (generation plus one Example Quality Review call). `--task audio|generator` limits the task; `--audio-dir` supplies case-named spoken recordings, one `<CASE>.wav` per audio case (for example `GENERIC-MULTI.wav`); missing case files are reported as `missing-audio` without a paid call. The audio report records each model transcript beside its expected utterance for separate human fidelity review. `scripts/probe_generation.py --live --output /private/raw.json` collects raw Generator outputs for explicit human review, and `scripts/probe_generation.py --live --review` runs the clearly identified full reviewed pipeline over the regression corpus. The raw and reviewed modes are separate evaluations; never compare raw results against reviewer verdicts. Human microphone/Edge/client-trust checks remain separate from synthetic/headless evidence.

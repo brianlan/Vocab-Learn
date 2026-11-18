@@ -141,15 +141,19 @@ def valid_presentation_for_restart(p):
 
 
 @transaction.atomic
-def submit(p, action, duration=None, audio_name=""):
+def submit(p, action, duration=None, audio_name="", deadline=None):
     p = Presentation.objects.get(pk=p.pk)
     existing = Attempt.objects.filter(presentation=p).first()
     if existing:
         return existing
     now = timezone.now()
+    # The view's request-anchored deadline makes transfer, staging and transaction waits consume
+    # the same budget. Without one, the full budget starts now.
+    if action == "speak" and deadline is None:
+        deadline = now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)
     a = Attempt.objects.create(presentation=p, action=action, state="submitted", submitted_at=now,
         duration=duration, audio_name=audio_name, audio_expires_at=now+timedelta(hours=24) if action == "speak" else None,
-        deadline=now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS) if action == "speak" else None)
+        deadline=deadline if action == "speak" else None)
     if not valid_presentation(p, now):
         a.state, a.error = "closed_unassessed", "This presentation is stale or no longer eligible. Your progress was preserved."
         defer(p)
@@ -167,7 +171,9 @@ def submit(p, action, duration=None, audio_name=""):
 @transaction.atomic
 def commit_grade(attempt_id, claim, grade, outcomes, reason, candidate=None):
     a = Attempt.objects.select_related("presentation").get(pk=attempt_id)
-    if a.state in TERMINAL or a.claim != claim or (a.deadline and a.deadline <= timezone.now()):
+    now = timezone.now()
+    if a.state in TERMINAL or a.claim != claim or a.deadline and (a.deadline <= now
+            or a.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)):
         return a
     p = a.presentation
     if not valid_presentation(p, a.submitted_at):
@@ -221,7 +227,15 @@ def grade_units(units, duration, budget):
 @transaction.atomic
 def expire_attempt(a):
     a = Attempt.objects.get(pk=a.pk)
-    if a.state in ("submitted", "processing") and a.deadline <= timezone.now():
+    now = timezone.now()
+    if a.state in ("submitted", "processing") and a.deadline:
+        # An execution whose deadline exceeds the current budget predates it (legacy or config-shrunk);
+        # its Stop-anchored window is unrecoverable, so it expires now instead of granting the old claim
+        # new scoring time. Fresh submissions and valid retries never exceed the budget (R3c/R6).
+        if a.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS):
+            a.deadline = now
+            a.save(update_fields=["deadline"])
+    if a.state in ("submitted", "processing") and a.deadline <= now:
         a.state, a.claim, a.error_stage, a.error = "failed", uuid.uuid4(), "timeout", "Processing expired. Retry this fixed input or continue unassessed."
         a.error_category, a.retryable = "timeout", True
         a.save(update_fields=["state", "claim", "error_stage", "error", "error_category", "retryable"])
@@ -260,7 +274,8 @@ def retry_attempt(a):
         return exit_attempt(a)
     if a.duration is None or a.error_stage == "timing":
         return a
-    if not a.transcript and (not a.audio_name or a.audio_expires_at <= timezone.now() or not (settings.AUDIO_DIR/a.audio_name).is_file()):
+    # Audio-only assessment: even legacy transcript-only attempts cannot retry without their recording.
+    if not a.audio_name or a.audio_expires_at <= timezone.now() or not (settings.AUDIO_DIR/a.audio_name).is_file():
         a.error = "This recording is missing or expired. Continue unassessed; a later review accepts a new recording."
         a.save(update_fields=["error"])
         return a

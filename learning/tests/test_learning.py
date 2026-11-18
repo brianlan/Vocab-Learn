@@ -2,7 +2,12 @@ import io
 import json
 import os
 import random
+import socket
+import sqlite3
+import subprocess
 import tempfile
+import threading
+import time
 import uuid
 import wave
 from itertools import product
@@ -10,15 +15,16 @@ from html.parser import HTMLParser
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
+from django.conf import settings
 from django.core.management import call_command, CommandError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings, Client
-from django.db import OperationalError
+from django.test import TestCase, LiveServerTestCase, override_settings, Client, RequestFactory
+from django.db import OperationalError, connection
 from django.urls import reverse
 from django.utils import timezone
-from learning import authoring, review, work
+from learning import authoring, providers, review, views, work
 from learning.models import Deck, Card, Presentation, Attempt, ExamplePair, GenerationJob, ScoredReview
 from learning.providers import StageError, PROMPT_VERSIONS
 from learning.rendering import render, recall_budget
@@ -45,6 +51,9 @@ class LearningTests(TestCase):
         self.addCleanup(self.folder.cleanup)
         self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
         self.override.enable(); self.addCleanup(self.override.disable)
+        self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+        self.environ.start(); self.addCleanup(self.environ.stop)
         self.user = get_user_model().objects.create_user("learner", password="test-password")
         self.other = get_user_model().objects.create_user("other", password="test-password")
         self.deck = Deck.objects.create(owner=self.user, name="Everyday ideas")
@@ -186,11 +195,192 @@ class LearningTests(TestCase):
         self.vocabulary()
         self.generic();a=review.submit(self.present(),"speak",1,"unused")
         deadline=a.deadline
-        with patch("learning.work.timezone.now",return_value=a.submitted_at+timedelta(seconds=100)):
+        with patch("learning.work.timezone.now",return_value=a.submitted_at+timedelta(seconds=10)):
             receipt=work.claim_work()
         self.assertEqual(receipt,("assessment",a.pk,a.claim,deadline))
         self.assertEqual(GenerationJob.objects.get().state,"queued")
-        self.assertEqual(deadline,a.submitted_at+timedelta(seconds=300))
+        self.assertEqual(deadline,a.submitted_at+timedelta(seconds=15))
+
+    def test_request_anchored_deadline_and_legacy_deadlines_never_extend_the_budget(self):
+        decks=[]
+        for index in range(5):
+            deck=Deck.objects.create(owner=self.user,name=f"Budget {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Budget fixture {index}?"})
+            decks.append(deck)
+        # The view passes the immutable request-anchored deadline (anchor + total budget);
+        # database lock waiting cannot extend the scoring window.
+        first=review.submit(review.next_question(self.user,decks[0]),"speak",2,"unused",timezone.now()+timedelta(seconds=5))
+        self.assertGreater(first.deadline,first.submitted_at+timedelta(seconds=4))
+        self.assertLessEqual(first.deadline,first.submitted_at+timedelta(seconds=5))
+        # An anchor whose transfer already consumed the whole budget sits at the request itself: no scoreable time.
+        second=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused",timezone.now()-timedelta(seconds=1))
+        self.assertLess(second.deadline,second.submitted_at)
+        third=review.submit(review.next_question(self.user,decks[2]),"speak",2,"unused")
+        self.assertEqual(third.deadline,third.submitted_at+timedelta(seconds=15))
+        # A legacy execution whose deadline exceeds the current budget is obsolete: it expires
+        # against its receipt anchor immediately and the old claim can never score.
+        legacy=review.submit(review.next_question(self.user,decks[3]),"speak",2,"unused")
+        original_claim=legacy.claim
+        Attempt.objects.filter(pk=legacy.pk).update(deadline=legacy.submitted_at+timedelta(seconds=300))
+        for attempt in [first,second,third]:
+            review.exit_attempt(attempt)
+        obsolete=review.expire_attempt(legacy)
+        obsolete.refresh_from_db()
+        self.assertEqual((obsolete.state,obsolete.error_stage,obsolete.retryable),("failed","timeout",True))
+        self.assertNotEqual(obsolete.claim,original_claim)
+        review.commit_grade(obsolete.pk,original_claim,"E",[],"late legacy result")
+        obsolete.refresh_from_db()
+        self.assertEqual(obsolete.state,"failed")  # the stale claim cannot store a late result
+        self.assertIsNone(work.claim_work())  # the obsolete execution is invalidated, not claimed
+        self.assertEqual(ScoredReview.objects.count(),0)
+        # An already-past ceiling is skipped by the claim and expires through the normal fencing.
+        expired=review.submit(review.next_question(self.user,decks[4]),"speak",2,"unused")
+        Attempt.objects.filter(pk=expired.pk).update(deadline=timezone.now()-timedelta(seconds=1))
+        self.assertIsNone(work.claim_work())
+        self.assertEqual(Attempt.objects.get(pk=expired.pk).state,"submitted")
+
+    def test_obsolete_legacy_executions_are_invalidated_on_shared_paths_without_a_worker(self):
+        decks=[]
+        for index in range(2):
+            deck=Deck.objects.create(owner=self.user,name=f"Legacy {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Legacy fixture {index}?"})
+            decks.append(deck)
+        processing=self.spoken(review.next_question(self.user,decks[0]))
+        original_claim=processing.claim
+        Attempt.objects.filter(pk=processing.pk).update(deadline=processing.submitted_at+timedelta(seconds=300))
+        invalidated=review.expire_attempt(processing)  # the shared expiry/status path invalidates on first touch
+        invalidated.refresh_from_db()
+        self.assertEqual((invalidated.state,invalidated.error_stage,invalidated.retryable),("failed","timeout",True))
+        self.assertNotEqual(invalidated.claim,original_claim)  # the old claim loses its fencing token
+        review.commit_grade(invalidated.pk,original_claim,"E",[],"late processing result")
+        invalidated.refresh_from_db()
+        self.assertEqual((invalidated.state,invalidated.grade),("failed",""))
+        submitted=self.spoken(review.next_question(self.user,decks[1]))
+        submitted.state="submitted"; submitted.save(update_fields=["state"])
+        Attempt.objects.filter(pk=submitted.pk).update(deadline=submitted.submitted_at+timedelta(seconds=300))
+        review.expire_attempt(submitted)
+        submitted.refresh_from_db()
+        self.assertEqual(submitted.state,"failed")  # only explicit Retry may create the new opportunity
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_persistence_paths_refuse_results_under_obsolete_deadlines_without_prior_contact(self):
+        """R3c residual: the budget invariant is shared with result persistence — a processing result
+        that arrives with no status/supervisor contact under a deadline beyond the budget never scores,
+        and first contact near an obsolete deadline still invalidates immediately."""
+        decks=[]
+        for index in range(2):
+            deck=Deck.objects.create(owner=self.user,name=f"Guard {index}")
+            authoring.save_card(deck,"generic",{**GENERIC,"question":f"Guard fixture {index}?"})
+            decks.append(deck)
+        late=self.spoken(review.next_question(self.user,decks[0]))
+        Attempt.objects.filter(pk=late.pk).update(state="processing")
+        late=Attempt.objects.get(pk=late.pk)
+        near=review.submit(review.next_question(self.user,decks[1]),"speak",2,"unused")
+        Attempt.objects.filter(pk=near.pk).update(deadline=timezone.now()+timedelta(seconds=10))
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=1):
+            # An unobserved late result under the obsolete deadline is refused at both persistence guards.
+            self.assertFalse(work.save_stage(late.pk,late.claim,transcript="late stage"))
+            self.assertEqual(review.commit_grade(late.pk,late.claim,"E",[],"late unobserved result").state,"processing")
+            self.assertEqual(ScoredReview.objects.count(),0)
+            # First contact near the obsolete deadline invalidates instead of claiming or scoring.
+            self.assertIsNone(work.claim_work())
+            near.refresh_from_db()
+            self.assertEqual((near.state,near.error_stage,near.retryable),("failed","timeout",True))
+            review.expire_attempt(late)
+            late.refresh_from_db()
+            self.assertEqual((late.state,late.error_stage,late.retryable),("failed","timeout",True))
+            self.assertIsNone(work.claim_work())
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_retry_after_original_deadline_claims_and_commits_a_fresh_execution(self):
+        """R6: an explicit retry keeps its fresh budget through the real claim path and commits exactly once."""
+        card=self.generic(); p=self.present()
+        Card.objects.filter(pk=card.pk).update(due=timezone.now()-timedelta(seconds=60))  # due well before the receipt
+        a=self.spoken(p)
+        original_claim=a.claim
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary"))
+        # The original execution window fully passed before the learner pressed Retry.
+        past=timezone.now()-timedelta(seconds=30)
+        Attempt.objects.filter(pk=a.pk).update(submitted_at=past,deadline=past+timedelta(seconds=15))
+        a=review.retry_attempt(a)
+        self.assertEqual((a.state,a.execution),("submitted",2))
+        self.assertNotEqual(a.claim,original_claim)
+        self.assertEqual(a.submitted_at,past)  # the original scheduling receipt is preserved
+        fresh_deadline=a.deadline
+        receipt=work.claim_work()
+        self.assertEqual(receipt[1],a.pk)
+        a.refresh_from_db()
+        self.assertEqual(a.deadline,fresh_deadline)  # claiming did not shrink the valid retry budget
+        self.assertEqual(a.state,"processing")
+        review.commit_grade(a.pk,original_claim,"E",[],"stale claim")
+        a.refresh_from_db()
+        self.assertEqual((a.state,a.transcript),("processing",""))  # old-claim fencing refused the stale commit
+        units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
+        with patch("learning.providers.audio_assessment",return_value=("four",units,{"model":"fake-audio"})) as assessment:
+            work.process_assessment(a.pk,a.claim)
+            self.assertEqual(assessment.call_count,1)  # exactly one assessor call for this execution
+        a.refresh_from_db()
+        self.assertEqual((a.state,a.grade,a.transcript),("assessed","E","four"))
+        self.assertEqual(ScoredReview.objects.count(),1)
+
+    def post_speak_with_delayed_upload(self, p, seconds):
+        """Drive the speak view with the middleware anchor and a body whose parse (transfer) is artificially delayed."""
+        request=self.factory.post(reverse("action",args=[p.pk]),
+            {"action":"speak","duration":"2","audio":SimpleUploadedFile("r.webm",audio_bytes())})
+        request.user=self.user
+        request.upload_started_wall=timezone.now()  # what UploadTiming records before CSRF consumes the body
+        original_read=request.read
+        def slow_read(*args,**kwargs):
+            time.sleep(seconds)
+            return original_read(*args,**kwargs)
+        request.read=slow_read
+        return views.action(request,p.pk)
+
+    def test_delayed_upload_leaves_the_request_anchored_deadline_absolute_and_exhausted_uploads_score_nothing(self):
+        """R3a: the deadline is the request anchor plus the total budget — transfer/staging and lock
+        waiting count against that absolute deadline exactly once; an exhausted upload cannot commit."""
+        self.factory=RequestFactory()
+        first_deck=Deck.objects.create(owner=self.user,name="Upload timing")
+        authoring.save_card(first_deck,"generic",{**GENERIC,"question":"Upload fixture 1?"})
+        p=review.next_question(self.user,first_deck)
+        t_start=timezone.now()
+        response=self.post_speak_with_delayed_upload(p,0.3)
+        data=json.loads(response.content)
+        a=Attempt.objects.get(presentation=p)
+        self.assertEqual(data["state"],"submitted")
+        self.assertEqual(data["deadline"],a.deadline.isoformat())
+        # A delayed upload does not move the absolute deadline (anchor + total budget); it only
+        # shortens the window remaining at receipt, which stays claimable while still in budget.
+        self.assertGreater(a.deadline,t_start+timedelta(seconds=14.5))
+        self.assertLessEqual(a.deadline,t_start+timedelta(seconds=15.2))
+        # An ambiguous replay of the same submission returns the original attempt unchanged.
+        replay=json.loads(self.post_speak_with_delayed_upload(p,0.0).content)
+        self.assertEqual(replay["deadline"],data["deadline"])
+        self.assertEqual(Attempt.objects.filter(presentation=p).count(),1)
+        review.exit_attempt(a)
+        # An upload that consumes the whole budget leaves nothing scoreable: immediate expiry, fenced commits.
+        second_deck=Deck.objects.create(owner=self.user,name="Upload exhaustion")
+        exhausted=authoring.save_card(second_deck,"generic",{**GENERIC,"question":"Upload fixture 2?"})
+        Card.objects.filter(pk=exhausted.pk).update(due=timezone.now()-timedelta(seconds=30))
+        p2=review.next_question(self.user,second_deck)
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=0.5):
+            data=json.loads(self.post_speak_with_delayed_upload(p2,1.0).content)
+        a2=Attempt.objects.get(presentation=p2)
+        self.assertEqual((data["state"],a2.state,a2.error_stage,a2.retryable),("failed","failed","timeout",True))
+        self.assertTrue((Path(self.folder.name)/a2.audio_name).exists())  # the recording stays retryable
+        review.commit_grade(a2.pk,a2.claim,"E",[],"after expiry")
+        a2.refresh_from_db()
+        self.assertEqual(a2.state,"failed")
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def test_payload_exposes_the_deadline_only_while_an_execution_is_live(self):
+        self.factory=RequestFactory()
+        self.generic(); p=self.present()
+        a=self.spoken(p)
+        status_request=self.factory.get("/"); status_request.user=self.user
+        self.assertIsNotNone(views.payload(status_request,a)["deadline"])
+        review.commit_grade(a.pk,a.claim,"E",[],"committed")
+        self.assertIsNone(views.payload(status_request,a)["deadline"])
 
     def test_explicit_preparation_requeue_is_scoped_and_idempotent(self):
         def failed(card):
@@ -486,28 +676,29 @@ class LearningTests(TestCase):
         self.generic(question="I had to **{{blank}}** because I was <u>{{blank}}</u>.",answer="call off; feeling unwell")
         p=self.present(); self.assertEqual(p.snapshot["units"],2)
         a=self.spoken(p); before=Card.objects.get(pk=p.card_id).fsrs
-        with patch("learning.providers.transcribe",return_value=("cancel, feeling unwell",{})),patch("learning.providers.assess",side_effect=StageError("JUDGE","Missing unit")):
+        with patch("learning.providers.audio_assessment",side_effect=StageError("AUDIO_ASSESS","Missing unit")):
             try: work.process_assessment(a.pk,a.claim)
             except StageError as e: work.fail("assessment",a.pk,a.claim,e)
-        a.refresh_from_db(); self.assertEqual(a.state,"failed"); self.assertEqual(a.transcript,"cancel, feeling unwell")
+        a.refresh_from_db(); self.assertEqual(a.state,"failed"); self.assertEqual(a.transcript,"")
         self.assertEqual(Card.objects.get(pk=p.card_id).fsrs,before)
 
-    def test_pipeline_normalizes_reuses_transcript_and_cleans_on_commit(self):
-        """AUDIO-NORMALIZE / AUDIO-COMMIT / RESTORE-TRANSCRIPT."""
+    def test_pipeline_normalizes_assesses_and_cleans_on_commit(self):
+        """AUDIO-NORMALIZE / AUDIO-COMMIT / RESTORE-AUDIO-REQUIRED."""
         self.generic(); a=self.spoken(self.present())
-        units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
-        with patch("learning.providers.transcribe",return_value=("four",{"model":"fake-asr"})) as asr,patch("learning.providers.assess",side_effect=StageError("JUDGE","Temporary failure")):
+        with patch("learning.providers.audio_assessment",side_effect=StageError("AUDIO_ASSESS","Temporary failure")) as assessment:
             with self.assertRaises(StageError): work.process_assessment(a.pk,a.claim)
-        a.refresh_from_db(); self.assertEqual(a.transcript,"four")
+        self.assertEqual(assessment.call_count,1)
+        a.refresh_from_db(); self.assertEqual(a.transcript,"")
         self.assertTrue((Path(self.folder.name)/a.audio_name).exists())
         with wave.open(str(Path(self.folder.name)/(a.audio_name+".wav")),"rb") as normalized:
             self.assertEqual((normalized.getnchannels(),normalized.getframerate(),normalized.getsampwidth()),(1,16000,2))
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Temporary"))
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary"))
         a=review.retry_attempt(a); a.state="processing"; a.save()
-        with patch("learning.providers.transcribe") as asr,patch("learning.providers.assess",return_value=(units,{"model":"fake-judge"})):
+        units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
+        with patch("learning.providers.audio_assessment",return_value=("four",units,{"model":"fake-audio"})) as assessment:
             work.process_assessment(a.pk,a.claim)
-            asr.assert_not_called()
-        a.refresh_from_db(); self.assertEqual((a.state,a.grade),("assessed","E"))
+            self.assertEqual(assessment.call_count,1)  # exactly one model request for this execution
+        a.refresh_from_db(); self.assertEqual((a.state,a.grade,a.transcript,a.judge_provenance["model"]),("assessed","E","four","fake-audio"))
         self.assertFalse((Path(self.folder.name)/a.audio_name).exists())
         self.assertEqual(ScoredReview.objects.count(),1)
 
@@ -548,7 +739,8 @@ class LearningTests(TestCase):
         a.state="failed"; a.audio_expires_at=timezone.now()-timedelta(seconds=1); a.save()
         self.assertEqual(review.retry_attempt(a).state,"failed")
         a.transcript="four"; a.save()
-        self.assertEqual(review.retry_attempt(a).state,"submitted")
+        # A saved transcript never re-enables a retry once the recording is gone.
+        self.assertEqual(review.retry_attempt(a).state,"failed")
 
     def test_distinct_attempts_and_source_edit_fence(self):
         """TWO-ATTEMPTS / SOURCE-EDIT."""
@@ -567,32 +759,77 @@ class LearningTests(TestCase):
     def test_pipeline_closes_stale_attempt_before_more_paid_work(self):
         self.generic(); first=self.spoken(self.present()); second=self.spoken(review.next_question(self.user))
         review.commit_grade(first.pk,first.claim,"E",[],"First committed")
-        with patch("learning.providers.transcribe") as asr,patch("learning.providers.assess") as judge:
+        with patch("learning.providers.audio_assessment") as assessment:
             work.process_assessment(second.pk,second.claim)
         second.refresh_from_db()
         self.assertEqual(second.state,"closed_unassessed")
-        asr.assert_not_called();judge.assert_not_called()
+        assessment.assert_not_called()
         self.assertEqual(ScoredReview.objects.count(),1)
 
-    def test_profile_dispatch_snapshot_retry_and_cached_asr_provenance(self):
+    def test_profile_dispatch_snapshot_retry_and_frozen_audio_requirement(self):
         import os
-        self.generic();a=self.spoken(self.present());a.transcript="four";a.asr_provenance={"model":"original-asr"};a.save()
+        self.generic();a=self.spoken(self.present());a.asr_provenance={"model":"original-asr"};a.save()
         seen=[]
-        def interrupted(profile,*args):
+        def interrupted(profile,*args,**kwargs):
             seen.append(profile.model)
-            os.environ["JUDGE_MODEL"]="judge-next"
-            raise StageError("JUDGE","Controlled interruption","transport")
-        with patch.dict(os.environ,{"JUDGE_MODEL":"judge-dispatched","MINIMAX_API_KEY":"placeholder-only"}),patch("learning.providers.chat",side_effect=interrupted):
+            os.environ["AUDIO_ASSESS_MODEL"]="audio-next"
+            raise StageError("AUDIO_ASSESS","Controlled interruption","transport")
+        with patch.dict(os.environ,{"AUDIO_ASSESS_MODEL":"audio-dispatched","AUDIO_ASSESS_API_KEY":"test-only",
+                "AUDIO_ASSESS_ENDPOINT":"https://provider.test/endpoint"}),patch("learning.providers.chat",side_effect=interrupted):
             with self.assertRaises(StageError):work.process_assessment(a.pk,a.claim)
-        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"judge-dispatched")
-        self.assertEqual(seen,["judge-dispatched"])
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Temporary","transport"))
+        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"audio-dispatched")
+        self.assertEqual(seen,["audio-dispatched"])
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary","transport"))
         a=review.retry_attempt(a);a.state="processing";a.save()
-        units={"units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]}
-        with patch.dict(os.environ,{"JUDGE_MODEL":"judge-retry","MINIMAX_API_KEY":"placeholder-only"}),patch("learning.providers.chat",return_value=units),patch("learning.providers.transcribe") as asr:
+        result={"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]}
+        with patch.dict(os.environ,{"AUDIO_ASSESS_MODEL":"audio-retry","AUDIO_ASSESS_API_KEY":"test-only",
+                "AUDIO_ASSESS_ENDPOINT":"https://provider.test/endpoint"}),patch("learning.providers.chat",return_value=result) as chat:
             work.process_assessment(a.pk,a.claim)
-        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"judge-retry")
-        self.assertEqual(a.asr_provenance,{"model":"original-asr"});asr.assert_not_called()
+            self.assertEqual(chat.call_count,1)  # one paid request per execution
+        a.refresh_from_db();self.assertEqual(a.judge_provenance["model"],"audio-retry")
+        self.assertEqual(a.asr_provenance,{"model":"original-asr"})
+
+    def test_qwen_request_transports_the_whole_accepted_range_under_the_provider_inline_limit(self):
+        """R7: Qwen's documented inline limit is an encoded Base64 string under 10MB, while the
+        accepted 500-second recording normalizes to about 16MB of PCM. The documented one-request
+        representation is MP3 (a documented input format) encoding of the same normalized audio."""
+        import base64 as b64
+        p=providers.profile("AUDIO_ASSESS")
+        self.assertEqual(p.protocol,"qwen")
+        seconds=500
+        buffer=io.BytesIO()
+        with wave.open(buffer,"wb") as fixture:
+            fixture.setnchannels(1); fixture.setsampwidth(2); fixture.setframerate(16000)
+            fixture.writeframes(b"\x00\x01"*16000*seconds)  # 500s mono 16kHz: ~16MB normalized PCM
+        source=Path(self.folder.name)/(uuid.uuid4().hex+".audio.wav"); source.write_bytes(buffer.getvalue())
+        self.assertGreater(source.stat().st_size,10*1000*1000)  # the WAV itself exceeds the documented limit
+        mp3=providers.transcode_mp3(source,20)
+        encoded=b64.b64encode(mp3).decode()
+        self.assertLess(len(encoded),providers.QWEN_INLINE_LIMIT)
+        self.assertFalse(Path(str(source)+".mp3").exists())  # encoding publishes no shared file
+        part=providers.audio_part(p,mp3)
+        self.assertEqual((part["input_audio"]["format"],part["input_audio"]["data"].startswith("data:audio/mpeg;base64,")),("mp3",True))
+        with wave.open(str(source),"rb") as original:
+            with tempfile.NamedTemporaryFile(suffix=".mp3") as check:
+                check.write(mp3); check.flush()
+                probe=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",check.name],
+                    capture_output=True,text=True,check=True)
+                self.assertAlmostEqual(float(probe.stdout.strip()),original.getnframes()/original.getframerate(),delta=1.0)
+        # The guard keeps oversized payloads unscored even if encoding ever changes.
+        with self.assertRaises(StageError):
+            providers.audio_part(p,b"\0"*(providers.QWEN_INLINE_LIMIT+1))
+
+    def test_unrelated_tasks_keep_base_empty_override_behavior(self):
+        """P1: only AUDIO_ASSESS may replace explicit-empty endpoint/model overrides with provider defaults."""
+        with patch.dict(os.environ,{"DEFINITION_ENDPOINT":"","DEFINITION_MODEL":"replacement-model",
+                "DEFINITION_API_KEY":"test-only"}):
+            with self.assertRaises(StageError):
+                providers.profile("DEFINITION")  # base behavior: an empty endpoint fails configuration
+        with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":"","AUDIO_ASSESS_MODEL":"","AUDIO_ASSESS_API_KEY":"test-only",
+                "AUDIO_ASSESS_PROVIDER":"doubao"}):
+            audio=providers.profile("AUDIO_ASSESS")
+            self.assertEqual((audio.endpoint,audio.model,audio.protocol),
+                (providers.AUDIO_PROVIDERS["doubao"]["endpoint"],providers.AUDIO_PROVIDERS["doubao"]["model"],"doubao"))
 
     def test_forgot_timeline_and_preserved_scheduler_memory(self):
         """SRS-TIMELINE / DELAY-ANCHOR / NEXT-REVIEW."""
@@ -720,7 +957,7 @@ class LearningTests(TestCase):
         card=self.generic(question="Why did you postpone the meeting?",answer="To give everyone more time to prepare.")
         p=self.present();self.assertEqual(p.snapshot["units"],1)
         a=self.spoken(p)
-        with patch("learning.providers.transcribe",return_value=(card.answer,{})),patch("learning.providers.assess",return_value=([{"id":1,"outcome":"complete","reason":"Complete sentence"}],{})):
+        with patch("learning.providers.audio_assessment",return_value=(card.answer,[{"id":1,"outcome":"complete","reason":"Complete sentence"}],{})):
             work.process_assessment(a.pk,a.claim)
         a.refresh_from_db();self.assertEqual(a.grade,"E")
         path=Path(self.folder.name)/"invalid.audio";path.write_bytes(b"This is not an audio file")
@@ -963,7 +1200,7 @@ class LearningTests(TestCase):
         card.refresh_from_db()
         before=(card.fsrs,card.due,card.collection,card.streak,card.direction_index,card.review_count,card.progress_version)
         a=self.spoken(p)
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","Controlled outage","transport"))
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Controlled outage","transport"))
         a=review.retry_attempt(a);review.exit_attempt(a)
         card.refresh_from_db();at=card.deferred_until
         for action in ["skip","speak"]:
@@ -1044,18 +1281,18 @@ class LearningTests(TestCase):
         self.assertEqual(review.commit_grade(a.pk,a.claim,"E",[],"old").state,"closed_unassessed")
         self.assertEqual(ScoredReview.objects.count(),0)
 
-    def test_restore_without_audio_and_with_saved_transcript(self):
-        """RESTORE-NO-AUDIO / RESTORE-TRANSCRIPT logical states; real backup drill is separate."""
+    def test_restore_without_audio_rejects_transcript_only_retry(self):
+        """RESTORE-NO-AUDIO logical state; real backup drill is separate."""
         self.generic(); a=self.spoken(self.present()); work.cleanup_attempt_audio(a)
         with self.assertRaises(StageError): work.process_assessment(a.pk,a.claim)
         work.fail("assessment",a.pk,a.claim,StageError("audio","Missing recording"))
         self.assertEqual(review.retry_attempt(a).state,"failed")
         a.refresh_from_db(); a.transcript="four"; a.save()
-        self.assertEqual(review.retry_attempt(a).state,"submitted")
+        self.assertEqual(review.retry_attempt(a).state,"failed")
 
     def test_timing_frozen_through_retry_and_schedule_uses_receipt(self):
         self.generic(); a=self.spoken(self.present(),11); anchor=a.submitted_at
-        work.fail("assessment",a.pk,a.claim,StageError("JUDGE","temporary"))
+        work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","temporary"))
         a=review.retry_attempt(a)
         self.assertEqual((a.duration,a.submitted_at),(11,anchor))
         result=review.commit_grade(a.pk,a.claim,"B",[],"wrong")
@@ -1067,17 +1304,18 @@ class LearningTests(TestCase):
         units=[{"id":1,"outcome":"complete","reason":"Complete fixture"}]
         for index,(grade,duration) in enumerate([("E",2),("D",90)],1):
             self.generic(question=f"Database retry {grade} fixture?");a=self.spoken(self.present(),duration)
-            a.transcript="four";a.save();calls=[]
+            calls=[]
             def save(card,*args,**kwargs):
                 calls.append(card.pk)
                 if len(calls)==1:raise OperationalError("database is locked")
                 return original(card,*args,**kwargs)
-            with patch("learning.providers.assess",return_value=(units,{})) as judge,patch.object(Card,"save",save),patch(
+            with patch("learning.providers.audio_assessment",return_value=("four",units,{})) as assessment,patch.object(Card,"save",save),patch(
                     "learning.review.Scheduler",wraps=Scheduler) as schedule,patch("learning.review.random.randint",return_value=2) as jitter:
                 work.process_assessment(a.pk,a.claim)
-            self.assertEqual(judge.call_count,1);self.assertEqual(schedule.call_count,1)
+            self.assertEqual(assessment.call_count,1);self.assertEqual(schedule.call_count,1)
             self.assertEqual(jitter.call_count,1 if grade=="D" else 0)
             a.refresh_from_db();self.assertEqual((a.state,a.grade),("assessed",grade))
+            self.assertEqual(a.transcript,"four")
             if grade=="D":self.assertEqual(a.next_due,a.submitted_at+timedelta(days=2))
             self.assertEqual(ScoredReview.objects.count(),index)
 
@@ -1724,3 +1962,121 @@ class LearningTests(TestCase):
         self.assertIn("Regenerate examples",html)  # a fresh request bound to the new pair is offered
         fresh=self.manual_regeneration(card)
         self.assertEqual(fresh.provenance["requested_pair_id"],replacement.pk)
+
+
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class UploadTransferHttpTests(LiveServerTestCase):
+    """R3a full path: transfer and staging are measured from the pre-middleware anchor over real HTTP with CSRF enabled."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.override = override_settings(AUDIO_DIR=Path(self.folder.name))
+        self.override.enable(); self.addCleanup(self.override.disable)
+        self.environ = patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY": "test-only",
+            "AUDIO_ASSESS_ENDPOINT": "https://provider.test/endpoint"})
+        self.environ.start(); self.addCleanup(self.environ.stop)
+        self.user = get_user_model().objects.create_user("learner", password="test-password")
+        self.deck = Deck.objects.create(owner=self.user, name="Transfer timing")
+        self.card = authoring.save_card(self.deck, "generic", {**GENERIC, "question": "Transfer fixture?"})
+        Card.objects.filter(pk=self.card.pk).update(due=timezone.now()-timedelta(seconds=1))
+        self.presentation = review.next_question(self.user, self.deck)
+        self.browser = Client()
+        self.browser.force_login(self.user)
+        self.browser.get("/login/")  # renders a form, which sets the CSRF cookie
+        self.session_cookie = self.browser.cookies[settings.SESSION_COOKIE_NAME].value
+        self.csrf = self.browser.cookies[settings.CSRF_COOKIE_NAME].value
+
+    def speak_over_http(self, card, delay, token=True):
+        host, port = self.live_server_url.split("//",1)[1].rsplit(":",1)
+        path = reverse("action", args=[card.presentation_set.get().pk])
+        boundary = "----vocab" + uuid.uuid4().hex
+        parts = [f"--{boundary}\r\nContent-Disposition: form-data; name=\"action\"\r\n\r\nspeak\r\n",
+                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"duration\"\r\n\r\n2\r\n",
+                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"r.webm\"\r\nContent-Type: audio/webm\r\n\r\n"]
+        body = "".join(parts).encode() + audio_bytes() + f"\r\n--{boundary}--\r\n".encode()
+        headers = (f"POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: multipart/form-data; boundary={boundary}\r\n"
+            f"Content-Length: {len(body)}\r\nCookie: {settings.SESSION_COOKIE_NAME}={self.session_cookie}; {settings.CSRF_COOKIE_NAME}={self.csrf}\r\n")
+        if token:
+            headers += "X-CSRFToken: " + self.csrf + "\r\n"  # environ key is settings.CSRF_HEADER_NAME; the wire header is X-CSRFToken
+        headers += "Connection: close\r\n\r\n"
+        with socket.create_connection((host, int(port)), timeout=30) as connection:
+            connection.sendall(headers.encode())
+            half = len(body)//2
+            connection.sendall(body[:half])
+            time.sleep(delay)  # the transfer stays in flight; the pre-middleware anchor must observe it
+            connection.sendall(body[half:])
+            received=[]
+            while True:
+                chunk=connection.recv(65536)
+                if not chunk: break
+                received.append(chunk)
+        raw=b"".join(received).decode(errors="replace")
+        status=int(raw.split(" ",1)[1].split(" ",1)[0])
+        return status, raw.split("\r\n\r\n",1)[1]
+
+    def test_transfer_and_staging_reduce_the_budget_and_exhausted_uploads_score_nothing(self):
+        t0 = timezone.now()
+        status, body_text = self.speak_over_http(self.card, delay=2.0)
+        self.assertEqual(status, 200, body_text[:400])
+        data=json.loads(body_text)
+        a=Attempt.objects.get()
+        self.assertEqual(data["state"],"submitted")
+        self.assertEqual(data["deadline"],a.deadline.isoformat())
+        # The deadline is the request anchor plus the total budget: the measured transfer/staging
+        # interval and any transaction wait count against that absolute deadline exactly once —
+        # a delayed transfer neither extends it beyond the anchor nor shortens it below the budget.
+        self.assertGreater(a.deadline,t0+timedelta(seconds=14.5))
+        self.assertLessEqual(a.deadline,t0+timedelta(seconds=15.3))
+        self.assertEqual(ScoredReview.objects.count(),0)
+        # CSRF stays enforced: without the token the request is rejected before any timing or storage.
+        status, _ = self.speak_over_http(self.card, delay=0.0, token=False)
+        self.assertEqual(status, 403)
+        # An upload that consumes the whole budget leaves nothing scoreable: immediate expiry, fenced commits.
+        second_deck = Deck.objects.create(owner=self.user, name="Transfer exhaustion")
+        exhausted = authoring.save_card(second_deck, "generic", {**GENERIC, "question": "Transfer fixture 2?"})
+        Card.objects.filter(pk=exhausted.pk).update(due=timezone.now()-timedelta(seconds=1))
+        review.next_question(self.user, second_deck)
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=0.5):
+            status, body_text = self.speak_over_http(exhausted, delay=1.0)
+        self.assertEqual(status, 200)
+        a2=Attempt.objects.get(presentation__card=exhausted)
+        self.assertEqual((json.loads(body_text)["state"],a2.state,a2.error_stage,a2.retryable),("failed","failed","timeout",True))
+        review.commit_grade(a2.pk,a2.claim,"E",[],"after expiry")
+        a2.refresh_from_db()
+        self.assertEqual(a2.state,"failed")
+        self.assertEqual(ScoredReview.objects.count(),0)
+
+    def hold_write_lock(self, seconds):
+        """Hold BEGIN IMMEDIATE on the shared test database so the server's submit transaction waits."""
+        hold = sqlite3.connect(connection.settings_dict["NAME"], uri=True, timeout=5, isolation_level=None, check_same_thread=False)
+        def guard():
+            try:
+                hold.execute("BEGIN IMMEDIATE")
+                time.sleep(seconds)
+                hold.execute("COMMIT")
+            finally:
+                hold.close()
+        thread = threading.Thread(target=guard, daemon=True)
+        thread.start()
+        thread.join(1.0)  # BEGIN IMMEDIATE on an uncontested database acquires immediately
+
+    def test_writer_lock_waiting_cannot_extend_the_request_anchored_deadline(self):
+        """R3a residual: the deadline is fixed to the request anchor; waiting on the database
+        writer lock grants no extra scoring time and an exhausted execution never claims or scores."""
+        self.assertEqual(Attempt.objects.count(), 0)
+        with override_settings(ASSESSMENT_TIMEOUT_SECONDS=1.0):
+            self.hold_write_lock(2.5)
+            t1 = timezone.now()  # the request starts here; the anchor sits within ~ε after it
+            status, body_text = self.speak_over_http(self.card, delay=0.2)
+        self.assertEqual(status, 200, body_text[:400])
+        a = Attempt.objects.get()
+        self.assertEqual((json.loads(body_text)["state"],a.state,a.error_stage,a.retryable),("failed","failed","timeout",True))
+        # The stored deadline sits at the request anchor + budget, not at post-lock insertion time.
+        self.assertGreater(a.deadline, t1)
+        self.assertLessEqual(a.deadline, t1+timedelta(seconds=1.05))
+        # No claim, no assessment call and no score for the exhausted execution.
+        self.assertIsNone(work.claim_work())
+        self.assertEqual(ScoredReview.objects.count(),0)
+        review.commit_grade(a.pk,a.claim,"E",[],"late under expired deadline")
+        self.assertEqual(ScoredReview.objects.count(),0)

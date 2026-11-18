@@ -1,3 +1,17 @@
+from django.utils import timezone
+
+
+class UploadTiming:
+    """Record the earliest request moment: CSRF (and any body-consuming middleware) reads the
+    uploaded recording before the view runs, so transfer+staging must anchor before them."""
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        request.upload_started_wall = timezone.now()
+        return self.get_response(request)
+
+
 class PrivatePages:
     def __init__(self, get_response):
         self.get_response = get_response

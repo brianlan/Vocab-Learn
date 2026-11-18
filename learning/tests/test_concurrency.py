@@ -1,19 +1,23 @@
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+import httpx
 from django.contrib.auth import get_user_model
-from django.db import connections
+from django.db import connection, connections
 from django.db.models.query import QuerySet
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
-from learning import authoring, review, views, work
+from learning import authoring, providers, review, views, work
 from learning.models import Card, Deck, Attempt, ScoredReview, Presentation, GenerationJob
 from learning.worker import run_worker
 from .test_learning import GENERIC, VOCAB, PAIR, audio_bytes
@@ -195,6 +199,144 @@ class ConcurrencyTests(TransactionTestCase):
         self.assertIn(results[0],["assessed","closed_unassessed"])
         self.assertEqual(ScoredReview.objects.count(),int(results[0]=="assessed"))
 
+    @override_settings(ASSESSMENT_TIMEOUT_SECONDS=15)
+    def test_provenance_transaction_wait_consumes_the_inference_allowance(self):
+        self.provenance_wait_scenario(simulated=True)
+
+    @override_settings(ASSESSMENT_TIMEOUT_SECONDS=15)
+    def test_provenance_wait_and_encoding_exhaust_the_real_deadline(self):
+        self.provenance_wait_scenario(simulated=False)
+
+    def provenance_wait_scenario(self, simulated):
+        """A real provenance-write wait plus encoding must exhaust the original deadline before HTTP."""
+        self.assertEqual(connection.vendor,"sqlite")
+        self.assertFalse(connection.is_in_memory_db(),"This test requires file-backed SQLite.")
+        requests=[]
+        def handler(request):
+            requests.append(request)
+            result={"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
+            return httpx.Response(200,json={"choices":[{"finish_reason":"stop","message":{"content":json.dumps(result)}}]})
+        folder=tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        audio_dir=Path(folder.name)
+        name=uuid.uuid4().hex+".audio"
+        (audio_dir/name).write_bytes(audio_bytes())
+        (audio_dir/(name+".wav")).write_bytes(audio_bytes())
+        env={"PATH":os.environ.get("PATH",os.defpath),"AUDIO_ASSESS_PROVIDER":"qwen",
+            "AUDIO_ASSESS_ENDPOINT":"http://127.0.0.1:9/assessment","AUDIO_ASSESS_API_KEY":"test-only",
+            "AUDIO_ASSESS_MODEL":"fake-qwen","AUDIO_ASSESS_TIMEOUT_SECONDS":"60","ALLOW_INSECURE_PROVIDER_HTTP":"1"}
+        with override_settings(AUDIO_DIR=audio_dir), patch.dict(os.environ,env,clear=True):
+            a=review.submit(self.presentation(),"speak",1,name)
+            kind,claimed_pk,claimed_claim,_=work.claim_work()
+            self.assertEqual((kind,claimed_pk),("assessment",a.pk))
+            clock={"wall":timezone.now(),"monotonic":0.0}
+            wall_now=(lambda:clock["wall"]) if simulated else timezone.now
+            monotonic=(lambda:clock["monotonic"]) if simulated else time.monotonic
+            deadline=wall_now()+timedelta(seconds=14 if simulated else 8)
+            Attempt.objects.filter(pk=claimed_pk).update(deadline=deadline)
+            progress=Card.objects.filter(pk=self.card.pk).values("due","fsrs","review_count","progress_version").get()
+
+            selected=threading.Event(); locked=threading.Event(); begin=threading.Event()
+            begin_returned=threading.Event(); encoding=threading.Event(); observed={}
+            original_profile=work.bounded_profile
+            original_encode=providers.transcode_mp3
+            original_client=httpx.AsyncClient
+            def select_profile(task,absolute_deadline):
+                p=original_profile(task,absolute_deadline)
+                observed["profile"]=p
+                selected.set()
+                if not locked.wait(5):
+                    raise AssertionError("The test did not acquire the writer lock.")
+                return p
+            def slow_encode(path,budget):
+                observed["encoding_start"]=wall_now(); observed["encoding_budget"]=budget
+                started=monotonic()
+                encoding.set()
+                data=original_encode(path,budget)
+                observed["encoded_bytes"]=len(data)
+                if simulated:
+                    # Model a slow encode without making the test depend on host scheduling.
+                    clock["wall"]+=timedelta(seconds=7); clock["monotonic"]+=7
+                else:
+                    # Hold the real encoding result past the wall-clock deadline.
+                    time.sleep(max(0,(deadline-wall_now()).total_seconds())+0.2)
+                observed["encoding_end"]=wall_now(); observed["encoding_elapsed"]=monotonic()-started
+                return data
+            def process():
+                try:
+                    db=connections["default"]
+                    db.ensure_connection()
+                    def trace(sql):
+                        if sql.upper()=="BEGIN IMMEDIATE" and selected.is_set() and not begin_returned.is_set():
+                            begin.set()  # SQLite has entered the provenance transaction.
+                    def measure(execute,sql,params,many,context):
+                        if sql.upper()=="BEGIN IMMEDIATE" and selected.is_set() and not begin_returned.is_set():
+                            started=time.monotonic()
+                            try:return execute(sql,params,many,context)
+                            finally:
+                                observed["write_wait"]=time.monotonic()-started
+                                begin_returned.set()
+                        return execute(sql,params,many,context)
+                    db.connection.set_trace_callback(trace)
+                    with db.execute_wrapper(measure):
+                        return work.process_assessment(claimed_pk,claimed_claim)
+                finally:
+                    connections.close_all()
+
+            writer=sqlite3.connect(connection.settings_dict["NAME"],uri=True,timeout=5,isolation_level=None)
+            error=None
+            try:
+                with patch("learning.work.timezone",SimpleNamespace(now=wall_now)), \
+                        patch("learning.providers.time",SimpleNamespace(monotonic=monotonic)), \
+                        patch("learning.work.bounded_profile",side_effect=select_profile), \
+                        patch("learning.providers.transcode_mp3",side_effect=slow_encode), \
+                        patch("learning.providers.request",wraps=providers.request) as model_request, \
+                        patch("learning.providers.httpx.AsyncClient",
+                            side_effect=lambda **kw: original_client(transport=httpx.MockTransport(handler),**kw)):
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future=pool.submit(process)
+                        try:
+                            self.assertTrue(selected.wait(5),"Profile selection was not reached.")
+                            writer.execute("BEGIN IMMEDIATE")
+                            locked.set()
+                            self.assertTrue(begin.wait(5),"SQLite did not enter the provenance write.")
+                            self.assertFalse(begin_returned.wait(.2 if simulated else 2),"The provenance write did not wait for the lock.")
+                            self.assertFalse(encoding.is_set())
+                            if simulated:
+                                # Advance both clocks only after the real transaction is blocked.
+                                clock["wall"]+=timedelta(seconds=8); clock["monotonic"]+=8
+                        finally:
+                            if writer.in_transaction:writer.rollback()
+                            locked.set()
+                        try:future.result(timeout=10)
+                        except providers.StageError as exc:error=exc
+            finally:
+                writer.close()
+        self.assertEqual(len(requests),0,"No model request may start after the deadline.")
+        model_request.assert_not_called()
+        self.assertIsNotNone(error)
+        self.assertEqual((error.stage,error.category),("AUDIO_ASSESS","timeout"))
+        self.assertTrue(begin_returned.is_set())
+        self.assertGreaterEqual(observed["write_wait"],0.2 if simulated else 1.9)
+        self.assertTrue(encoding.is_set())
+        self.assertGreater(observed["encoded_bytes"],0)
+        self.assertEqual(observed["profile"].protocol,"qwen")
+        if simulated:
+            self.assertEqual((observed["profile"].timeout,observed["encoding_budget"]),(14,6))
+        else:
+            self.assertGreater(observed["profile"].timeout-observed["encoding_budget"],1.9)
+        self.assertLess(observed["encoding_start"],deadline)
+        self.assertGreaterEqual(observed["encoding_end"],deadline)
+        self.assertGreater(observed["encoding_elapsed"],observed["encoding_budget"])
+        self.assertLess(observed["encoding_elapsed"],observed["profile"].timeout)
+        work.fail("assessment",claimed_pk,claimed_claim,error)
+        a.refresh_from_db()
+        self.assertEqual((a.state,a.error_stage,a.error_category,a.retryable,a.grade,a.transcript),
+            ("failed","AUDIO_ASSESS","timeout",True,"",""))
+        self.assertNotEqual(a.claim,claimed_claim)
+        self.assertEqual(a.judge_provenance,observed["profile"].metadata())
+        self.assertEqual(Card.objects.filter(pk=self.card.pk).values("due","fsrs","review_count","progress_version").get(),progress)
+        self.assertEqual(ScoredReview.objects.count(),0)
+
     @override_settings(ASSESSMENT_TIMEOUT_SECONDS=5,WORKER_CLEANUP_GRACE_SECONDS=1,WORKER_CONCURRENCY=1)
     def capacity_scenario(self, conversion=False):
         """WORKER-CAPACITY: occupy the only slot, then enqueue healthy work at second 4."""
@@ -203,28 +345,31 @@ class ConcurrencyTests(TransactionTestCase):
             def do_POST(inner):
                 body=json.loads(inner.rfile.read(int(inner.headers["Content-Length"])))
                 requests.append(body)
-                transcript=json.loads(body["messages"][1]["content"])["transcript"]
+                text=next(part["text"] for part in body["messages"][1]["content"] if part["type"]=="text")
                 inner.send_response(200); inner.send_header("Content-Type","application/json"); inner.end_headers()
-                if transcript=="stall":
+                if "Stall fixture" in text:
                     try:
                         while not stop.wait(.04): inner.wfile.write(b" "); inner.wfile.flush()
                     except (BrokenPipeError,ConnectionResetError): pass
                 else:
                     time.sleep(1)
-                    inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps({"units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]})}}]}).encode())
+                    inner.wfile.write(json.dumps({"choices":[{"finish_reason":"stop","message":{"content":json.dumps(
+                        {"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]})}}]}).encode())
             def log_message(inner,*args): pass
         server=ThreadingHTTPServer(("127.0.0.1",0),Handler); server.daemon_threads=True
         thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        Card.objects.filter(pk=self.card.pk).update(question="Stall fixture?")
         a=review.submit(self.presentation(),"speak",1,"missing")
         folder=tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
         audio_dir=Path(folder.name)
-        a.transcript="" if conversion else "stall"
         a.audio_name="fault.audio"
         (audio_dir/a.audio_name).write_bytes(audio_bytes())
         a.save()
         binary=audio_dir/"ffmpeg"
         pidfile=audio_dir/"child.pid"
-        binary.write_text("#!/usr/bin/python3\nimport os,time\nfrom pathlib import Path\nPath("+repr(str(pidfile))+").write_text(str(os.getpid()))\ntime.sleep(300)\n")
+        binary.write_text("#!/usr/bin/python3\nimport os,sys,time\nfrom pathlib import Path\n"
+            "if sys.argv[-1]=='pipe:1':\n    sys.stdout.buffer.write(b'fake-mp3')\n"
+            "else:\n    Path("+repr(str(pidfile))+").write_text(str(os.getpid()))\n    time.sleep(300)\n")
         binary.chmod(0o700)
         deck=Deck.objects.create(owner=self.user,name="Healthy")
         authoring.save_card(deck,"generic",GENERIC)
@@ -233,13 +378,15 @@ class ConcurrencyTests(TransactionTestCase):
         def enqueue():
             try:
                 time.sleep(4)
-                b=review.submit(p,"speak",1,"missing")
-                b.transcript="four"; b.save(); created.append(b.pk)
+                name=uuid.uuid4().hex+".audio"
+                (audio_dir/name).write_bytes(audio_bytes())
+                (audio_dir/(name+".wav")).write_bytes(audio_bytes())  # normalized derivative ready; conversion variant needs no ffmpeg here
+                b=review.submit(p,"speak",1,name); created.append(b.pk)
             finally: connections.close_all()
         enqueuer=threading.Thread(target=enqueue)
         started=time.monotonic(); enqueuer.start()
         try:
-            with patch.dict(os.environ,{"JUDGE_ENDPOINT":f"http://127.0.0.1:{server.server_port}/judge","JUDGE_API_KEY":"test-only", "ALLOW_INSECURE_PROVIDER_HTTP":"1",
+            with patch.dict(os.environ,{"AUDIO_ASSESS_ENDPOINT":f"http://127.0.0.1:{server.server_port}/judge","AUDIO_ASSESS_API_KEY":"test-only", "ALLOW_INSECURE_PROVIDER_HTTP":"1",
                            "PATH":str(audio_dir)+os.pathsep+os.environ["PATH"] if conversion else os.environ["PATH"]}),override_settings(AUDIO_DIR=audio_dir):
                 run_worker(once=True,concurrency=1)
             enqueuer.join(timeout=2)

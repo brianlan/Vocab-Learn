@@ -41,7 +41,7 @@ A Vocabulary Card review that presents a native-language context and asks for th
 Aligned target-language and native-language sentences expressing the same situation, with corresponding expressions identified for review.
 
 **Example Quality Review**:
-The one mandatory reviewer call after Example generation. It evaluates the proposed questions (not learner answers), and accepts an already valid pair unchanged, repairs it locally, or replaces both sentences with an unrelated scene that retains the authored expression, sense and word class. Rejection, timeout, malformed output or failed final validation fail closed: no unreviewed fallback is saved. It is separate from the Judge.
+The one mandatory reviewer call after Example generation. It evaluates the proposed questions (not learner answers), and accepts an already valid pair unchanged, repairs it locally, or replaces both sentences with an unrelated scene that retains the authored expression, sense and word class. Rejection, timeout, malformed output or failed final validation fail closed: no unreviewed fallback is saved. It is separate from spoken assessment.
 
 **Example Reviewer**:
 The model role that performs the Example Quality Review, configured independently of the Generator under `EXAMPLE_REVIEWER_*` settings. Its profile, prompt version, verdict and findings are recorded in successful pair provenance without secrets or hidden reasoning.
@@ -116,7 +116,7 @@ One processing run of a fixed spoken submission; an explicit retry can start ano
 The transition from the question to its reference answer and explanation. Revealing a submitted answer does not imply that transcription or grading has finished.
 
 **Transcript**:
-The ASR-generated text of a submitted spoken answer, shown as a readonly account of what the service recognized.
+A textual account of what was heard in a submitted spoken answer, shown readonly alongside its assessment. It records the learner's response rather than correcting it to match the reference answer.
 
 **Unassessed Attempt**:
 A submitted response without a scored correctness result because of a technical interruption or an unassessed exit. It is distinct from a wrong answer.

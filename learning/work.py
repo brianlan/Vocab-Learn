@@ -80,7 +80,11 @@ def cleanup_audio():
 @transaction.atomic
 def save_stage(attempt_id, claim, **fields):
     a = Attempt.objects.select_related("presentation").get(pk=attempt_id)
-    if a.state != "processing" or a.claim != claim or a.deadline <= timezone.now():
+    now = timezone.now()
+    # The budget invariant is shared with persistence: a processing result under a deadline beyond the
+    # current budget (legacy/config-shrunk) is refused, not scored (R3c).
+    if a.state != "processing" or a.claim != claim or a.deadline <= now \
+            or a.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS):
         return False
     if not valid_presentation(a.presentation, a.submitted_at):
         a.state, a.claim = "closed_unassessed", uuid.uuid4()
@@ -123,22 +127,18 @@ def process_assessment(job_id, claim):
         return
     if not save_stage(a.pk, claim):
         return
-    if not a.transcript:
-        if a.audio_expires_at <= timezone.now():
-            raise providers.StageError("audio", "The original recording has expired. Continue unassessed.")
-        normalized = normalize(settings.AUDIO_DIR/a.audio_name, a.deadline)
-        p = bounded_profile("ASR", a.deadline)
-        if not save_stage(a.pk, claim, asr_provenance=p.metadata()):
-            return
-        transcript, provenance = providers.transcribe(normalized, a.presentation.snapshot["language"], p)
-        if not save_stage(a.pk, claim, transcript=transcript, asr_provenance=provenance):
-            return
-        a.transcript = transcript
-    p = bounded_profile("JUDGE", a.deadline)
+    # Every execution assesses the fixed recording; a saved transcript never replaces the audio.
+    if a.audio_expires_at <= timezone.now() or not (settings.AUDIO_DIR / a.audio_name).is_file():
+        raise providers.StageError("audio", "The original recording is missing or expired. Continue unassessed; a later review accepts a new recording.")
+    normalized = normalize(settings.AUDIO_DIR/a.audio_name, a.deadline)
+    p = bounded_profile("AUDIO_ASSESS", a.deadline)
     if not save_stage(a.pk, claim, judge_provenance=p.metadata()):
         return
-    units, provenance = providers.assess(a.presentation.snapshot, a.transcript, p)
-    if not save_stage(a.pk, claim, judge_provenance=provenance):
+    # The provenance transaction may wait on a writer lock and consume real window; re-bound the
+    # already-selected profile against the absolute deadline before any inference is dispatched.
+    p = replace(p, timeout=min(p.timeout, remaining(a.deadline)))
+    transcript, units, provenance = providers.audio_assessment(a.presentation.snapshot, normalized, p)
+    if not save_stage(a.pk, claim, transcript=transcript, judge_provenance=provenance):
         return
     grade = grade_units(units, a.duration, a.presentation.budget)
     candidate = {}
@@ -313,6 +313,7 @@ def retry_generation(job):
 
 @transaction.atomic
 def claim_work():
+    from .review import expire_attempt
     now = timezone.now()
     job = Attempt.objects.filter(state="submitted", deadline__gt=now).order_by("submitted_at").first()
     kind = "assessment"
@@ -320,6 +321,11 @@ def claim_work():
         job = GenerationJob.objects.filter(state="queued").order_by("requested_at", "pk").first()
         kind = "generation"
     if not job:
+        return None
+    if kind == "assessment" and job.deadline > now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS):
+        # Obsolete execution (legacy/config-shrunk): its Stop-anchored budget is unrecoverable,
+        # so it is invalidated instead of claimed; only explicit Retry re-enters the queue.
+        expire_attempt(job)
         return None
     job.state = "processing"
     fields = ["state"]

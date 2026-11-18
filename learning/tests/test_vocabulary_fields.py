@@ -392,9 +392,12 @@ class VocabularyFieldsTests(TestCase):
             "native_sentence": "桌上放一本<focus>同义词词典</focus>。"}, "thesaurus", "Chinese"))
         card.cue_pair, card.cue_direction = pair, "recognition"
         frozen = review.snapshot(card)
-        p = providers.Profile("JUDGE", "https://example.test/chat", "test-model", "test-only", 10)
-        with patch("learning.providers.chat", return_value={"units": [{"id": 1, "outcome": "complete", "reason": "Test response."}]}) as chat:
-            providers.assess(frozen, "同义词词典", p)
+        p = providers.Profile("AUDIO_ASSESS", "https://example.test/chat", "test-model", "test-only", 10, protocol="qwen")
+        recording = self.path.parent / "answer.wav"
+        recording.write_bytes(b"RIFF")
+        with patch("learning.providers.transcode_mp3", return_value=b"transcoded"), \
+                patch("learning.providers.chat", return_value={"transcript": "同义词词典", "units": [{"id": 1, "outcome": "complete", "reason": "Test response."}]}) as chat:
+            providers.audio_assessment(frozen, recording, p)
         self.assertEqual(chat.call_args.args[2]["explanation"], CODE_DEFINITION)
 
     def test_legacy_export_apply_preserves_code_contents_without_synonyms(self):
