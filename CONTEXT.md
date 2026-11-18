@@ -113,10 +113,10 @@ One display of a fixed review question, direction, reference context, and respon
 One processing run of a fixed spoken submission; an explicit retry can start another execution without becoming another learning review.
 
 **Card Reveal**:
-The transition from the question to its reference answer and explanation. Revealing a submitted answer does not imply that transcription or grading has finished.
+The transition from the question to its reference answer and explanation. Revealing a submitted answer does not imply that grading has finished.
 
 **Transcript**:
-A textual account of what was heard in a submitted spoken answer, shown readonly alongside its assessment. It records the learner's response rather than correcting it to match the reference answer.
+A textual account of a spoken answer retained from an earlier assessment and shown readonly when available. New assessments provide feedback without a transcript.
 
 **Unassessed Attempt**:
 A submitted response without a scored correctness result because of a technical interruption or an unassessed exit. It is distinct from a wrong answer.

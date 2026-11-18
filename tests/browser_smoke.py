@@ -385,12 +385,12 @@ def run(options):
             checked(f"Real verdict appeared {release_elapsed:.1f}s after the test released its stalled transport")
         scored_first=verdict in ("Correct recall","Quick recall")
         if scored_first:
-            assert page.locator(".transcript").inner_text().strip()
+            assert page.locator(".recall-result p").first.inner_text().strip()
             assert re.search(r"~(?:24 hours|[123] days?)",page.locator(".next-review").inner_text())
             assert page.locator('[data-metric="cards_today"]').inner_text()=="1"
             assert page.locator("textarea:not([readonly]),[contenteditable=true]").count()==0
             page.screenshot(path=str(output/"feedback.png"),full_page=True)
-            checked("Assessment response shows D/E recall, transcript, readonly response and persisted Next review")
+            checked("Assessment response shows D/E recall, feedback and persisted Next review")
         else:
             assert verdict=="Not assessed",verdict
             if options.generic_only:

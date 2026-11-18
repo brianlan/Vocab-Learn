@@ -68,6 +68,19 @@ def run(audio_dir, task="all"):
         ("LEXICAL-ABSORB-SPANISH",{**absorb,"language":"Spanish"},"absorber",["complete"]),
         ("COMPLETE-MEANING",postpone,"推迟",["complete"]),
         ("PRODUCTION-ABNORMAL-SUBSTITUTE",{**lexical_snapshots["abnormal"],"direction":"production","question_text":"他的回答很异常，所以老师让他解释一下。","language":"English"},"weird",["partial"])])
+    # Supply genuine accent and incomplete-word recordings; a synthetic voice cannot establish microphone or accent accuracy.
+    for word,question,highlight,explanation,malformed in [
+        ("privy","只有我姐姐和律师知道内情。","知道内情","Having knowledge of private or secret information.",None),
+        ("neuroticism","他的神经质常常让他对小事反应过度。","神经质",
+         "A personality trait involving anxiety and emotional instability.","neurocism"),
+        ("responsibility","照顾孩子是他的责任。","责任","A duty to take care of someone or something.","responsity")]:
+        context={**snapshot("vocabulary","production",question,word,explanation,word,language="English"),
+                 "native_highlight":highlight,"highlight_start":question.index(highlight),
+                 "target_language":"English","native_language":"Chinese"}
+        cases.append(("PRODUCTION-WORD-ONLY-"+word.upper(),context,word,["complete"]))
+        if malformed:
+            cases.append(("PRODUCTION-INCOMPLETE-"+word.upper(),context,malformed,["incorrect"]))
+            cases.append(("PRODUCTION-ACCENTED-"+word.upper(),context,word,["complete"]))
     results=[]
     def check(name, action, expected=None):
         started=time.monotonic()
@@ -87,8 +100,8 @@ def run(audio_dir, task="all"):
                 "expected_utterance":expected_utterance,"result":None,"profile":None})
             print(name,"missing-audio",flush=True); continue
         def probe(context=context,audio_path=audio_path):
-            transcript,units,profile=audio_assessment(context,audio_path)
-            return units,{**profile,"transcript":transcript,"expected_utterance":expected_utterance}
+            units,profile=audio_assessment(context,audio_path)
+            return units,{**profile,"expected_utterance":expected_utterance}
         check(name,probe,expected)
     for target,native,word in ([("English","Chinese","misunderstanding"),("English","Spanish","misunderstanding"),("Spanish","Chinese","malentendido")] if task in ["all", "generator"] else []):
         check("GENERATOR-"+target+"-"+native,lambda t=target,n=native,w=word:generate({"word":w,"target_language":t,"native_language":n,
@@ -106,7 +119,7 @@ def run(audio_dir, task="all"):
             check("GENERATOR-WORD-CLASS-"+word.upper(),lambda w=word,e=explanation:generate({"word":w,
                 "target_language":"English","native_language":"Chinese","explanation":e}))
     return {"status":"passed" if all(r["status"]=="passed" for r in results) else "needs-review", "results":results,
-            "limits":"Representative fixtures only; each audio case requires audio_dir/<CASE>.wav recorded speech and pauses on missing files. Generation checks include the Example Quality Review; reviewer verdicts are not linguistic ground truth. Structural generation checks require sense/alignment review; synthetic audio is not physical-microphone or broad language-accuracy evidence. Transcript fidelity and grading disagreements must be reviewed separately from the recorded status."}
+            "limits":"Representative fixtures only; each audio case requires audio_dir/<CASE>.wav recorded speech and pauses on missing files. Generation checks include the Example Quality Review; reviewer verdicts are not linguistic ground truth. Structural generation checks require sense/alignment review; synthetic audio is not physical-microphone or broad language-accuracy evidence. Judgment-only output has no transcript; feedback and grading disagreements require human review."}
 
 
 if __name__=="__main__":

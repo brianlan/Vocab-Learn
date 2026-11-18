@@ -317,11 +317,11 @@ class LearningTests(TestCase):
         a.refresh_from_db()
         self.assertEqual((a.state,a.transcript),("processing",""))  # old-claim fencing refused the stale commit
         units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
-        with patch("learning.providers.audio_assessment",return_value=("four",units,{"model":"fake-audio"})) as assessment:
+        with patch("learning.providers.audio_assessment",return_value=(units,{"model":"fake-audio"})) as assessment:
             work.process_assessment(a.pk,a.claim)
             self.assertEqual(assessment.call_count,1)  # exactly one assessor call for this execution
         a.refresh_from_db()
-        self.assertEqual((a.state,a.grade,a.transcript),("assessed","E","four"))
+        self.assertEqual((a.state,a.grade,a.transcript),("assessed","E",""))
         self.assertEqual(ScoredReview.objects.count(),1)
 
     def post_speak_with_delayed_upload(self, p, seconds):
@@ -471,7 +471,7 @@ class LearningTests(TestCase):
         self.assertEqual(review.submit(p,"forgot").pk,a.pk)
         self.assertEqual(ScoredReview.objects.count(),0)
         card.refresh_from_db(); self.assertEqual(card.collection,"Normal")
-        p=self.present(card); result=self.client.post(reverse("action",args=[p.pk]),{"action":"speak","transcript":"four","duration":"1"})
+        p=self.present(card); result=self.client.post(reverse("action",args=[p.pk]),{"action":"speak","duration":"1"})
         self.assertEqual(result.status_code,400)
         self.assertFalse(Attempt.objects.filter(presentation=p).exists())
         a=review.submit(p,"forgot")
@@ -688,7 +688,7 @@ class LearningTests(TestCase):
         grading JSON stays unassessed — one dispatched request, no score, no schedule change."""
         import httpx
         envelope={"status":"completed","output":[{"type":"message","role":"assistant","status":"completed",
-            "content":[{"type":"output_text","text":json.dumps({"transcript":"four","units":[
+            "content":[{"type":"output_text","text":json.dumps({"units":[
                 {"id":1,"outcome":"complete","reason":"Complete fixture"}]})},
                 {"type":"refusal","refusal":"I cannot grade this recording."}]}]}
         seen=[]
@@ -722,12 +722,28 @@ class LearningTests(TestCase):
         work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary"))
         a=review.retry_attempt(a); a.state="processing"; a.save()
         units=[{"id":1,"outcome":"complete","reason":"The reference content was recalled."}]
-        with patch("learning.providers.audio_assessment",return_value=("four",units,{"model":"fake-audio"})) as assessment:
+        with patch("learning.providers.audio_assessment",return_value=(units,{"model":"fake-audio"})) as assessment:
             work.process_assessment(a.pk,a.claim)
             self.assertEqual(assessment.call_count,1)  # exactly one model request for this execution
-        a.refresh_from_db(); self.assertEqual((a.state,a.grade,a.transcript,a.judge_provenance["model"]),("assessed","E","four","fake-audio"))
+        a.refresh_from_db(); self.assertEqual((a.state,a.grade,a.transcript,a.judge_provenance["model"]),("assessed","E","","fake-audio"))
         self.assertFalse((Path(self.folder.name)/a.audio_name).exists())
         self.assertEqual(ScoredReview.objects.count(),1)
+
+        # New judgments display feedback without an empty transcript panel; replay makes no model call.
+        with patch("learning.providers.audio_assessment") as assessment:
+            result=self.client.get(reverse("status",args=[a.presentation_id])).json()
+            assessment.assert_not_called()
+        self.assertEqual((result["grade"],result["transcript"]),("E",""))
+        self.assertIn("The reference content was recalled.",result["back_html"])
+        self.assertNotIn('class="response-box"',result["back_html"])
+        self.assertEqual(ScoredReview.objects.count(),1)
+
+        # Previously saved transcripts remain visible, escaped and unchanged by result replay.
+        a.transcript="four <script>legacy</script>"; a.save(update_fields=["transcript"])
+        result=self.client.get(reverse("status",args=[a.presentation_id])).json()
+        self.assertIn('class="transcript"',result["back_html"])
+        self.assertIn("four &lt;script&gt;legacy&lt;/script&gt;",result["back_html"])
+        a.refresh_from_db(); self.assertEqual(a.transcript,"four <script>legacy</script>")
 
     def test_exit_first_and_grade_first_are_atomic_terminal_winners(self):
         """EXIT-FIRST / GRADE-FIRST / RESTORE-COMMITTED."""
@@ -808,7 +824,7 @@ class LearningTests(TestCase):
         self.assertEqual(seen,["audio-dispatched"])
         work.fail("assessment",a.pk,a.claim,StageError("AUDIO_ASSESS","Temporary","transport"))
         a=review.retry_attempt(a);a.state="processing";a.save()
-        result={"transcript":"four","units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]}
+        result={"units":[{"id":1,"outcome":"complete","reason":"Complete fixture"}]}
         with patch.dict(os.environ,{"AUDIO_ASSESS_MODEL":"audio-retry","AUDIO_ASSESS_API_KEY":"test-only",
                 "AUDIO_ASSESS_ENDPOINT":"https://provider.test/endpoint"}),patch("learning.providers.chat",return_value=result) as chat:
             work.process_assessment(a.pk,a.claim)
@@ -984,7 +1000,7 @@ class LearningTests(TestCase):
         card=self.generic(question="Why did you postpone the meeting?",answer="To give everyone more time to prepare.")
         p=self.present();self.assertEqual(p.snapshot["units"],1)
         a=self.spoken(p)
-        with patch("learning.providers.audio_assessment",return_value=(card.answer,[{"id":1,"outcome":"complete","reason":"Complete sentence"}],{})):
+        with patch("learning.providers.audio_assessment",return_value=([{"id":1,"outcome":"complete","reason":"Complete sentence"}],{})):
             work.process_assessment(a.pk,a.claim)
         a.refresh_from_db();self.assertEqual(a.grade,"E")
         path=Path(self.folder.name)/"invalid.audio";path.write_bytes(b"This is not an audio file")
@@ -1336,13 +1352,13 @@ class LearningTests(TestCase):
                 calls.append(card.pk)
                 if len(calls)==1:raise OperationalError("database is locked")
                 return original(card,*args,**kwargs)
-            with patch("learning.providers.audio_assessment",return_value=("four",units,{})) as assessment,patch.object(Card,"save",save),patch(
+            with patch("learning.providers.audio_assessment",return_value=(units,{})) as assessment,patch.object(Card,"save",save),patch(
                     "learning.review.Scheduler",wraps=Scheduler) as schedule,patch("learning.review.random.randint",return_value=2) as jitter:
                 work.process_assessment(a.pk,a.claim)
             self.assertEqual(assessment.call_count,1);self.assertEqual(schedule.call_count,1)
             self.assertEqual(jitter.call_count,1 if grade=="D" else 0)
             a.refresh_from_db();self.assertEqual((a.state,a.grade),("assessed",grade))
-            self.assertEqual(a.transcript,"four")
+            self.assertEqual(a.transcript,"")
             if grade=="D":self.assertEqual(a.next_due,a.submitted_at+timedelta(days=2))
             self.assertEqual(ScoredReview.objects.count(),index)
 
