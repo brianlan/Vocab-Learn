@@ -48,6 +48,20 @@ def run(audio_dir, task="all"):
         lexical_snapshots[word]=context
         cases.append(("LEXICAL-"+word.upper(),context,response,["complete"]))
     absorb=lexical_snapshots["absorb"]
+    # Pair the same spoken target across directions: recognition must not become a reading test.
+    for word,spoken,meaning,question,native_question,explanation in [
+        ("absorb","absorbed","吸收","The sponge absorbed the water.","海绵吸收了水。",absorb["explanation"]),
+        ("postpone","postponed","推迟","We postponed the meeting from Monday to Friday.",
+         "我们把会议从周一推迟到了周五。",postpone["explanation"]),
+        ("misunderstanding","misunderstanding","误会","A misunderstanding stopped their conversation.",
+         "一个误会打断了他们的谈话。",recognition["explanation"])]:
+        context={**snapshot("vocabulary","recognition",question,word,explanation,word,language="Chinese"),
+                 "target_language":"English","native_language":"Chinese",
+                 "target_highlight":spoken,"highlight_start":question.index(spoken)}
+        cases.append(("RECOGNITION-REPEATED-"+spoken.upper(),context,spoken,["incorrect"]))
+        cases.append(("PRODUCTION-REPEATED-"+spoken.upper(),
+            {**context,"direction":"production","question_text":native_question,"language":"English",
+             "native_highlight":meaning,"highlight_start":native_question.index(meaning)},spoken,["complete"]))
     cases.extend([
         ("LEGACY-ABSORB",{**absorb,"reference":"海绵把水吸进去并留在里面。","gloss":"海绵把水吸进去并留在里面。",
             "native_highlight":"把水吸进去并留住了","target_highlight":"absorbs"},"吸收",["complete"]),

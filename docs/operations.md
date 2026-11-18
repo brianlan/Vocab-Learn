@@ -162,7 +162,8 @@ The current Generator prompt is tracked as `lexical-pair-v7-a`: the original sco
 learner-task context required by the example quality review (Recognition shows only the target sentence;
 Production shows only the native sentence, with the explanation and target counterpart hidden). It is distinct from the
 earlier unpromoted experimental `lexical-pair-v6` and from D2. The audio assessment prompt is tracked as
-`spoken-audio-v1`; Definition requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt
+`spoken-audio-v2`: Recognition requires the requested native-language meaning; merely repeating the foreign target
+is incorrect. Definition requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt
 is `example-review-v1`. New preparation and ordinary future rotations use D plus one review call. Deploying a prompt
 does not refresh saved pairs, invalidate held questions or reset learning progress; the explicit refresh command below
 remains a separate operation.
