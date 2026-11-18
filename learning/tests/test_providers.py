@@ -261,6 +261,17 @@ class ProviderTests(ProviderBase):
                 {"type":"reasoning","summary":[{"type":"summary_text","text":"Private reasoning text"}]},message]))):
             self.assertEqual(p.respond(self.profile("AUDIO_ASSESS","qwen"),"rules",{}),valid)
 
+    def test_responses_mode_strips_whitespace_around_whole_json_fence(self):
+        """R4: the old parser trimmed the joined answer, and json_answer detects a whole-response
+        fence by its first/last characters. Surrounding whitespace must not defeat that fence."""
+        valid={"units":[{"id":1,"outcome":"complete","reason":"Okay"}]}
+        fenced=" \n```json\n"+json.dumps(valid)+"\n```\n "
+        def fenced_envelope():
+            return {"status":"completed","output":[{"type":"message","role":"assistant","status":"completed",
+                "content":[{"type":"output_text","text":fenced}]}]}
+        with self.transport(lambda request:httpx.Response(200,json=fenced_envelope())):
+            self.assertEqual(p.respond(self.profile("AUDIO_ASSESS","qwen"),"rules",{}),valid)
+
     def test_responses_assessment_validation_reaches_real_recordings(self):
         """R2: a real recording must actually reach the dispatched Responses request and the common
         transcript/unit validation; removing that validation must fail these cases. Refused or

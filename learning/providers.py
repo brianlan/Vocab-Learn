@@ -287,7 +287,9 @@ def respond(p, system, payload, audio=None):
                 part.get("type") != "output_text" or not isinstance(part.get("text"), str) or not part["text"].strip()
                 for part in parts):
             raise ValueError
-        return json_answer(p.task, "".join(part["text"] for part in parts))
+        # Whole-fence normalization must survive the strict parser: json_answer's fence
+        # detection looks at the first/last characters, so trim the joined answer first (R4).
+        return json_answer(p.task, "".join(part["text"] for part in parts).strip())
     except (KeyError, IndexError, ValueError, AttributeError, TypeError):
         raise StageError(p.task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
 
