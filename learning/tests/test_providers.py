@@ -223,41 +223,79 @@ class ProviderTests(ProviderBase):
 
     def test_responses_mode_rejects_failed_incomplete_and_non_answer_outputs(self):
         valid={"units":[{"id":1,"outcome":"complete","reason":"Okay"}]}
-        message={"type":"message","role":"assistant","status":"completed",
-                 "content":[{"type":"output_text","text":json.dumps(valid)}]}
+        payload=json.dumps(valid)
         def envelope(status="completed",output=None):
             data={"status":status}
             if output is not None: data["output"]=output
             return data
+        message={"type":"message","role":"assistant","status":"completed",
+                 "content":[{"type":"output_text","text":payload}]}
+        def answer(**overrides):
+            item={"type":"message","role":"assistant","status":"completed",
+                  "content":[{"type":"output_text","text":payload}]}
+            item.update(overrides); return item
         cases=[envelope(),  # no output at all
                envelope(status="failed",output=[message]),
                envelope(status="incomplete",output=[message]),
                envelope(status="completed",output=[]),
                envelope(status="completed",output=[{"type":"reasoning","summary":[
-                   {"type":"summary_text","text":json.dumps(valid)}]}]),  # reasoning never becomes the answer
-               envelope(status="completed",output=[{"type":"message","role":"assistant","status":"incomplete",
-                   "content":[{"type":"output_text","text":json.dumps(valid)}]}]),
-               envelope(status="completed",output=[{"type":"message","role":"assistant","status":"completed",
-                   "content":[{"type":"output_text","text":"Here is JSON: "+json.dumps(valid)}]}]),
-               envelope(status="completed",output=[{"type":"message","role":"assistant","status":"completed",
-                   "content":[{"type":"input_text","text":json.dumps(valid)}]}])]  # no output_text part
+                   {"type":"summary_text","text":payload}]}]),  # reasoning never becomes the answer
+               # R1 fail-closed envelopes: a usable JSON fragment must never override an explicit
+               # refusal, unfinished status, a foreign role or mixed malformed/non-string content.
+               envelope(status="completed",output=[answer(content=[
+                   {"type":"output_text","text":payload},{"type":"refusal","refusal":"I cannot grade this."}])]),
+               envelope(status="completed",output=[answer(role="user")]),
+               envelope(status="completed",output=[message,answer(status="incomplete")]),
+               envelope(status="completed",output=[answer(content=[
+                   {"type":"output_text","text":payload},{"type":"output_text","text":5}])]),
+               envelope(status="completed",output=[answer(content=[{"type":"output_text","text":"  "}])]),
+               envelope(status="completed",output=[answer(content=[{"type":"input_text","text":payload}])]),
+               envelope(status="completed",output=[answer(content=[
+                   {"type":"output_text","text":"Here is JSON: "+payload}])])]
         for data in cases:
             with self.subTest(status=data.get("status"),output=data.get("output")):
                 with self.transport(lambda request,data=data:httpx.Response(200,json=data)):
                     with self.assertRaises(p.StageError): p.respond(self.profile("AUDIO_ASSESS","qwen"),"rules",{})
-        with self.transport(lambda request:httpx.Response(200,json=envelope(output=[message]))):
+        # The allowed shape still parses: reasoning items are excluded, one completed assistant message answers.
+        with self.transport(lambda request:httpx.Response(200,json=envelope(output=[
+                {"type":"reasoning","summary":[{"type":"summary_text","text":"Private reasoning text"}]},message]))):
             self.assertEqual(p.respond(self.profile("AUDIO_ASSESS","qwen"),"rules",{}),valid)
-        # The common transcript/unit validation is unchanged for Responses results: a completed JSON
-        # answer without a usable transcript still cannot be scored.
-        def handler(request):
-            return httpx.Response(200,json=envelope(output=[{"type":"message","role":"assistant","status":"completed",
-                "content":[{"type":"output_text","text":json.dumps({"units":valid["units"]})}]}]))
+
+    def test_responses_assessment_validation_reaches_real_recordings(self):
+        """R2: a real recording must actually reach the dispatched Responses request and the common
+        transcript/unit validation; removing that validation must fail these cases. Refused or
+        malformed envelopes stay unassessed with exactly one request and no fallback."""
+        valid={"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Matches."}]}
+        def message(text,extra=None):
+            content=[{"type":"output_text","text":text}]+(extra or [])
+            return {"type":"message","role":"assistant","status":"completed","content":content}
         snapshots={"kind":"generic","reference":"four","units":1,"question_text":"What is two plus two?","direction":"generic","language":""}
         with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/"answer.wav"; path.write_bytes(b"RIFF")
-            with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k"},clear=True):
-                with self.transport(handler):
-                    with self.assertRaises(p.StageError): p.audio_assessment(snapshots,path)
+            path=Path(folder)/"answer.wav"
+            with wave.open(str(path),"wb") as fixture:
+                fixture.setnchannels(1); fixture.setsampwidth(2); fixture.setframerate(16000)
+                fixture.writeframes(b"\x00\x01"*16000)  # one real second of mono 16kHz PCM
+            for name,data in [
+                    ("missing-transcript",{"status":"completed","output":[message(json.dumps(
+                        {"units":[{"id":1,"outcome":"complete","reason":"Matches."}]}))]}),
+                    ("mixed-refusal",{"status":"completed","output":[message(json.dumps(valid),extra=[
+                        {"type":"refusal","refusal":"I cannot grade this recording."}])]}),
+                    ("duplicate-units",{"status":"completed","output":[message(json.dumps(
+                        {"transcript":"heard answer","units":[{"id":1,"outcome":"complete","reason":"Okay"},
+                         {"id":1,"outcome":"complete","reason":"Duplicate"}]}))]}),]:
+                seen=[]
+                def handler(request,data=data):
+                    seen.append(json.loads(request.content))
+                    return httpx.Response(200,json=data)
+                with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":"qwen","AUDIO_ASSESS_API_KEY":"k"},clear=True):
+                    with self.transport(handler):
+                        with self.assertRaises(p.StageError) as error: p.audio_assessment(snapshots,path)
+                self.assertEqual(len(seen),1)  # the Responses request was dispatched before validation
+                self.assertEqual(error.exception.stage,"AUDIO_ASSESS")
+                if name=="missing-transcript":
+                    self.assertIn("transcript",str(error.exception))  # specifically the transcript gate
+                if name=="mixed-refusal":
+                    self.assertIn("valid JSON answer",str(error.exception))  # refused envelope, not scored
 
     def test_stale_mp3_leftovers_are_never_trusted(self):
         """R7a: encoding publishes no shared file, so an interrupted or overlapping derivative of the

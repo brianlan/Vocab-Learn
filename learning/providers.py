@@ -275,11 +275,19 @@ def respond(p, system, payload, audio=None):
     try:
         if data.get("status") != "completed":
             raise ValueError  # failed, incomplete, refused or otherwise unfinished output is not scoreable
-        answer = "".join(part["text"] for item in data["output"]
-                         if item.get("type") == "message" and item.get("status") == "completed"
-                         for part in item.get("content", [])
-                         if part.get("type") == "output_text" and isinstance(part.get("text"), str)).strip()
-        return json_answer(p.task, answer)
+        # Fail closed: exactly one completed assistant message, and every content part must be usable
+        # nonempty output_text. A refusal part, unfinished status, foreign role, or mixed malformed or
+        # non-string content leaves the answer unassessed; allowed reasoning/tool items are never
+        # answer messages and are simply not selected here.
+        answers = [item for item in data["output"] if item.get("type") == "message"]
+        if len(answers) != 1 or answers[0].get("role") != "assistant" or answers[0].get("status") != "completed":
+            raise ValueError
+        parts = answers[0].get("content")
+        if not isinstance(parts, list) or not parts or any(
+                part.get("type") != "output_text" or not isinstance(part.get("text"), str) or not part["text"].strip()
+                for part in parts):
+            raise ValueError
+        return json_answer(p.task, "".join(part["text"] for part in parts))
     except (KeyError, IndexError, ValueError, AttributeError, TypeError):
         raise StageError(p.task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
 
