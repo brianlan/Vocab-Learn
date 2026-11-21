@@ -149,12 +149,13 @@ separately from example generation. The full settings/defaults are in `.env.exam
 production release.
 
 Spoken assessment is one audio-capable model request per execution. `AUDIO_ASSESS_PROVIDER` selects the request dialect
-and `AUDIO_ASSESS_API_MODE` selects the request/response family, giving four supported combinations:
+and `AUDIO_ASSESS_API_MODE` selects the request/response family, with these supported combinations:
 
 | Provider | `responses` | `chat_completions` (default) |
 | --- | --- | --- |
 | `qwen` (default; `qwen3.8-omni-flash`) | `/compatible-mode/v1/responses` | `/compatible-mode/v1/chat/completions` |
 | `doubao` (`doubao-seed-2-1-lite-260915`) | `/api/v3/responses` | `/api/v3/chat/completions` |
+| `stepfun` (`stepaudio-3-chat-preview`) | Unsupported; configuration error | `https://api.stepfun.com/v1/chat/completions` |
 
 An unset or empty mode selects `chat_completions`. Responses remains available with
 `AUDIO_ASSESS_API_MODE=responses`. Invalid values fail startup/profile validation without a paid request.
@@ -163,13 +164,16 @@ never rewritten and the mode is never inferred from its path. To adopt the new d
 set `AUDIO_ASSESS_API_MODE=chat_completions` and clear `AUDIO_ASSESS_ENDPOINT` or change it to the matching
 `.../chat/completions` URL; an existing explicit `responses` setting keeps using Responses. Keep the model and key.
 
-Both modes disable thinking, request JSON output, send the normalized mono 16-kHz audio inline, use no tools and no
+All supported combinations request JSON output, send the normalized mono 16-kHz audio inline, use no tools and no
 response-history chaining (Responses requests set `store=false`) and make exactly one model request per execution;
 the returned units and English feedback are validated locally, without requesting or saving a new transcript. Thinking is not configurable: Qwen sends `reasoning={"effort":"none"}`
 (Responses) or `reasoning_effort="none"` (Chat), and Doubao sends `thinking={"type":"disabled"}` with regular
-`service_tier="default"` in both modes. Qwen transports that audio as MP3 (a provider-documented format) because its
+`service_tier="default"` in both modes. StepAudio sends `modalities=["text"]` and uses provider-default reasoning;
+no thinking override is sent because a documented off switch was not established for this model. Its reasoning
+fields are discarded, never scored or persisted as learner feedback. Qwen transports that audio as MP3 (a provider-documented format) because its
 documented inline limit is an encoded Base64 string under 10 MB and the accepted 500-second range is about 16 MB as
-PCM; the staged normalized WAV artifact is unchanged and an oversized encoding fails unscored. Doubao receives the
+PCM; StepAudio uses the same MP3 conversion and conservative inline-size budget. The staged normalized WAV
+artifact is unchanged and an oversized encoding fails unscored. Doubao receives the
 normalized WAV as raw base64 in Chat and as a WAV data URI in Responses. A Responses result is scoreable only when
 the provider reports a completed assistant message; failed, incomplete, refused or non-JSON answers stay unassessed
 and reasoning text is never scored. `AUDIO_ASSESS_API_KEY` is always required for the selected origin. The selected
@@ -179,23 +183,30 @@ over the unchanged fixed recording.
 The current Generator prompt is tracked as `lexical-pair-v7-a`: the original scope-workflow D plus the
 learner-task context required by the example quality review (Recognition shows only the target sentence;
 Production shows only the native sentence, with the explanation and target counterpart hidden). It is distinct from the
-earlier unpromoted experimental `lexical-pair-v6` and from D2. The audio assessment prompt is tracked as
-`spoken-audio-v4`: the exact current-prompt judgment-only variant from the
-[transcript-output experiment](implementation/transcript-output-experiment.md), based on `spoken-audio-v2`.
-It does not include the abandoned stricter `spoken-audio-v3` candidate. Recognition still requires the requested
-native-language meaning, and Production still asks for the target expression without a whole-sentence translation.
-The maintainer selected Qwen Chat Completions with this prompt despite the recorded incomplete-word limitations.
-No pronunciation score or additional model call is added. Both API modes now request only
-`{"units":[{"id":1,"outcome":"complete|partial|incorrect","reason":"short English reason"}]}`;
-extra top-level fields, invalid units and unassessable responses cannot produce a grade. Existing transcripts
-remain in history and display when present; new results display feedback without an empty transcript panel.
+earlier unpromoted experimental `lexical-pair-v6` and from D2. Audio assessment uses
+`spoken-audio-v5-candidate-1`: the exact evaluated Production, Recognition and Generic prompts in
+`learning/audio_prompts.py`. The frozen task selects one system prompt; they are never concatenated. Production
+accepts the authored target itself or an appropriate form; Recognition accepts conventional native-language
+meanings. Existing A–E mapping, timing and progress rules remain application-owned.
+
+The [StepAudio comparison](implementation/stepaudio3-prompt-experiment.md) recorded 25/25 expected primary
+judgments and 15/16 expected control results, with one timeout. Reasoning was present and some feedback described
+`dissect` as `dissected`; this is selected-sample evidence, not guaranteed accuracy. Qwen/Doubao remain selectable;
+their unchanged transport options do not establish grading parity with StepAudio under the new prompts.
+The earlier [prompt investigation](implementation/production-target-authority.md) records superseded candidates.
+
+All audio modes request only `{"units":[{"id":1,"outcome":"complete|partial|incorrect","reason":"short English reason"}]}`
+or an explicit unassessable result. Extra top-level fields and invalid units stay unassessed. Existing transcripts
+remain in history; new results display feedback without an empty transcript panel. There is no added pronunciation
+score, second model call or automatic retry. See the [integration and release checklist](implementation/stepaudio3-integration.md)
+for the explicit StepAudio environment switch after PR review and merge.
 Definition requests continue to omit `reasoning_effort` and `thinking`. The Example reviewer prompt
 is `example-review-v1`. New preparation and ordinary future rotations use D plus one review call. Deploying a prompt
 does not refresh saved pairs, invalidate held questions or reset learning progress; the explicit refresh command below
 remains a separate operation.
 
 For another compatible provider, explicitly configure that task's full endpoint URL, model, protocol and API key.
-Supported chat protocols are `minimax`, `zhipu` and `openai`; audio assessment providers are `qwen` and `doubao`. Each
+Supported chat protocols are `minimax`, `zhipu` and `openai`; audio assessment providers are `qwen`, `doubao` and `stepfun`. Each
 protocol fixes its token-budget key and accepted thinking values, and the configured protocol — never the model name —
 selects the dialect. The default MiniMax credential is never sent to another origin.
 

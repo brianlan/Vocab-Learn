@@ -37,6 +37,7 @@ def run(audio_dir, task="all"):
            ("PRODUCTION-WRONG-SENSE",bank,"financial institution",["incorrect"]),
            ("PRODUCTION-SPANISH",{**recognition,"direction":"production","question_text":"一个误会打断了谈话。","reference":"malentendido","word":"malentendido","language":"Spanish"},"malentendido",["complete"])]
     lexical = [
+        ("shrink","The balloon shrank as the air leaked out.","To become smaller in size or amount.","缩小"),
         ("absorb","The sponge absorbs the water.","If something absorbs liquid, it soaks it up and holds it.","吸收"),
         ("adventure","We had an exciting adventure in the mountains last weekend.","An exciting, unusual, sometimes risky journey or experience.","探险"),
         ("abnormal","His answer was abnormal, so the teacher asked him to explain it.","Different from what is usual or expected, especially in a strange or worrying way.","异常"),
@@ -71,6 +72,10 @@ def run(audio_dir, task="all"):
     # Supply genuine accent and incomplete-word recordings; a synthetic voice cannot establish microphone or accent accuracy.
     for word,question,highlight,explanation,malformed in [
         ("privy","只有我姐姐和律师知道内情。","知道内情","Having knowledge of private or secret information.",None),
+        ("tinker","一位走街串巷的修补匠主动提出修理我们的旧水壶。","修补匠",
+         "A person who travels from place to place repairing household items or utensils.",None),
+        ("mortal","即使最健康的人也会死。","会死","Capable of dying or subject to death.",None),
+        ("dissect","在生物课上，老师解剖了一片叶子。","解剖","Cut apart to examine the internal structure.",None),
         ("neuroticism","他的神经质常常让他对小事反应过度。","神经质",
          "A personality trait involving anxiety and emotional instability.","neurocism"),
         ("responsibility","照顾孩子是他的责任。","责任","A duty to take care of someone or something.","responsity")]:
@@ -78,6 +83,9 @@ def run(audio_dir, task="all"):
                  "native_highlight":highlight,"highlight_start":question.index(highlight),
                  "target_language":"English","native_language":"Chinese"}
         cases.append(("PRODUCTION-WORD-ONLY-"+word.upper(),context,word,["complete"]))
+        if word == "dissect":
+            cases.append(("PRODUCTION-INFLECTED-DISSECT",context,"dissected",["complete"]))
+            cases.append(("PRODUCTION-WRONG-WORD-DISSECT",context,"insect",["incorrect"]))
         if malformed:
             cases.append(("PRODUCTION-INCOMPLETE-"+word.upper(),context,malformed,["incorrect"]))
             cases.append(("PRODUCTION-ACCENTED-"+word.upper(),context,word,["complete"]))
