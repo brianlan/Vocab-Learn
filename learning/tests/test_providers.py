@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ from unittest import TestCase
 from unittest.mock import patch
 import httpx
 from learning import providers as p
+from learning.audio_prompts import PROMPTS
 
 
 class ProviderBase(TestCase):
@@ -109,7 +111,7 @@ class ProviderTests(ProviderBase):
                 self.assertEqual(p.profile("AUDIO_ASSESS").endpoint,"https://provider.test/v1/chat/completions")
         # Compose sets optional overrides to explicit empty strings; they must resolve to the provider+mode default.
         for provider,mode in [("qwen","responses"),("qwen","chat_completions"),
-                              ("doubao","responses"),("doubao","chat_completions")]:
+                              ("doubao","responses"),("doubao","chat_completions"),("stepfun","chat_completions")]:
             with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_PROVIDER":provider,
                     "AUDIO_ASSESS_API_MODE":mode,"AUDIO_ASSESS_ENDPOINT":"","AUDIO_ASSESS_MODEL":""},clear=True):
                 resolved = p.profile("AUDIO_ASSESS")
@@ -129,7 +131,56 @@ class ProviderTests(ProviderBase):
         with patch.dict(os.environ,{"AUDIO_ASSESS_API_KEY":"k","AUDIO_ASSESS_REASONING_EFFORT":"max"},clear=True):
             with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
 
-    def test_audio_request_dialects_send_provider_audio_and_explicit_nonthinking(self):
+    def test_audio_prompts_match_the_live_evaluated_bundle(self):
+        # Freeze the evaluated wording independently of task routing and wire-format tests.
+        expected = {'vocabulary_production': '319facb31f4470b1084e89510aaced4bbf322ad961fa5bd1d43dfbd375b659fb', 'vocabulary_recognition': 'd6320ac442dbe7116ea757d0c85e68ae5700465e634b4f0a5c5d69e038032b2e', 'generic': 'b42bd98d4566e17f6534ddb1158c09132f9147dccb0852fe40bd7660daf4891d'}
+        self.assertEqual({k:hashlib.sha256(v.encode()).hexdigest() for k,v in PROMPTS.items()},expected)
+
+    def test_stepaudio_rejects_responses_before_dispatch_and_requires_task_credentials(self):
+        with patch.dict(os.environ, {"AUDIO_ASSESS_PROVIDER":"stepfun", "AUDIO_ASSESS_API_KEY":"k"}, clear=True):
+            resolved = p.profile("AUDIO_ASSESS")
+            self.assertEqual((resolved.model,resolved.endpoint,resolved.api_mode),
+                ("stepaudio-3-chat-preview","https://api.stepfun.com/v1/chat/completions","chat_completions"))
+            with patch.dict(os.environ, {"AUDIO_ASSESS_API_MODE":"responses"}), patch.object(p,"request") as request:
+                with self.assertRaises(p.StageError) as error: p.profile("AUDIO_ASSESS")
+                self.assertEqual(error.exception.category,"configuration")
+                with self.assertRaises(p.StageError): p.respond(resolved,"rules",{},b"audio")
+                request.assert_not_called()
+            with patch.dict(os.environ, {"AUDIO_ASSESS_API_KEY":"", "MINIMAX_API_KEY":"unrelated", "STEPFUN_API_KEY":"not-a-task-key"}):
+                with self.assertRaises(p.StageError): p.profile("AUDIO_ASSESS")
+
+    def test_direction_prompts_and_stepaudio_reasoning_is_never_graded_or_returned(self):
+        snapshots = [
+            {"kind":"vocabulary","direction":"production","word":"mortal","units":1},
+            {"kind":"vocabulary","direction":"recognition","word":"shrink","units":1},
+            {"kind":"generic","direction":"generic","question_text":"[1], [2]","reference":"call off; sick","units":2},
+        ]
+        for snapshot,key in zip(snapshots,["vocabulary_production","vocabulary_recognition","generic"]):
+            with self.subTest(key=key):
+                units=[{"id":i,"outcome":"complete","reason":"Matches."} for i in range(1,snapshot["units"]+1)]
+                response={"choices":[{"finish_reason":"stop","message":{
+                    "reasoning":"private reasoning: incorrect", "reasoning_content":"private reasoning: incorrect",
+                    "content":json.dumps({"units":units})}}]}
+                with patch.object(p,"transcode_mp3",return_value=b"mp3"), patch.object(p,"request",return_value=response) as request:
+                    actual,metadata=p.audio_assessment(snapshot,Path("unused.wav"),self.profile(protocol="stepfun"))
+                request.assert_called_once()
+                body=request.call_args.kwargs["json"]
+                self.assertEqual(body["messages"][0]["content"],PROMPTS[key])
+                self.assertEqual(json.loads(body["messages"][1]["content"][0]["text"])["expected_unit_ids"],list(range(1,snapshot["units"]+1)))
+                self.assertEqual(actual,units)
+                self.assertNotIn("private reasoning",str((actual,metadata)))
+                self.assertNotIn("placeholder-only",str(metadata))
+
+    def test_stepaudio_unassessable_and_malformed_answers_fail_once_without_grading_reasoning(self):
+        snapshot={"kind":"generic","reference":"call off","units":1}
+        for content in [json.dumps({"unassessable":True}), "", json.dumps({"units":[{"id":2,"outcome":"complete","reason":"Matches."}]})]:
+            response={"choices":[{"finish_reason":"stop","message":{
+                "content":content,"reasoning_content":json.dumps({"units":[{"id":1,"outcome":"complete","reason":"Matches."}]})}}]}
+            with patch.object(p,"transcode_mp3",return_value=b"mp3"), patch.object(p,"request",return_value=response) as request:
+                with self.assertRaises(p.StageError): p.audio_assessment(snapshot,Path("unused.wav"),self.profile(protocol="stepfun"))
+            request.assert_called_once()
+
+    def test_audio_request_dialects_send_evaluated_provider_settings(self):
         seen = []
         def handler(request):
             seen.append(json.loads(request.content))
@@ -142,7 +193,7 @@ class ProviderTests(ProviderBase):
                 fixture.setnchannels(1); fixture.setsampwidth(2); fixture.setframerate(16000)
                 fixture.writeframes(b"\x00\x01"*16000)  # one real second of mono 16kHz PCM
             payload=path.read_bytes()
-            for provider in ["qwen","doubao"]:
+            for provider in ["qwen","doubao","stepfun"]:
                 seen.clear()
                 with patch.dict(os.environ,{"AUDIO_ASSESS_PROVIDER":provider,"AUDIO_ASSESS_API_KEY":"k",
                         "AUDIO_ASSESS_API_MODE":"chat_completions"},clear=True):
@@ -168,6 +219,13 @@ class ProviderTests(ProviderBase):
                     self.assertLess(len(encoded),p.QWEN_INLINE_LIMIT)
                     self.assertEqual(body["reasoning_effort"],"none")
                     self.assertNotIn("thinking",body); self.assertNotIn("service_tier",body)
+                elif provider=="stepfun":
+                    encoded=parts[1]["input_audio"]["data"].removeprefix("data:audio/mpeg;base64,")
+                    self.assertTrue(base64.b64decode(encoded))
+                    self.assertEqual(set(parts[1]["input_audio"]),{"data"})
+                    self.assertEqual(body["modalities"],["text"])
+                    for field in ["thinking","reasoning_effort","service_tier","temperature","top_p"]:
+                        self.assertNotIn(field,body)
                 else:
                     self.assertEqual(parts[1]["input_audio"]["format"],"wav")
                     self.assertEqual(parts[1]["input_audio"]["data"],base64.b64encode(payload).decode())
@@ -206,7 +264,7 @@ class ProviderTests(ProviderBase):
                 body=seen[0]
                 self.assertFalse(body["store"]); self.assertEqual(body["max_output_tokens"],8192)
                 self.assertEqual(body["text"],{"format":{"type":"json_object"}})
-                self.assertEqual(body["input"][0]["content"],p.AUDIO_ASSESS_RULES)
+                self.assertEqual(body["input"][0]["content"],p.assessment_prompt(snapshots))
                 self.assertNotIn("tools",body); self.assertNotIn("previous_response_id",body)
                 user=body["input"][1]
                 self.assertEqual(json.loads(user["content"][0]["text"])["expected_unit_ids"],[1])
