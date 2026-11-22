@@ -229,15 +229,17 @@ class VocabularyFieldsTests(TestCase):
         self.assertNotContains(response, "<script>alert(1)</script>")
 
     def test_vocabulary_details_and_review_back_label_the_explanation_separately(self):
-        card = self.legacy(explanation="/əbˈzɔrb/: Take in **liquid**. [synonyms: soak up]")
+        card = self.legacy(explanation="/əbˈzɔrb/, /əbˈzɔːb/ (UK): Take in **liquid**. [synonyms: soak up]")
         self.export(); self.apply()
         card.refresh_from_db()
         self.client.force_login(self.user)
         detail = self.client.get(reverse("card", args=[card.pk]))
         self.assertContains(detail, "<h2>Word details</h2>", html=True)
         held = review.next_question(self.user, self.deck)
+        self.assertNotContains(self.client.get(reverse("presentation", args=[held.pk])), "data-pronounce=")
         review.submit(held, "skip")
         frozen = held.snapshot.copy()
+        Card.objects.filter(pk=card.pk).update(word="different expression", target_language="Spanish")
         back = self.client.get(reverse("status", args=[held.pk])).json()["back_html"]
         for page, html in [("detail", detail.content.decode()), ("review", back)]:
             with self.subTest(page=page):
@@ -247,6 +249,10 @@ class VocabularyFieldsTests(TestCase):
                     '<p>Take in <strong>liquid</strong>.</p></div></div>', html)
                 self.assertLess(html.index("<h3>Pronunciation</h3>"), html.index("<h3>Explanation</h3>"))
                 self.assertLess(html.index("<h3>Explanation</h3>"), html.index("<h3>Synonyms</h3>"))
+                self.assertEqual(html.count("data-pronounce="), 1)
+                speaker = html.index('data-pronounce="absorb" data-pronounce-language="English"')
+                self.assertLess(html.index("/əbˈzɔrb/"), speaker)
+                self.assertLess(speaker, html.index("/əbˈzɔːb/"))
         held.refresh_from_db()
         self.assertEqual(held.snapshot, frozen)
 
@@ -263,6 +269,7 @@ class VocabularyFieldsTests(TestCase):
             self.assertInHTML("<p>Two pairs make four.</p>", html)
             self.assertNotIn("<h3>Explanation</h3>", html)
             self.assertNotIn("Word details", html)
+            self.assertNotIn("data-pronounce=", html)
 
     def test_legacy_parser_keeps_definition_block_indentation(self):
         for definition in ["    meaning = 'take in'", "## Meaning\n\nTake in liquid.", "> Take in liquid."]:
