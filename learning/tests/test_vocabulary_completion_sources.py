@@ -466,7 +466,7 @@ class CompletionRecoveryTests(TransactionTestCase):
                     for model in apps.get_app_config("learning").get_models() if model.__name__ != "SpeechClip"}
 
         before = snapshot()
-        target = "0013_speechclip"
+        target = "0014_learnerpreferences_autoplay_enabled"
         with tempfile.TemporaryDirectory() as folder:
             ordinary = Path(folder) / "ordinary.json"
             call_command("vocabulary_fields", "export", str(ordinary), stdout=io.StringIO())

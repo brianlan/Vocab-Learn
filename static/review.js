@@ -12,6 +12,8 @@
       announced = false, checking = false;
   const started = performance.now();
   let lastPayload = "", busy = false;
+  const player = $("#clip-player");
+  let clipToken = 0;
   const tell = message => { $("#technical-message").textContent = message; $("#technical-message").hidden = !message; };
   const elapsed = () => baseElapsed + (performance.now()-started)/1000-excluded-(waitStart === null ? 0 : (performance.now()-waitStart)/1000);
   function saveClock() {
@@ -32,6 +34,20 @@
     $("#record-controls").hidden = !["recording", "permission"].includes(phase);
     $("#stop").hidden = phase !== "recording";
     $("#recording-indicator").classList.toggle("recording", phase === "recording");
+    document.querySelectorAll("#front [data-play]").forEach(b => b.disabled = ["permission", "recording"].includes(phase));
+  }
+  function playClip(button) {
+    if (!player) return;
+    const token = ++clipToken;
+    if (player.dataset.src !== button.dataset.src) { player.dataset.src = button.dataset.src; player.src = button.dataset.src; }
+    try { player.currentTime = 0; } catch (_) { /* A loading source starts from its beginning anyway. */ }
+    const request = player.play();
+    // A start overtaken by a Practice control (Speak, Cancel, Skip) must never sound mid-recording.
+    if (request) request.then(() => { if (token !== clipToken) player.pause(); }).catch(() => { /* Blocked or interrupted: Play stays available. */ });
+  }
+  function stopClip() {
+    ++clipToken;
+    if (player && !player.paused) player.pause();
   }
   function endPermission() {
     if (waitStart !== null) { excluded += (performance.now()-waitStart)/1000; waitStart = null; }
@@ -155,8 +171,14 @@
   }
   function startPolling() { if (!polling) polling = setInterval(check, 1200); }
   card.addEventListener("click", async event => {
+    const playButton = event.target.closest("[data-play]");
+    if (playButton) {
+      if (!playButton.disabled && !busy) playClip(playButton);
+      return;
+    }
     const button = event.target.closest("[data-action]");
     if (!button || button.disabled || busy) return;
+    stopClip();  // Every Practice control pauses the clip and cancels a pending start.
     const action = button.dataset.action;
     if (action === "speak") { speak(); return; }
     if (action === "cancel") { cancel(); return; }
@@ -177,6 +199,12 @@
   });
   if (phase === "question") readClock();
   else if (["submitted", "processing"].includes(phase)) startPolling();
+  // One autoplay attempt per new question: first display only, when the learner allows it
+  // and the visible side's clip is ready. A blocked attempt leaves manual Play available.
+  if (phase === "question" && card.dataset.firstDisplay === "1" && card.dataset.autoplay === "1") {
+    const auto = $("#front [data-play]");
+    if (auto) playClip(auto);
+  }
   setInterval(() => {
     saveClock();
     if (!terminal() && (overdue() || uploadOverdue())) { announceOverdue(); check(); }
@@ -186,5 +214,5 @@
       if (seconds >= 500) { cancel(); tell("The 500-second recording limit was reached. Please record a shorter answer. Nothing was submitted."); }
     }
   }, 300);
-  window.addEventListener("pagehide", () => { saveClock(); ++acquisition; if (recorder) recorder.discarded = true; stopTracks(stream); });
+  window.addEventListener("pagehide", () => { saveClock(); stopClip(); ++acquisition; if (recorder) recorder.discarded = true; stopTracks(stream); });
 })();
