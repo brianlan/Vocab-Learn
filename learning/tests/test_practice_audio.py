@@ -2,6 +2,7 @@
 import tempfile
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -10,7 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from learning import authoring, review, work
-from learning.models import Card, Deck, ExamplePair, LearnerPreferences, SpeechClip
+from learning.models import Attempt, Card, Deck, ExamplePair, LearnerPreferences, SpeechClip
 from learning.tests.test_learning import PAIR, VOCAB
 
 
@@ -127,6 +128,46 @@ class PracticeAudioTests(TestCase):
         back_html = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
         self.assertIn('data-play="native"', back_html)
         self.assertNotIn('data-play="target"', back_html)
+
+    def test_missing_artifact_is_not_advertised_or_served(self):
+        card = self.prepared_card()
+        self.publish(card.active_pair)
+        p = self.present(card, "recognition")
+        (settings.TTS_DIR/f"{card.active_pair_id}.target.mp3").unlink()
+        self.assertEqual(self.client.get(self.clip_url(p, "target")).status_code, 404)
+        page = self.client.get(reverse("presentation", args=[p.pk])).content.decode()
+        self.assertNotIn("data-play", page)
+        review.submit(p, "skip")
+        back = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
+        self.assertNotIn('data-play="target"', back)
+        self.assertIn('data-play="native"', back)
+        # An artifact can also disappear after the controls were rendered.
+        with patch.object(Path, "open", side_effect=FileNotFoundError):
+            self.assertEqual(self.client.get(self.clip_url(p, "native")).status_code, 404)
+
+    def test_completion_between_page_read_and_payload_renders_text_only_history(self):
+        card = self.prepared_card()
+        self.publish(card.active_pair)
+        p = self.present(card, "recognition")
+        a = Attempt.objects.create(presentation=p, action="speak", state="processing",
+            deadline=timezone.now()+timedelta(seconds=30))
+        expire = review.expire_attempt
+
+        def complete_before_refresh(stale):
+            self.assertEqual(stale.state, "processing")
+            # Model the worker completing after presentation_view's first read.
+            Attempt.objects.filter(pk=stale.pk).update(state="assessed", grade="D")
+            return expire(stale)
+
+        with patch("learning.views.review.expire_attempt", side_effect=complete_before_refresh):
+            page = self.client.get(reverse("presentation", args=[p.pk])).content.decode()
+        self.assertIn('data-state="assessed"', page)
+        self.assertNotIn("data-play", page)
+        a.refresh_from_db()
+        self.assertEqual(a.state, "assessed")
+        back = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
+        self.assertIn('data-play="target"', back)
+        self.assertIn('data-play="native"', back)
 
     def test_settings_default_and_saved_autoplay_preference(self):
         settings_page = self.client.get(reverse("settings")).content.decode()

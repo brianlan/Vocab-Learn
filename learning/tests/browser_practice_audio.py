@@ -52,6 +52,9 @@ BLOCKED_PLAY = ("(() => { let blocked = true; const original = HTMLMediaElement.
     "HTMLMediaElement.prototype.play = function (...args) { "
     "if (blocked) { blocked = false; return Promise.reject(new DOMException('blocked', 'NotAllowedError')); } "
     "return original.apply(this, args); }; })();")
+COUNT_PLAYS = ("window.playCalls = 0; const originalPlay = HTMLMediaElement.prototype.play; "
+    "HTMLMediaElement.prototype.play = function (...args) { window.playCalls++; "
+    "return originalPlay.apply(this, args); };")
 
 
 class PracticeAudioBrowserTests(unittest.TestCase):
@@ -78,6 +81,9 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.unexpected = []
         self.audio_requests = []
         self.statuses = [ASSESSED]
+        self.hold_audio = False
+        self.held_audio = []
+        self.held_next = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -90,9 +96,14 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         path = urlsplit(route.request.url).path
         if path == "/fixture":
             route.fulfill(content_type="text/html", body=self.fixture)
-        elif path.startswith("/review/p-1/audio/"):
+        elif path.startswith(("/review/p-1/audio/", "/review/p-2/audio/")):
             self.audio_requests.append(path.rstrip("/").rsplit("/", 1)[-1])
-            route.fulfill(content_type="audio/wav", body=CLIP)
+            if self.hold_audio:
+                self.held_audio.append(route)
+            else:
+                route.fulfill(content_type="audio/wav", body=CLIP)
+        elif path == "/next":
+            self.held_next.append(route)
         elif path == "/status/":
             body = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
             route.fulfill(content_type="application/json", body=body)
@@ -102,7 +113,7 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             self.unexpected.append(path)
             route.abort()
 
-    def load(self, *, first_display="1", autoplay="1", state="question", init=None):
+    def fixture_html(self, *, first_display="1", autoplay="1", state="question", presentation="p-1"):
         article = (f'<input type="hidden" name="csrfmiddlewaretoken" value="synthetic-csrf">'
             f'<article id="review-card" data-presentation="p-1" data-state="{state}" data-deadline=""'
             f' data-first-display="{first_display}" data-autoplay="{autoplay}"'
@@ -119,7 +130,11 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             '<div id="reconnect-controls" class="row" hidden><button class="button" data-action="check">Check</button>'
             '<button class="button" data-action="resend">Resend</button>'
             '<button class="button" data-action="exit">Exit</button></div></article><div id="clock-recovery" hidden></div>')
-        self.fixture = f'<!doctype html><html><head><link rel="icon" href="data:,"></head><body>{article}<script>{SCRIPT}</script></body></html>'
+        article = article.replace("p-1", presentation)
+        return f'<!doctype html><html><head><link rel="icon" href="data:,"></head><body>{article}<script>{SCRIPT}</script></body></html>'
+
+    def load(self, *, init=None, **kwargs):
+        self.fixture = self.fixture_html(**kwargs)
         if init:
             self.page.add_init_script(init)
         self.page.goto(ORIGIN + "/fixture")
@@ -188,6 +203,106 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.page.click("[data-play]")
         self.page.click("[data-action=skip]")  # any Practice control cancels playback
         self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+
+    def test_repeated_pending_play_does_not_pause_the_latest_play(self):
+        self.check_latest_pending_play()
+
+    def test_pending_play_cancel_then_play_permits_the_latest_play(self):
+        self.check_latest_pending_play(cancel_between=True)
+
+    def check_latest_pending_play(self, cancel_between=False):
+        self.hold_audio = True
+        self.load(autoplay="0", init=COUNT_PLAYS)
+        self.page.click("[data-play]")
+        self.until("window.playCalls === 1")
+        self.wait_for_audio("target")
+        if cancel_between:
+            self.page.click("#speak")
+            self.page.click("[data-action=cancel]")
+        self.page.click("[data-play]")
+        self.assertEqual(self.page.evaluate("window.playCalls"), 2)
+        self.assertEqual(self.page.evaluate("document.querySelector('#clip-player').readyState"), 0)
+        self.hold_audio = False
+        for route in self.held_audio:
+            route.fulfill(content_type="audio/wav", body=CLIP)
+        self.until("document.querySelector('#clip-player').currentTime > 0.1")
+        self.page.wait_for_timeout(300)
+        self.assertFalse(self.page.evaluate("document.querySelector('#clip-player').paused"))
+
+    def test_pending_play_stays_cancelled_during_speak_and_after_cancel(self):
+        self.check_cancelled_pending_play()
+
+    def test_pending_play_cancel_stays_paused_after_media_response(self):
+        self.check_cancelled_pending_play(cancel_before_release=True)
+
+    def check_cancelled_pending_play(self, cancel_before_release=False):
+        self.hold_audio = True
+        self.load(autoplay="0")
+        self.page.click("[data-play]")
+        self.wait_for_audio("target")
+        self.assertEqual(self.page.evaluate("document.querySelector('#clip-player').readyState"), 0)
+        self.page.click("#speak")
+        self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+        self.until("document.querySelector('#recording-indicator').textContent.includes('Recording')")
+        self.assertTrue(self.page.is_disabled("[data-play]"))
+        if cancel_before_release:
+            self.page.click("[data-action=cancel]")
+        self.hold_audio = False
+        for route in self.held_audio:
+            route.fulfill(content_type="audio/wav", body=CLIP)
+        self.until("document.querySelector('#clip-player').readyState >= 2")
+        self.page.wait_for_timeout(300)
+        self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+        if not cancel_before_release:
+            self.page.click("[data-action=cancel]")
+        self.page.wait_for_timeout(300)
+        self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+        self.assertFalse(self.page.is_disabled("[data-play]"))
+
+    def test_next_click_cancels_playing_and_pending_audio_before_navigation(self):
+        events = []
+        self.page.on("console", lambda message: events.append(message.text))
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                self.hold_audio = pending
+                self.held_audio = []
+                self.held_next = []
+                self.load(state="submitted", init=COUNT_PLAYS if not pending else None)
+                self.page.wait_for_selector("#next-card")
+                self.page.click("#back [data-play=target]")
+                self.wait_for_audio("target")
+                if pending:
+                    self.until("document.querySelector('#clip-player').readyState === 0")
+                else:
+                    self.until("document.querySelector('#clip-player').currentTime > 0.1")
+                self.page.evaluate("""() => {
+                    const player = document.querySelector('#clip-player');
+                    document.addEventListener('click', event => {
+                        if (event.target.closest('#next-card')) console.log('next-paused:' + player.paused);
+                    });
+                    player.addEventListener('playing', () => console.log('old-clip-playing'));
+                }""")
+                events.clear()
+                self.page.click("#next-card", no_wait_after=True)
+                for _ in range(30):
+                    if self.held_next:
+                        break
+                    self.page.wait_for_timeout(100)
+                self.assertEqual(len(self.held_next), 1)  # navigation was not prevented
+                self.assertEqual(self.page.url, ORIGIN + "/fixture")
+                self.assertIn("next-paused:true", events)
+                self.hold_audio = False
+                for route in self.held_audio:
+                    route.fulfill(content_type="audio/wav", body=CLIP)
+                self.page.wait_for_timeout(300)
+                self.assertNotIn("old-clip-playing", events)
+                self.held_next[0].fulfill(content_type="text/html", body=self.fixture_html(presentation="p-2"))
+                self.page.wait_for_url(ORIGIN + "/next")
+                self.until("document.querySelector('#clip-player').currentTime > 0.1")
+                self.assertEqual(self.page.get_attribute("#review-card", "data-presentation"), "p-2")
+                self.assertEqual(self.page.evaluate("window.playCalls"), 1)
+                self.page.wait_for_timeout(300)
+                self.assertEqual(self.page.evaluate("window.playCalls"), 1)
 
     def test_polling_preserves_one_player_and_back_controls_without_implicit_replay(self):
         self.statuses = [PROCESSING_A, PROCESSING_B, ASSESSED]

@@ -331,7 +331,8 @@ def practice_audio(request, p, attempt):
     pair_id = p.snapshot.get("pair_id")
     if p.snapshot.get("kind") != "vocabulary" or not pair_id:
         return {}
-    ready = set(SpeechClip.objects.filter(pair_id=pair_id, state="done").exclude(file="").values_list("side", flat=True))
+    ready = {clip.side for clip in SpeechClip.objects.filter(pair_id=pair_id, state="done").exclude(file="")
+             if (settings.TTS_DIR/clip.file).is_file()}
     if attempt is None:
         ready &= {"target" if p.snapshot.get("direction") == "recognition" else "native"}
     return {side: {"side": side, "url": reverse("clip_audio", args=[p.pk, side])}
@@ -352,7 +353,11 @@ def clip_audio(request, presentation_id, side):
             .exclude(file="").first()) if p.snapshot.get("kind") == "vocabulary" else None
     if not clip:
         raise Http404("This clip is not available.")
-    response = FileResponse((settings.TTS_DIR/clip.file).open("rb"), content_type="audio/mpeg")
+    try:
+        audio = (settings.TTS_DIR/clip.file).open("rb")
+    except FileNotFoundError:
+        raise Http404("This clip is not available.") from None
+    response = FileResponse(audio, content_type="audio/mpeg")
     response["Cache-Control"] = "private, no-store"
     return response
 
@@ -368,7 +373,7 @@ def render_back(request, a, audio):
         "can_retry": a.state == "failed" and a.duration is not None and a.error_stage != "timing"}, request=request)
 
 
-def payload(request, a):
+def payload(request, a, *, fresh_page=False):
     p = a.presentation
     a = review.expire_attempt(a)
     a.presentation = p
@@ -376,7 +381,7 @@ def payload(request, a):
     return {"state": a.state, "transcript": a.transcript, "grade": a.grade, "next_due": a.next_due.isoformat() if a.next_due else None,
         "deadline": a.deadline.isoformat() if a.deadline and a.state in ("submitted", "processing") else None,
         "metrics": counts(request.user, p.scope_deck), "collection": card.collection,
-        "back_html": render_back(request, a, practice_audio(request, p, a))}
+        "back_html": render_back(request, a, {} if fresh_page and a.state in review.TERMINAL else practice_audio(request, p, a))}
 
 
 @login_required
@@ -390,13 +395,9 @@ def presentation_view(request, presentation_id):
     front = {key: p.snapshot[key] for key in ["question_html", "direction", "language", "units", "kind"]}
     cue_key = "target_language" if front["direction"] == "recognition" else "native_language"
     front["cue_language"] = p.snapshot.get(cue_key, "") if front["kind"] == "vocabulary" else ""
-    data = payload(request, attempt) if attempt else None
+    data = payload(request, attempt, fresh_page=True) if attempt else None
     first_display = Presentation.objects.filter(pk=p.pk, clock_claimed=False).update(clock_claimed=True) == 1 if not attempt else False
     if attempt:
-        # A reopened review is history: frozen text and result without playback controls.
-        if attempt.state in review.TERMINAL:
-            data = {**data, "back_html": render_back(request, attempt, {})}
-        audio = {} if attempt.state in review.TERMINAL else practice_audio(request, p, attempt)
         front_audio = None
     else:
         audio = practice_audio(request, p, None) if review.valid_presentation(p) else {}
@@ -404,7 +405,7 @@ def presentation_view(request, presentation_id):
     autoplay = LearnerPreferences.objects.filter(user=request.user).values_list("autoplay_enabled", flat=True).first()
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",
         "initial_state": data["state"] if data else "question", "initial_deadline": data["deadline"] if data else "",
-        "first_display": first_display, "audio": audio, "front_audio": front_audio, "autoplay": autoplay is not False,
+        "first_display": first_display, "front_audio": front_audio, "autoplay": autoplay is not False,
         "nav": "study", **counts(request.user, p.scope_deck)})
 
 

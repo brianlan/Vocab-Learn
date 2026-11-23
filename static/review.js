@@ -13,7 +13,7 @@
   const started = performance.now();
   let lastPayload = "", busy = false;
   const player = $("#clip-player");
-  let clipToken = 0;
+  let clipRequested = false;
   const tell = message => { $("#technical-message").textContent = message; $("#technical-message").hidden = !message; };
   const elapsed = () => baseElapsed + (performance.now()-started)/1000-excluded-(waitStart === null ? 0 : (performance.now()-waitStart)/1000);
   function saveClock() {
@@ -38,15 +38,15 @@
   }
   function playClip(button) {
     if (!player) return;
-    const token = ++clipToken;
+    clipRequested = true;
     if (player.dataset.src !== button.dataset.src) { player.dataset.src = button.dataset.src; player.src = button.dataset.src; }
     try { player.currentTime = 0; } catch (_) { /* A loading source starts from its beginning anyway. */ }
     const request = player.play();
-    // A start overtaken by a Practice control (Speak, Cancel, Skip) must never sound mid-recording.
-    if (request) request.then(() => { if (token !== clipToken) player.pause(); }).catch(() => { /* Blocked or interrupted: Play stays available. */ });
+    // Cancelled starts stay silent, but an older promise must not pause a newer permitted Play.
+    if (request) request.then(() => { if (!clipRequested) player.pause(); }).catch(() => { /* Blocked or interrupted: Play stays available. */ });
   }
   function stopClip() {
-    ++clipToken;
+    clipRequested = false;
     if (player && !player.paused) player.pause();
   }
   function endPermission() {
@@ -171,6 +171,7 @@
   }
   function startPolling() { if (!polling) polling = setInterval(check, 1200); }
   card.addEventListener("click", async event => {
+    if (event.target.closest("#next-card")) { stopClip(); return; }
     const playButton = event.target.closest("[data-play]");
     if (playButton) {
       if (!playButton.disabled && !busy) playClip(playButton);
