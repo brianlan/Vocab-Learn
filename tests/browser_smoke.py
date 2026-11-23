@@ -501,7 +501,7 @@ def run(options):
         assert page.url!=empty_url
         assert "<focus>" not in page.locator(".prompt").inner_text()
         checked("Newly Ready Vocabulary enters practice from the previously empty URL")
-        cue=page.locator(".prompt").inner_text()
+        cue=page.locator(".prompt [data-selection-region]").inner_text()
         page.get_by_role("button",name=re.compile("Forgot")).click();page.wait_for_selector("#next-card")
         assert page.locator(".recall-result h3").inner_text()=="Needs a refresh"
         assert "min" in page.locator(".next-review").inner_text()
@@ -511,7 +511,7 @@ def run(options):
         while page.locator("#review-card").count()==0 and time.monotonic()<deadline:
             page.wait_for_timeout(900);page.reload()
         page.wait_for_selector("#review-card")
-        assert page.locator(".prompt").inner_text()==cue
+        assert page.locator(".prompt [data-selection-region]").inner_text()==cue
         checked("Forgot Vocabulary retains its exact cue and language at the actual one-minute review")
         page.get_by_role("button",name=re.compile("Skip")).click()
         page.wait_for_selector("#next-card")
