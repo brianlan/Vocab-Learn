@@ -216,7 +216,7 @@ class SelectionAddIntegrationTests(StaticLiveServerTestCase):
             clock_key = "vocab-clock:" + str(presentation.pk)
             self.assertNotIn(presentation.snapshot["native_sentence"], await page.content())
             self.assertNotIn(presentation.snapshot["explanation"], await page.content())
-            await self.select(page, "#front .prompt")
+            await self.select(page, "#front .prompt [data-selection-region]")
             await self.choose_destination(page)
             first = await page.evaluate("key => JSON.parse(localStorage.getItem(key)).elapsed", clock_key)
             await page.wait_for_function("([key, first]) => JSON.parse(localStorage.getItem(key)).elapsed > first + 0.6",
@@ -231,7 +231,7 @@ class SelectionAddIntegrationTests(StaticLiveServerTestCase):
 
             await page.locator("#speak").click()
             await expect(page.locator("#recording-indicator")).to_have_class("recording-status recording")
-            await self.select(page, "#front .prompt")
+            await self.select(page, "#front .prompt [data-selection-region]")
             self.assertEqual((await self.submit(page)).status, 200)
             await expect(page.locator("#recording-indicator")).to_have_class("recording-status recording")
             self.assertTrue(await page.evaluate("capturedStreams[0].getAudioTracks().every(track => track.readyState === 'live')"))
@@ -295,12 +295,12 @@ class SelectionAddIntegrationTests(StaticLiveServerTestCase):
                 snapshot = presentation.snapshot
                 language = snapshot["target_language"] if snapshot["direction"] == "recognition" else snapshot["native_language"]
                 await page.goto(reverse("presentation", args=[presentation.pk]))
-                self.assertEqual(await page.locator("#front .prompt").get_attribute("data-selection-language"), language)
+                self.assertEqual(await page.locator("#front .prompt [data-selection-region]").get_attribute("data-selection-language"), language)
                 bootstrap = json.loads(await page.locator("#selection-add-config").text_content())
                 self.assertFalse({"word", "reference", "snapshot", "question_html", "explanation"} & bootstrap.keys())
                 if snapshot["direction"] == "production":
                     self.assertNotIn(card.word, await page.content())
-                await self.select(page, "#front .prompt")
+                await self.select(page, "#front .prompt [data-selection-region]")
                 await page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                 if language == "Chinese":
                     await expect(page.locator("#selection-add")).to_be_hidden()
