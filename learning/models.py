@@ -87,6 +87,32 @@ class ExamplePair(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
 
+class SpeechClip(models.Model):
+    pair = models.ForeignKey(ExamplePair, on_delete=models.CASCADE, related_name="speech_clips")
+    side = models.CharField(max_length=8)
+    language = models.CharField(max_length=12)
+    state = models.CharField(max_length=12, default="queued")
+    backfill = models.BooleanField(default=False)
+    execution = models.PositiveIntegerField(default=1)
+    claim = models.UUIDField(default=uuid.uuid4)
+    file = models.CharField(max_length=120, blank=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    deadline = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    provenance = models.JSONField(default=dict)
+    error = models.CharField(max_length=300, blank=True)
+    error_category = models.CharField(max_length=24, blank=True)
+    retryable = models.BooleanField(default=True)
+    # The 24-hour reclamation grace starts when the example loses its last reference and
+    # restarts if a reference returns; age of the clip itself never retires it.
+    unreferenced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["pair", "side"], name="unique_speech_clip_per_pair_side")]
+        indexes = [models.Index(fields=["state", "requested_at"], name="speech_queue_order")]
+
+
 class Presentation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)

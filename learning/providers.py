@@ -14,7 +14,8 @@ import httpx
 from .audio_prompts import VERSION as AUDIO_PROMPT_VERSION, assessment_prompt
 
 TASK_LABELS = {"AUDIO_ASSESS": "Audio assessment", "GENERATOR": "Example preparation",
-               "DEFINITION": "Vocabulary completion", "EXAMPLE_REVIEWER": "Example review"}
+               "DEFINITION": "Vocabulary completion", "EXAMPLE_REVIEWER": "Example review",
+               "SPEECH": "Speech synthesis"}
 PROMPT_VERSIONS = {"AUDIO_ASSESS": AUDIO_PROMPT_VERSION, "GENERATOR": "lexical-pair-v7-a", "DEFINITION": "learner-entry-v2",
                    "EXAMPLE_REVIEWER": "example-review-v1"}
 # Budget key and thinking values follow the selected protocol dialect; no model-name inference.
@@ -87,7 +88,8 @@ def profile(task):
     if audio and api_mode not in audio_defaults:
         raise StageError(task, f"{provider} audio assessment supports only chat_completions.", "configuration")
     default_endpoint = {"GENERATOR": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
-        "EXAMPLE_REVIEWER": "https://api.minimax.cn/v1/chat/completions"}.get(task,
+        "EXAMPLE_REVIEWER": "https://api.minimax.cn/v1/chat/completions",
+        "SPEECH": "https://api.minimax.cn/v1/t2a_v2"}.get(task,
         audio_defaults[api_mode] if audio else "https://api.minimax.cn/v1/chat/completions")
     endpoint = os.getenv(task + "_ENDPOINT", default_endpoint).strip()
     # Compose sets optional overrides to explicit empty strings; only audio's selected provider may
@@ -107,7 +109,7 @@ def profile(task):
     except ValueError:
         raise StageError(task, "Provider URL has an invalid port.", "configuration") from None
     protocol = provider if audio else os.getenv(task + "_PROTOCOL",
-        {"GENERATOR": "zhipu", "EXAMPLE_REVIEWER": "minimax"}.get(task, "openai"))
+        {"GENERATOR": "zhipu", "EXAMPLE_REVIEWER": "minimax", "SPEECH": "minimax"}.get(task, "openai"))
     native_default = default_origin and (protocol == "minimax" or not audio)
     key = os.getenv(task + "_API_KEY", "") or (os.getenv("MINIMAX_API_KEY", "") if native_default else "")
     if not key:
@@ -128,10 +130,11 @@ def profile(task):
             raise ValueError
     except ValueError:
         raise StageError(task, "Provider budgets must be positive numbers.", "configuration") from None
-    model_default = {"GENERATOR": "glm-5.3-flash"}.get(task, audio_defaults.get("model", "MiniMax-M3.1-Flash"))
+    model_default = {"GENERATOR": "glm-5.3-flash", "SPEECH": "speech-2.8-turbo"}.get(task,
+        audio_defaults.get("model", "MiniMax-M3.1-Flash"))
     model = os.getenv(task + "_MODEL", model_default).strip()
     # Same audio-only fallback: unrelated tasks keep base behavior for empty model overrides.
-    if audio and not model:
+    if (audio or task == "SPEECH") and not model:
         model = model_default
     return Profile(task, endpoint, model,
         key, timeout, tokens, protocol, thinking, effort, api_mode)
@@ -446,6 +449,36 @@ def audio_assessment(snapshot, audio_path, p=None):
     data = caller(replace(p, timeout=remaining), assessment_prompt(snapshot),
         {**assessment_task(snapshot), "expected_unit_ids": expected}, audio=audio)
     return validate_assessment(data, expected), p.metadata()
+
+
+# System voices from the MiniMax catalog; the Spain Spanish entry stays a candidate until the
+# documented listening check passes. Voice settings apply to later dispatches, including retries.
+SPEECH_VOICES = {"English": ("SPEECH_VOICE_ENGLISH", "English_CalmWoman"),
+                 "Spanish": ("SPEECH_VOICE_SPANISH", "Spanish_DeterminedManager"),
+                 "Chinese": ("SPEECH_VOICE_MANDARIN", "Chinese (Mandarin)_Warm_Bestie")}
+
+
+def speech_voice(language):
+    entry = SPEECH_VOICES.get(language)
+    if not entry:
+        raise StageError("SPEECH", "No speech voice is configured for this sentence's language.", "configuration")
+    return (os.getenv(entry[0]) or entry[1]).strip()
+
+
+def speech(p, text, voice):
+    """One synchronous MiniMax request returns complete mono MP3 bytes at 64 kb/s."""
+    body = {"model": p.model, "text": text, "stream": False, "output_format": "hex",
+            "voice_setting": {"voice_id": voice, "speed": 1, "vol": 1, "pitch": 0},
+            "audio_setting": {"sample_rate": 32000, "bitrate": 64000, "format": "mp3", "channel": 1}}
+    data = request(p, json=body)
+    try:
+        produced = data["data"]
+        sound = bytes.fromhex(produced["audio"])
+        if produced.get("status") != 2 or not sound:
+            raise ValueError
+    except (KeyError, ValueError, AttributeError, TypeError):
+        raise StageError(p.task, "The speech service returned no complete audio. Retry the side explicitly.") from None
+    return sound
 
 
 GENERATOR_RULES = """Create one short, idiomatic bilingual learning example for the supplied expression.

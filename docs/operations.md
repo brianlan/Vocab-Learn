@@ -350,6 +350,37 @@ It uses the same generation-plus-review pipeline and the same preservation guara
 on success, and offers an explicit retry on failure. Unlike this deployer command, a learner request leaves automatic
 rotation intent and pending jobs untouched, so a later qualifying Quick recall can still replace the manual pair normally.
 
+### Vocabulary sentence speech
+
+Every saved Example Pair revision (initial preparation, a source edit re-run, automatic rotation, a learner regeneration
+and an operator correction) durably queues one synthesis task per sentence side. Text becomes Ready immediately; each
+side becomes playable as soon as its own clip finishes. `SPEECH_*` settings are independent and default to a synchronous
+MiniMax request (`SPEECH_ENDPOINT=https://api.minimax.cn/v1/t2a_v2`, model `speech-2.8-turbo`, mono MP3 at 64 kb/s).
+`SPEECH_API_KEY` falls back to the shared `MINIMAX_API_KEY` at the MiniMax origin only. Per-language voices
+(`SPEECH_VOICE_ENGLISH`, `SPEECH_VOICE_SPANISH`, `SPEECH_VOICE_MANDARIN`) default to `English_CalmWoman`,
+`Spanish_DeterminedManager` and `Chinese (Mandarin)_Warm_Bestie`; a profile change applies to later dispatches,
+including explicit retries, while each successful file keeps its original synthesis provenance. The Spain Spanish voice
+remains a candidate until a listening check on representative sentences passes; record the audition outcome in the
+release handoff. These clips are development-only until that evidence exists.
+
+The worker gives speech one dedicated execution slot and prefers newly saved revisions over queued backfill, so a slow
+or failed synthesis never takes an assessment or preparation slot and fails only its own side. Finished MP3 files are
+private (`0600`) under `TTS_DIR` (default `/data/tts` in the `app_data` volume, inside the cold backup). Clips whose
+example revision keeps a reference — the card's active pair, a pinned cue, or an eligible completed rotation candidate,
+including archived cards and decks — are kept; a revision that loses every reference has its clips removed after 24
+hours of inactivity, leaving example text and frozen review history untouched.
+
+To preview and then queue missing or failed sides for a learner's active Ready pairs:
+
+```sh
+docker compose exec web python manage.py queue_example_speech alice --dry-run
+docker compose exec web python manage.py queue_example_speech alice
+```
+
+The preview writes nothing and calls nothing. Queueing affects only missing or failed sides, skips in-flight and
+completed work, and coalesces repeated runs. A failed side stays failed with its recorded category; rerun the command
+to retry it with the current profile.
+
 ## Persistence, audio expiry, and upgrade
 
 Named volumes are `app_data`, `audio_tmp`, `caddy_data` and `caddy_config`. SQLite starts in rollback-journal mode. Do not enable WAL without verifying the runtime/topology. Do not delete volumes during an ordinary restart.

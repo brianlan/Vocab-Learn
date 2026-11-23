@@ -10,9 +10,11 @@ from dataclasses import replace
 from datetime import timedelta
 from django.conf import settings
 from django.db import transaction, OperationalError
+from django.db.models import F, Q
+from django.db.models.functions import Now
 from django.utils import timezone
 from . import providers, lexical
-from .models import Attempt, Card, ExamplePair, GenerationJob
+from .models import Attempt, Card, ExamplePair, GenerationJob, SpeechClip
 from .review import TERMINAL, commit_grade, grade_units, valid_presentation, defer, adopt_corrected_cue
 
 
@@ -78,6 +80,135 @@ def cleanup_audio():
 
 
 @transaction.atomic
+def cleanup_speech():
+    """Reclaim clips whose example revision has been without any reference for a full day.
+    The grace starts when the last reference disappears and restarts if a reference returns;
+    the clip's own age never retires it. Example Revision text and frozen review records stay
+    untouched; current references are rechecked immediately before each retirement."""
+    now = timezone.now()
+    cutoff = now-timedelta(hours=24)
+    for clip in SpeechClip.objects.select_related("pair").all():
+        if speech_referenced(clip.pair):
+            if clip.unreferenced_at is not None:
+                SpeechClip.objects.filter(pk=clip.pk).update(unreferenced_at=None)
+            continue
+        if clip.unreferenced_at is None:
+            SpeechClip.objects.filter(pk=clip.pk).update(unreferenced_at=now)  # grace begins
+            continue
+        if clip.unreferenced_at <= cutoff:  # still unreferenced a full day later
+            if clip.file:
+                (settings.TTS_DIR/clip.file).unlink(missing_ok=True)
+            clip.delete()
+    # Interrupted or stale executions may leave final files and writer partials that no clip
+    # row references; the sweep stays inside the speech file namespace.
+    known = set(SpeechClip.objects.exclude(file="").values_list("file", flat=True))
+    for path in settings.TTS_DIR.glob("*.mp3*"):
+        if path.is_file() and path.name not in known and path.stat().st_mtime < time.time()-86400:
+            path.unlink(missing_ok=True)
+
+
+def speech_referenced(pair):
+    """Current references keep clips: the card's active pair, a pinned cue, and any completed
+    rotation candidate carrying the current source and rotation token. Archived decks count too."""
+    return (Card.objects.filter(Q(active_pair=pair) | Q(cue_pair=pair)).exists() or
+            GenerationJob.objects.filter(mode="rotation", state="done", result=pair,
+                token=F("card__rotation_token"), source_version=F("card__source_version")).exists())
+
+
+def enqueue_speech(pair, *, backfill=False):
+    """Queue both sentence sides in the caller's pair-save transaction; a rejected or rolled-back
+    save therefore produces no speech tasks."""
+    card = pair.card
+    for side, language in [("target", card.target_language), ("native", card.native_language)]:
+        SpeechClip.objects.get_or_create(pair=pair, side=side, defaults={"language": language, "backfill": backfill})
+
+
+def available_speech(pair):
+    return {clip.side: clip for clip in SpeechClip.objects.filter(pair=pair, state="done").exclude(file="")}
+
+
+def expire_speech():
+    SpeechClip.objects.filter(state="processing", deadline__lte=timezone.now()).update(
+        state="failed", claim=uuid.uuid4(), error="Speech execution expired. Retry the side explicitly.",
+        error_category="timeout")
+
+
+@transaction.atomic
+def claim_speech():
+    """Atomic claim, mirroring claim_work: a competing connection that already selected the
+    same queued row loses the conditional claim and gets nothing instead of a duplicate."""
+    expire_speech()
+    clip = SpeechClip.objects.filter(state="queued").order_by("backfill", "requested_at", "pk").first()
+    if not clip:
+        return None
+    now = timezone.now()
+    deadline = now+timedelta(seconds=settings.SPEECH_TIMEOUT_SECONDS)
+    claim = uuid.uuid4()
+    claimed = SpeechClip.objects.filter(pk=clip.pk, claim=clip.claim, state="queued").update(
+        state="processing", claim=claim, started_at=now, deadline=deadline)
+    return (clip.pk, claim, deadline) if claimed else None
+
+
+def process_speech(clip_id, claim):
+    clip = SpeechClip.objects.select_related("pair__card").get(pk=clip_id)
+    if clip.state != "processing" or clip.claim != claim:
+        return
+    if not speech_referenced(clip.pair):
+        clip.state, clip.claim, clip.error = "skipped", uuid.uuid4(), "The example is no longer referenced."
+        clip.save(update_fields=["state", "claim", "error"])
+        return
+    text = getattr(clip.pair, {"target": "target_sentence", "native": "native_sentence"}[clip.side]).strip()
+    p = bounded_profile("SPEECH", clip.deadline)
+    voice = providers.speech_voice(clip.language)
+    # Record model and voice at dispatch; each successful file keeps its synthesis provenance.
+    if not SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").update(
+            provenance={**clip.provenance, "voice": voice, "language": clip.language, **p.metadata()}):
+        return
+    sound = providers.speech(replace(p, timeout=min(p.timeout, remaining(clip.deadline))), text, voice)
+    publish_speech(clip_id, claim, sound)
+
+
+def publish_speech(clip_id, claim, sound):
+    """Claim-specific file names: a stale execution can never replace a newer clip's file.
+    Finalization rechecks the claim, remaining budget, and current references in one short
+    transaction; any failed guard reclaims the unpublished artifact instead of publishing it."""
+    name = f"{clip_id}.{claim.hex}.mp3"
+    path = settings.TTS_DIR/name
+    temporary = path.with_name(path.name+".part")
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(sound)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        # The renamed directory entry must be durable before the database records Done.
+        directory = os.open(settings.TTS_DIR, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        raise providers.StageError("SPEECH", "The clip could not be stored. Retry the side explicitly.", "worker") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+    with transaction.atomic():
+        clip = SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").first()
+        referenced = bool(clip and speech_referenced(clip.pair))
+        if referenced:
+            # The deadline and completion clock are evaluated inside the UPDATE statement, after
+            # SQLite grants the writer lock: a lock wait that crosses the deadline can neither
+            # record Done nor backdate completed_at (the save_stage/save_pair clock discipline).
+            published = SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing",
+                deadline__gt=Now()).update(
+                state="done", file=name, completed_at=Now(), error="", error_category="")
+        else:
+            published = False
+    if not published:
+        path.unlink(missing_ok=True)  # stale, expired, or unreferenced: never publish the artifact
+
+
+@transaction.atomic
 def save_stage(attempt_id, claim, **fields):
     a = Attempt.objects.select_related("presentation").get(pk=attempt_id)
     now = timezone.now()
@@ -100,7 +231,7 @@ def save_stage(attempt_id, claim, **fields):
 
 @transaction.atomic
 def fail(kind, job_id, claim, error):
-    model = Attempt if kind == "assessment" else GenerationJob
+    model = {"assessment": Attempt, "generation": GenerationJob, "speech": SpeechClip}[kind]
     job = model.objects.get(pk=job_id)
     if job.claim != claim or job.state not in ["processing", "submitted", "queued"]:
         return
@@ -111,7 +242,7 @@ def fail(kind, job_id, claim, error):
     if kind == "assessment":
         job.error_stage = error.stage if isinstance(error, providers.StageError) else "worker"
         fields.append("error_stage")
-    else:
+    elif kind == "generation":
         job.provenance = {**job.provenance, "failed_stage": getattr(error, "stage", "worker")}
         fields.append("provenance")
     if kind == "generation" and job.mode == "manual" and not current_generation(job, job.card):
@@ -195,6 +326,7 @@ def save_pair(job_id, claim, data, provenance):
         pair = ExamplePair.objects.create(card=job.card, source_version=job.source_version, provenance=provenance, **data)
         if job.mode == "initial":
             Card.objects.filter(pk=job.card_id).update(active_pair=pair, ready=True)
+        enqueue_speech(pair)
     if pair is None:
         return None
     job.result, job.provenance, job.state = pair, {**job.provenance, **provenance, "phase": "ready"}, "done"
@@ -219,6 +351,7 @@ def save_corrected_pair(card_id, source_version, previous_pair_id, data, provena
         card.generation_jobs.filter(mode="rotation", state__in=["queued", "processing", "failed"]).update(
             state="cancelled", claim=uuid.uuid4())
     adopt_corrected_cue(card)
+    enqueue_speech(pair)
     return pair
 
 

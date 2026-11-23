@@ -14,13 +14,13 @@ def execute(kind, job_id, claim, paths):
     os.environ.update(paths)
     import django
     django.setup()
-    from .work import process_assessment, process_generation, fail
+    from .work import process_assessment, process_generation, process_speech, fail
     from .providers import StageError
     def interrupted(signum, frame):
         raise StageError("worker", "Execution was stopped before completion. Retry explicitly.")
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        (process_assessment if kind == "assessment" else process_generation)(job_id, claim)
+        (process_assessment if kind == "assessment" else process_generation if kind == "generation" else process_speech)(job_id, claim)
     except StageError as error:
         fail(kind, job_id, claim, error)
     except Exception:
@@ -49,7 +49,7 @@ def terminate(process, grace):
 def run_worker(once=False, concurrency=None):
     from .models import Attempt
     from .review import expire_attempt
-    from .work import claim_work, expire_generations, cleanup_audio, fail
+    from .work import claim_work, claim_speech, expire_generations, expire_speech, cleanup_audio, cleanup_speech, fail
     from .providers import StageError
     context = multiprocessing.get_context("spawn")
     active = []
@@ -75,18 +75,36 @@ def run_worker(once=False, concurrency=None):
                     deadline__gt=now+timedelta(seconds=settings.ASSESSMENT_TIMEOUT_SECONDS)):
                 expire_attempt(a)
             expire_generations()
+            expire_speech()
             if time.monotonic()-last_cleanup >= 60:
                 cleanup_audio()
+                try:
+                    cleanup_speech()
+                except OSError as fault:
+                    # A speech-storage problem must never interrupt assessments or preparation.
+                    print(f"Speech cleanup stopped early ({fault.__class__.__name__}); it will retry on the next pass.",
+                        flush=True)
                 last_cleanup = time.monotonic()
-            while len(active) < (concurrency or settings.WORKER_CONCURRENCY):
+            slots = concurrency or settings.WORKER_CONCURRENCY
+            # Speech synthesis owns one dedicated slot; a stalled clip never takes an
+            # assessment or preparation slot, and only one clip synthesizes at a time.
+            while sum(item[0] != "speech" for item in active) < slots:
                 job = claim_work()
                 if not job:
                     break
                 connections.close_all()
-                paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR)}
+                paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR)}
                 process = context.Process(target=execute, args=(*job[:3], paths))
                 process.start()
                 active.append((*job, process))
+            if sum(item[0] == "speech" for item in active) < 1 and len(active) < slots+1:
+                clip = claim_speech()
+                if clip:
+                    connections.close_all()
+                    paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR)}
+                    process = context.Process(target=execute, args=("speech", *clip[:2], paths))
+                    process.start()
+                    active.append(("speech", *clip, process))
             if once and not active:
                 break
             time.sleep(0.2)
