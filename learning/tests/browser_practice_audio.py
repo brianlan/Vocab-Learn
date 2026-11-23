@@ -84,6 +84,7 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.hold_audio = False
         self.held_audio = []
         self.held_next = []
+        self.held_restart = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -104,6 +105,8 @@ class PracticeAudioBrowserTests(unittest.TestCase):
                 route.fulfill(content_type="audio/wav", body=CLIP)
         elif path == "/next":
             self.held_next.append(route)
+        elif path == "/review/p-1/restart/":
+            self.held_restart.append(route)
         elif path == "/status/":
             body = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
             route.fulfill(content_type="application/json", body=body)
@@ -129,7 +132,12 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             '<div id="back" hidden></div><div id="technical-message" class="notice" role="status" hidden></div>'
             '<div id="reconnect-controls" class="row" hidden><button class="button" data-action="check">Check</button>'
             '<button class="button" data-action="resend">Resend</button>'
-            '<button class="button" data-action="exit">Exit</button></div></article><div id="clock-recovery" hidden></div>')
+            '<button class="button" data-action="exit">Exit</button></div></article>'
+            '<div id="clock-recovery" class="notice" hidden><p>Timing was interrupted. Restart this question with a new clock, '
+            'or choose Skip/Forgot. Your learning progress is unchanged.</p>'
+            '<form method="post" action="/review/p-1/restart/">'
+            '<input type="hidden" name="csrfmiddlewaretoken" value="synthetic-csrf">'
+            '<button class="button">Restart question</button></form></div>')
         article = article.replace("p-1", presentation)
         return f'<!doctype html><html><head><link rel="icon" href="data:,"></head><body>{article}<script>{SCRIPT}</script></body></html>'
 
@@ -303,6 +311,58 @@ class PracticeAudioBrowserTests(unittest.TestCase):
                 self.assertEqual(self.page.evaluate("window.playCalls"), 1)
                 self.page.wait_for_timeout(300)
                 self.assertEqual(self.page.evaluate("window.playCalls"), 1)
+
+    def test_restart_submit_cancels_playing_and_pending_audio_before_navigation(self):
+        events = []
+        self.page.on("console", lambda message: events.append(message.text))
+        self.page.add_init_script("localStorage.removeItem('vocab-clock:p-1')")
+        for pending in (False, True):
+            for keyboard in (False, True):
+                with self.subTest(pending=pending, keyboard=keyboard):
+                    self.audio_requests = []
+                    self.hold_audio = pending
+                    self.held_audio = []
+                    self.held_restart = []
+                    self.load(first_display="0", autoplay="0")
+                    self.page.wait_for_selector("#clock-recovery form", state="visible")
+                    self.page.click("[data-play]")
+                    self.wait_for_audio("target")
+                    if pending:
+                        self.assertEqual(self.page.evaluate("document.querySelector('#clip-player').readyState"), 0)
+                    else:
+                        self.until("document.querySelector('#clip-player').currentTime > 0.1")
+                    self.page.evaluate("""() => {
+                        const player = document.querySelector('#clip-player');
+                        document.addEventListener('submit', event => {
+                            if (event.target.closest('#clock-recovery')) console.log('restart-paused:' + player.paused);
+                        });
+                        player.addEventListener('playing', () => console.log('old-clip-playing'));
+                    }""")
+                    events.clear()
+                    button = self.page.locator("#clock-recovery button")
+                    if keyboard:
+                        button.focus()
+                        button.press("Enter", no_wait_after=True)
+                    else:
+                        button.click(no_wait_after=True)
+                    for _ in range(30):
+                        if self.held_restart:
+                            break
+                        self.page.wait_for_timeout(100)
+                    self.assertEqual(len(self.held_restart), 1)
+                    request = self.held_restart[0].request
+                    self.assertEqual(request.method, "POST")
+                    self.assertEqual(request.post_data, "csrfmiddlewaretoken=synthetic-csrf")
+                    self.assertEqual(self.page.url, ORIGIN + "/fixture")
+                    self.assertIn("restart-paused:true", events)
+                    self.hold_audio = False
+                    for route in self.held_audio:
+                        route.fulfill(content_type="audio/wav", body=CLIP)
+                    self.page.wait_for_timeout(400)
+                    self.assertNotIn("old-clip-playing", events)
+                    self.held_restart[0].fulfill(content_type="text/html", body=self.fixture_html(
+                        presentation="p-2", autoplay="0"))
+                    self.page.wait_for_url(ORIGIN + "/review/p-1/restart/")
 
     def test_polling_preserves_one_player_and_back_controls_without_implicit_replay(self):
         self.statuses = [PROCESSING_A, PROCESSING_B, ASSESSED]

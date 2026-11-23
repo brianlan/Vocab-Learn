@@ -170,6 +170,7 @@
     finally { checking = false; }
   }
   function startPolling() { if (!polling) polling = setInterval(check, 1200); }
+  $("#clock-recovery form").addEventListener("submit", stopClip);
   card.addEventListener("click", async event => {
     if (event.target.closest("#next-card")) { stopClip(); return; }
     const playButton = event.target.closest("[data-play]");
