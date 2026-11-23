@@ -17,6 +17,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (ROOT / "static/review.js").read_text()
+PRONUNCIATION_SCRIPT = (ROOT / "static/pronunciation.js").read_text()
 ORIGIN = "https://practice.test"  # getUserMedia needs a secure context
 
 
@@ -33,6 +34,9 @@ CLIP = clip_bytes()
 
 def back_html(marker=""):
     return ('<section class="recall-result"><span class="eyebrow">YOUR RECALL THIS TIME</span>' + marker + "</section>"
+        '<button type="button" class="button pronunciation-button" aria-label="Play pronunciation"'
+        ' data-pronounce="sentence" data-pronounce-language="English"><span aria-hidden="true">🔊︎</span></button>'
+        '<span class="quiet" role="status" data-pronunciation-status></span>'
         '<details class="paired-examples" open><summary>Paired examples</summary>'
         '<p><button class="button" data-play="target" data-src="/review/p-1/audio/target/">Play</button> The sentence.</p>'
         '<p><button class="button" data-play="native" data-src="/review/p-1/audio/native/">Play</button> 句子。</p></details>'
@@ -139,7 +143,8 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             '<input type="hidden" name="csrfmiddlewaretoken" value="synthetic-csrf">'
             '<button class="button">Restart question</button></form></div>')
         article = article.replace("p-1", presentation)
-        return f'<!doctype html><html><head><link rel="icon" href="data:,"></head><body>{article}<script>{SCRIPT}</script></body></html>'
+        return (f'<!doctype html><html><head><link rel="icon" href="data:,"></head><body>{article}'
+            f'<script>{SCRIPT}</script><script>{PRONUNCIATION_SCRIPT}</script></body></html>')
 
     def load(self, *, init=None, **kwargs):
         self.fixture = self.fixture_html(**kwargs)
@@ -363,6 +368,42 @@ class PracticeAudioBrowserTests(unittest.TestCase):
                     self.held_restart[0].fulfill(content_type="text/html", body=self.fixture_html(
                         presentation="p-2", autoplay="0"))
                     self.page.wait_for_url(ORIGIN + "/review/p-1/restart/")
+
+    def test_pronunciation_cancels_playing_and_pending_sentence_without_blocking_word_speech(self):
+        # Adapt only speech output; sentence playback and its pending response use native media.
+        self.page.add_init_script("""window.wordRequests = [];
+            window.SpeechSynthesisUtterance = function (text) { this.text = text; };
+            Object.defineProperty(window, 'speechSynthesis', {value: {
+                getVoices: () => [{lang: 'en-US'}], cancel: () => {},
+                speak: utterance => window.wordRequests.push({text: utterance.text, lang: utterance.lang,
+                    sentencePaused: document.querySelector('#clip-player').paused})
+            }});""")
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                self.audio_requests = []
+                self.hold_audio = pending
+                self.held_audio = []
+                self.load(autoplay="0")
+                self.page.click('[data-action=skip]')
+                self.page.wait_for_selector('[data-pronounce]', state="visible")
+                self.page.click('#back [data-play=target]')
+                self.wait_for_audio("target")
+                if pending:
+                    self.assertEqual(self.page.evaluate("document.querySelector('#clip-player').readyState"), 0)
+                else:
+                    self.until("document.querySelector('#clip-player').currentTime > 0.1")
+                self.page.evaluate("""document.querySelector('#clip-player').addEventListener('playing',
+                    () => window.lateSentenceStarted = true)""")
+                self.page.click('[data-pronounce] span')  # nested icon click still reaches both handlers
+                self.assertEqual(self.page.evaluate("window.wordRequests"), [
+                    {"text": "sentence", "lang": "en-US", "sentencePaused": True}])
+                self.hold_audio = False
+                for route in self.held_audio:
+                    route.fulfill(content_type="audio/wav", body=CLIP)
+                self.until("document.querySelector('#clip-player').readyState >= 2")
+                self.page.wait_for_timeout(400)
+                self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+                self.assertFalse(self.page.evaluate("Boolean(window.lateSentenceStarted)"))
 
     def test_polling_preserves_one_player_and_back_controls_without_implicit_replay(self):
         self.statuses = [PROCESSING_A, PROCESSING_B, ASSESSED]
