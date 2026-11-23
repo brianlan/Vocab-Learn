@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import io
 import threading
@@ -473,6 +474,39 @@ class SpeechWorkerTests(TransactionTestCase):
         for _, claim, _ in winners:
             self.assertTrue(SpeechClip.objects.filter(claim=claim, state="processing").exists())
 
+    def test_a_writer_lock_wait_across_the_deadline_never_records_done(self):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        _, _, card = self.prepared_card("locker")
+        row = card.active_pair.speech_clips.get(side="target")
+        claim, started = uuid.uuid4(), timezone.now()
+        SpeechClip.objects.filter(pk=row.pk).update(state="processing", claim=claim,
+            started_at=started, deadline=started+timedelta(seconds=2))
+        holder = sqlite3.connect(str(connections["default"].settings_dict["NAME"]), timeout=10)
+        holder.execute("BEGIN IMMEDIATE")  # the main thread holds the writer lock
+        outcome = []
+        def publish():
+            try:
+                connections.close_all()  # this thread gets its own connection
+                with override_settings(TTS_DIR=folder):
+                    work.publish_speech(row.pk, claim, b"waited-too-long")
+                outcome.append("finalized")
+            finally:
+                connections.close_all()
+        publisher = threading.Thread(target=publish)
+        publisher.start()
+        time.sleep(2.5)  # released only after the budget expired while finalization waits
+        holder.commit(); holder.close()
+        publisher.join(timeout=10)
+        connections.close_all()
+        self.assertEqual(outcome, ["finalized"])
+        row = SpeechClip.objects.get(pk=row.pk)
+        self.assertNotEqual(row.state, "done")
+        self.assertFalse(row.file)
+        self.assertIsNone(row.completed_at)
+        self.assertFalse(work.available_speech(card.active_pair))
+        self.assertFalse((folder/f"{row.pk}.{claim.hex}.mp3").exists())
+
     def test_speech_storage_faults_never_stop_the_supervisor(self):
         folder = Path(tempfile.mkdtemp())
         tts = folder/"tts"; tts.mkdir()
@@ -494,7 +528,7 @@ class SpeechWorkerTests(TransactionTestCase):
         self.assertTrue(stray.exists())  # the sweep could not run, but the supervisor is alive
 
     def test_a_stalled_speech_child_leaves_assessment_capacity_healthy(self):
-        stop = threading.Event(); requests = []
+        stop = threading.Event(); stalled = threading.Event(); requests = []
         class Handler(BaseHTTPRequestHandler):
             def do_POST(inner):
                 body = json.loads(inner.rfile.read(int(inner.headers["Content-Length"])))
@@ -502,6 +536,7 @@ class SpeechWorkerTests(TransactionTestCase):
                 requests.append("speech" if spoken else "assessment")
                 inner.send_response(200); inner.send_header("Content-Type", "application/json"); inner.end_headers()
                 if spoken:
+                    stalled.set()  # the speech request is now genuinely held open mid-child
                     try:
                         while not stop.wait(0.04):  # hold the synthesis request open mid-child
                             inner.wfile.write(b" "); inner.wfile.flush()
@@ -520,24 +555,28 @@ class SpeechWorkerTests(TransactionTestCase):
         self.addCleanup(stop.set)
         self.addCleanup(server.shutdown)
         _, _, card = self.prepared_card("stall-user")
-        # A healthy spoken assessment on a generic card in its own deck.
         spoken_deck = Deck.objects.create(owner=card.deck.owner, name="Healthy")
         authoring.save_card(spoken_deck, "generic", GENERIC)
-        p = review.next_question(card.deck.owner, spoken_deck)
-        a = review.submit(p, "speak", 1, "missing")
-        a.audio_name = "stall.audio"
-        (audio/a.audio_name).write_bytes(audio_bytes())
-        a.save()
         env = patch.dict(os.environ, {"SPEECH_ENDPOINT": f"http://127.0.0.1:{server.server_port}/t2a_v2",
             "SPEECH_API_KEY": "test-only", "ALLOW_INSECURE_PROVIDER_HTTP": "1",
             "AUDIO_ASSESS_ENDPOINT": f"http://127.0.0.1:{server.server_port}/judge",
             "AUDIO_ASSESS_API_KEY": "test-only", "AUDIO_ASSESS_API_MODE": "chat_completions"})
-        # The supervisor must stay in the main thread (signal handlers), so a watcher releases
-        # the stalled synthesis once the healthy assessment has completed around it.
+        # The supervisor must stay in the main thread (signal handlers), so a watcher queues the
+        # healthy assessment only after the speech child is provably stalled, then releases it.
         observed = []
         def watch():
-            limit = time.monotonic()+40
             try:
+                if not stalled.wait(30):
+                    return
+                connections.close_all()
+                # Submit the assessment while the speech child already occupies its slot: if
+                # speech were counted against the normal slots, this submission could never run.
+                p = review.next_question(card.deck.owner, spoken_deck)
+                a = review.submit(p, "speak", 1, "missing")
+                a.audio_name = "stall.audio"
+                (audio/a.audio_name).write_bytes(audio_bytes())
+                a.save()
+                limit = time.monotonic()+40
                 while time.monotonic() < limit:
                     connections.close_all()
                     attempt = Attempt.objects.get(pk=a.pk)
@@ -556,7 +595,6 @@ class SpeechWorkerTests(TransactionTestCase):
         watcher.join(timeout=5)
         connections.close_all()
         self.assertEqual(observed, [("assessed", "processing")])  # assessment completed around the stalled child
-        self.assertEqual(Attempt.objects.get(pk=a.pk).state, "assessed")
         self.assertIn("assessment", requests)
         clip = SpeechClip.objects.get(pair=card.active_pair, side="target")
         self.assertEqual(clip.state, "done")  # the released side then published normally

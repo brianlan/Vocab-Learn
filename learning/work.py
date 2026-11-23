@@ -11,6 +11,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.db import transaction, OperationalError
 from django.db.models import F, Q
+from django.db.models.functions import Now
 from django.utils import timezone
 from . import providers, lexical
 from .models import Attempt, Card, ExamplePair, GenerationJob, SpeechClip
@@ -191,14 +192,19 @@ def publish_speech(clip_id, claim, sound):
         raise providers.StageError("SPEECH", "The clip could not be stored. Retry the side explicitly.", "worker") from None
     finally:
         temporary.unlink(missing_ok=True)
-    now = timezone.now()
     with transaction.atomic():
         clip = SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").first()
-        eligible = bool(clip and clip.deadline and clip.deadline > now and speech_referenced(clip.pair))
-        if eligible:
-            SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").update(
-                state="done", file=name, completed_at=now, error="", error_category="")
-    if not eligible:
+        referenced = bool(clip and speech_referenced(clip.pair))
+        if referenced:
+            # The deadline and completion clock are evaluated inside the UPDATE statement, after
+            # SQLite grants the writer lock: a lock wait that crosses the deadline can neither
+            # record Done nor backdate completed_at (the save_stage/save_pair clock discipline).
+            published = SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing",
+                deadline__gt=Now()).update(
+                state="done", file=name, completed_at=Now(), error="", error_category="")
+        else:
+            published = False
+    if not published:
         path.unlink(missing_ok=True)  # stale, expired, or unreferenced: never publish the artifact
 
 
