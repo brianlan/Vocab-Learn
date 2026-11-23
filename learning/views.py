@@ -12,7 +12,7 @@ from django.core.exceptions import RequestDataTooBig, ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q
-from django.http import JsonResponse, Http404
+from django.http import JsonResponse, Http404, FileResponse
 from django.shortcuts import get_object_or_404, redirect, render as page
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
 from . import authoring, lexical, review, work
 from .forms import DeckForm, CardForm, ImportForm, LearnerPreferencesForm
-from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob, LearnerPreferences
+from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob, LearnerPreferences, SpeechClip
 from .rendering import render
 
 
@@ -31,12 +31,14 @@ def personal_settings(request):
     preferences = LearnerPreferences.objects.filter(user=request.user).first() or LearnerPreferences(user=request.user)
     form = LearnerPreferencesForm(request.POST if request.method == "POST" else None, initial={
         "selection_add_enabled": preferences.selection_add_enabled,
+        "autoplay_enabled": preferences.autoplay_enabled,
         "language_pair": f"{preferences.target_language}:{preferences.native_language}",
     })
     if request.method == "POST" and form.is_valid():
         target_language, native_language = form.cleaned_data["language_pair"].split(":")
         LearnerPreferences.objects.update_or_create(user=request.user, defaults={
             "selection_add_enabled": form.cleaned_data["selection_add_enabled"],
+            "autoplay_enabled": form.cleaned_data["autoplay_enabled"],
             "target_language": target_language, "native_language": native_language,
         })
         messages.success(request, "Settings saved.")
@@ -322,7 +324,56 @@ def legacy_practice(request, legacy_id=None):
     return redirect("dashboard")
 
 
-def payload(request, a):
+def practice_audio(request, p, attempt):
+    """Playable clip URLs for the current reveal state; empty means no controls.
+    Before a committed action only the front-visible sentence is offered, so a guessed
+    URL or a re-rendered template can never surface the hidden counterpart."""
+    pair_id = p.snapshot.get("pair_id")
+    if p.snapshot.get("kind") != "vocabulary" or not pair_id:
+        return {}
+    ready = {clip.side for clip in SpeechClip.objects.filter(pair_id=pair_id, state="done").exclude(file="")
+             if (settings.TTS_DIR/clip.file).is_file()}
+    if attempt is None:
+        ready &= {"target" if p.snapshot.get("direction") == "recognition" else "native"}
+    return {side: {"side": side, "url": reverse("clip_audio", args=[p.pk, side])}
+            for side in ("target", "native") if side in ready}
+
+
+@login_required
+@require_GET
+def clip_audio(request, presentation_id, side):
+    p = get_object_or_404(Presentation.objects.select_related("card__deck"), pk=presentation_id, user=request.user)
+    visible = "target" if p.snapshot.get("direction") == "recognition" else "native"
+    attempt = Attempt.objects.filter(presentation=p).first()
+    if attempt is None and (side != visible or not review.valid_presentation(p)):
+        raise Http404("This clip is not available.")
+    if side not in ("target", "native"):
+        raise Http404("This clip is not available.")
+    clip = (SpeechClip.objects.filter(pair_id=p.snapshot.get("pair_id"), side=side, state="done")
+            .exclude(file="").first()) if p.snapshot.get("kind") == "vocabulary" else None
+    if not clip:
+        raise Http404("This clip is not available.")
+    try:
+        audio = (settings.TTS_DIR/clip.file).open("rb")
+    except FileNotFoundError:
+        raise Http404("This clip is not available.") from None
+    response = FileResponse(audio, content_type="audio/mpeg")
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
+def render_back(request, a, audio):
+    p = a.presentation
+    card = Card.objects.get(pk=p.card_id)
+    return render_to_string("learning/back.html", {"attempt": a, "p": p, "back": p.snapshot,
+        "explanation_html": render(p.snapshot["explanation"]).html, "label": review.LABELS.get(a.grade),
+        "next_review": review.relative_due(a.next_due or card.available_at) if a.state != "processing" and a.state != "submitted" else "After checking",
+        "practice_url": practice_url(p.scope_deck_id), "audio": audio,
+        "terminal": a.state in review.TERMINAL,
+        "can_retry": a.state == "failed" and a.duration is not None and a.error_stage != "timing"}, request=request)
+
+
+def payload(request, a, *, fresh_page=False):
     p = a.presentation
     a = review.expire_attempt(a)
     a.presentation = p
@@ -330,12 +381,7 @@ def payload(request, a):
     return {"state": a.state, "transcript": a.transcript, "grade": a.grade, "next_due": a.next_due.isoformat() if a.next_due else None,
         "deadline": a.deadline.isoformat() if a.deadline and a.state in ("submitted", "processing") else None,
         "metrics": counts(request.user, p.scope_deck), "collection": card.collection,
-        "back_html": render_to_string("learning/back.html", {"attempt": a, "p": p, "back": p.snapshot,
-        "explanation_html": render(p.snapshot["explanation"]).html, "label": review.LABELS.get(a.grade),
-        "next_review": review.relative_due(a.next_due or card.available_at) if a.state != "processing" and a.state != "submitted" else "After checking",
-        "practice_url": practice_url(p.scope_deck_id),
-        "terminal": a.state in review.TERMINAL,
-        "can_retry": a.state == "failed" and a.duration is not None and a.error_stage != "timing"}, request=request)}
+        "back_html": render_back(request, a, {} if fresh_page and a.state in review.TERMINAL else practice_audio(request, p, a))}
 
 
 @login_required
@@ -349,11 +395,18 @@ def presentation_view(request, presentation_id):
     front = {key: p.snapshot[key] for key in ["question_html", "direction", "language", "units", "kind"]}
     cue_key = "target_language" if front["direction"] == "recognition" else "native_language"
     front["cue_language"] = p.snapshot.get(cue_key, "") if front["kind"] == "vocabulary" else ""
-    data = payload(request, attempt) if attempt else None
+    data = payload(request, attempt, fresh_page=True) if attempt else None
     first_display = Presentation.objects.filter(pk=p.pk, clock_claimed=False).update(clock_claimed=True) == 1 if not attempt else False
+    if attempt:
+        front_audio = None
+    else:
+        audio = practice_audio(request, p, None) if review.valid_presentation(p) else {}
+        front_audio = next(iter(audio.values()), None)
+    autoplay = LearnerPreferences.objects.filter(user=request.user).values_list("autoplay_enabled", flat=True).first()
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",
         "initial_state": data["state"] if data else "question", "initial_deadline": data["deadline"] if data else "",
-        "first_display": first_display, "nav": "study", **counts(request.user, p.scope_deck)})
+        "first_display": first_display, "front_audio": front_audio, "autoplay": autoplay is not False,
+        "nav": "study", **counts(request.user, p.scope_deck)})
 
 
 def owned_presentation(request, presentation_id):

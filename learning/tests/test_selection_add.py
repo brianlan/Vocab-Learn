@@ -61,8 +61,9 @@ class SelectionAddTests(TestCase):
             self.assertEqual(response.context["selection_add"]["target_language"], "English")
             self.assertEqual(response.context["selection_add"]["native_language"], "Chinese")
         form = response.context["form"]
-        self.assertEqual(set(form.fields), {"selection_add_enabled", "language_pair"})
+        self.assertEqual(set(form.fields), {"selection_add_enabled", "autoplay_enabled", "language_pair"})
         self.assertTrue(form["selection_add_enabled"].value())
+        self.assertTrue(form["autoplay_enabled"].value())
         self.assertEqual(form["language_pair"].value(), "English:Chinese")
         self.bootstrap()
         self.assertFalse(LearnerPreferences.objects.exists())

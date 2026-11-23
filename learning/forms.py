@@ -5,6 +5,7 @@ from .models import Deck
 
 class LearnerPreferencesForm(forms.Form):
     selection_add_enabled = forms.BooleanField(required=False, label="Enable selection add")
+    autoplay_enabled = forms.BooleanField(required=False, label="Autoplay sentence audio")
     language_pair = forms.ChoiceField(label="Default language pair", choices=[
         (f"{target}:{native}", f"{target} → {native}") for target, native in sorted(LANGUAGE_PAIRS)
     ])

@@ -22,6 +22,7 @@ urlpatterns = [
     path("review/<uuid:presentation_id>/", views.presentation_view, name="presentation"),
     path("review/<uuid:presentation_id>/action/", views.action, name="action"),
     path("review/<uuid:presentation_id>/status/", views.status, name="status"),
+    path("review/<uuid:presentation_id>/audio/<str:side>/", views.clip_audio, name="clip_audio"),
     path("review/<uuid:presentation_id>/retry/", views.attempt_retry, name="attempt_retry"),
     path("review/<uuid:presentation_id>/exit/", views.attempt_exit, name="attempt_exit"),
     path("review/<uuid:presentation_id>/restart/", views.restart_question, name="restart_question"),
