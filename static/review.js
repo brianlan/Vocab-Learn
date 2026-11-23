@@ -34,7 +34,7 @@
     $("#record-controls").hidden = !["recording", "permission"].includes(phase);
     $("#stop").hidden = phase !== "recording";
     $("#recording-indicator").classList.toggle("recording", phase === "recording");
-    document.querySelectorAll("#front [data-play]").forEach(b => b.disabled = ["permission", "recording"].includes(phase));
+    document.querySelectorAll("#front [data-play]").forEach(b => b.disabled = phase !== "question");
   }
   function playClip(button) {
     if (!player) return;

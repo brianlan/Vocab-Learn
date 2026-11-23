@@ -82,6 +82,27 @@ class PracticeAudioTests(TestCase):
         for side in ("target", "native"):
             self.assertEqual(self.client.get(self.clip_url(p, side)).status_code, 404)
 
+    def test_speakers_follow_selectable_sentences_outside_the_action_grid(self):
+        card = self.prepared_card()
+        self.publish(card.active_pair)
+        for direction, side, language in (("recognition", "target", "English"), ("production", "native", "Chinese")):
+            p = self.present(card, direction)
+            page = self.client.get(reverse("presentation", args=[p.pk])).content.decode()
+            self.assertInHTML(f'<div class="sentence-audio"><span data-selection-region data-selection-language="{language}">'
+                f'{p.snapshot["question_html"]}</span><button type="button" class="button pronunciation-button" '
+                f'aria-label="Play question sentence" data-play="{side}" data-src="{self.clip_url(p, side)}">'
+                '<span aria-hidden="true">🔊︎</span></button></div>', page)
+            self.assertInHTML('<div class="front-actions"><button class="button" data-action="skip">▷ &nbsp; Skip</button>'
+                '<button class="button primary" id="speak" data-action="speak">♩ &nbsp; Speak</button>'
+                '<button class="button" data-action="forgot">? &nbsp; Forgot</button></div>', page)
+        review.submit(p, "skip")
+        back = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
+        for side, language in (("target", "English"), ("native", "Chinese")):
+            self.assertInHTML(f'<p class="sentence-audio"><span data-selection-region data-selection-language="{language}">'
+                f'{p.snapshot[side+"_sentence"]}</span><button type="button" class="button pronunciation-button" '
+                f'aria-label="Play {side} example sentence ({language})" data-play="{side}" data-src="{self.clip_url(p, side)}">'
+                '<span aria-hidden="true">🔊︎</span></button></p>', back)
+
     def test_a_committed_reveal_opens_both_sides_and_keeps_them_through_polling(self):
         card = self.prepared_card()
         self.publish(card.active_pair)

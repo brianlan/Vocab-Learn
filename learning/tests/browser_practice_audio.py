@@ -38,8 +38,12 @@ def back_html(marker=""):
         ' data-pronounce="sentence" data-pronounce-language="English"><span aria-hidden="true">🔊︎</span></button>'
         '<span class="quiet" role="status" data-pronunciation-status></span>'
         '<details class="paired-examples" open><summary>Paired examples</summary>'
-        '<p><button class="button" data-play="target" data-src="/review/p-1/audio/target/">Play</button> The sentence.</p>'
-        '<p><button class="button" data-play="native" data-src="/review/p-1/audio/native/">Play</button> 句子。</p></details>'
+        '<p class="sentence-audio"><span data-selection-region>The sentence.</span>'
+        '<button type="button" class="button pronunciation-button" aria-label="Play target example sentence (English)"'
+        ' data-play="target" data-src="/review/p-1/audio/target/"><span aria-hidden="true">🔊︎</span></button></p>'
+        '<p class="sentence-audio"><span data-selection-region>句子。</span>'
+        '<button type="button" class="button pronunciation-button" aria-label="Play native example sentence (Chinese)"'
+        ' data-play="native" data-src="/review/p-1/audio/native/"><span aria-hidden="true">🔊︎</span></button></p></details>'
         '<div class="back-actions"><a id="next-card" class="button primary" href="/next">Next card</a></div>')
 
 
@@ -89,6 +93,8 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.held_audio = []
         self.held_next = []
         self.held_restart = []
+        self.hold_action = False
+        self.held_actions = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -115,7 +121,10 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             body = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
             route.fulfill(content_type="application/json", body=body)
         elif path in ("/action/", "/retry/", "/exit/"):
-            route.fulfill(content_type="application/json", body=SUBMITTED if path == "/action/" else ASSESSED)
+            if path == "/action/" and self.hold_action:
+                self.held_actions.append(route)
+            else:
+                route.fulfill(content_type="application/json", body=SUBMITTED if path == "/action/" else ASSESSED)
         else:
             self.unexpected.append(path)
             route.abort()
@@ -126,9 +135,12 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             f' data-first-display="{first_display}" data-autoplay="{autoplay}"'
             f' data-action-url="/action/" data-status-url="/status/" data-retry-url="/retry/" data-exit-url="/exit/">'
             '<audio id="clip-player" preload="none"></audio>'
-            '<div id="front"><div id="recording-indicator" class="recording-status" aria-live="polite"></div>'
+            '<div id="front"><div class="prompt prose"><div class="sentence-audio">'
+            '<span data-selection-region>The sentence.</span>'
+            '<button type="button" class="button pronunciation-button" aria-label="Play question sentence"'
+            ' data-play="target" data-src="/review/p-1/audio/target/"><span aria-hidden="true">🔊︎</span></button>'
+            '</div></div><div id="recording-indicator" class="recording-status" aria-live="polite"></div>'
             '<div class="front-actions"><button class="button" data-action="skip">Skip</button>'
-            '<button class="button" data-play="target" data-src="/review/p-1/audio/target/">Play</button>'
             '<button class="button primary" id="speak" data-action="speak">Speak</button>'
             '<button class="button" data-action="forgot">Forgot</button></div>'
             '<div id="record-controls" class="row" hidden><button class="button" data-action="cancel">Cancel</button>'
@@ -216,6 +228,60 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.page.click("[data-play]")
         self.page.click("[data-action=skip]")  # any Practice control cancels playback
         self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+
+    def test_inline_speaker_is_visible_disabled_through_permission_recording_and_upload(self):
+        self.hold_action = True
+        self.load(init="""const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            window.capturePaused = [];
+            navigator.mediaDevices.getUserMedia = constraints => {
+                window.capturePaused.push(document.querySelector('#clip-player').paused);
+                return new Promise(resolve => { window.allowMicrophone = () => resolve(acquire(constraints)); });
+            };""")
+        self.wait_for_audio("target")
+        speaker = self.page.locator("#front [data-play]")
+        position = speaker.bounding_box()
+        self.page.click("#speak")
+        self.until("Boolean(window.allowMicrophone)")
+        self.assertEqual(self.page.evaluate("window.capturePaused"), [True])
+        self.assertTrue(speaker.is_visible())
+        self.assertTrue(speaker.is_disabled())
+        self.assertEqual(speaker.bounding_box(), position)
+        self.page.click("[data-action=cancel]")
+        self.assertTrue(speaker.is_enabled())
+        speaker.focus()
+        speaker.press("Enter")
+        self.until("!document.querySelector('#clip-player').paused")
+        self.page.evaluate("window.allowMicrophone()")  # cancelled permission cannot start recording
+        self.page.wait_for_timeout(200)
+        self.assertTrue(self.page.is_visible("#speak"))
+        self.page.click("#speak")
+        self.page.evaluate("window.allowMicrophone()")
+        self.until("document.querySelector('#stop').hidden === false")
+        self.assertTrue(speaker.is_visible())
+        self.assertTrue(speaker.is_disabled())
+        self.assertEqual(speaker.bounding_box(), position)
+        self.page.click("[data-action=cancel]")
+        self.assertTrue(speaker.is_enabled())
+        speaker.click()
+        self.until("!document.querySelector('#clip-player').paused")
+        self.page.click("#speak")
+        self.page.evaluate("window.allowMicrophone()")
+        self.until("document.querySelector('#stop').hidden === false")
+        self.page.wait_for_timeout(200)
+        self.page.click("#stop")
+        self.until("document.querySelector('#recording-indicator').textContent.includes('Saving')")
+        self.assertTrue(speaker.is_visible())
+        self.assertTrue(speaker.is_disabled())
+        self.assertEqual(speaker.bounding_box(), position)
+        self.assertTrue(self.page.evaluate("document.querySelector('#clip-player').paused"))
+        for _ in range(30):
+            if self.held_actions:
+                break
+            self.page.wait_for_timeout(100)
+        self.assertEqual(len(self.held_actions), 1)
+        self.assertIn('name="audio"', self.held_actions[0].request.post_data_buffer.decode(errors="replace"))
+        self.held_actions[0].fulfill(content_type="application/json", body=ASSESSED)
+        self.page.wait_for_selector("#next-card")
 
     def test_repeated_pending_play_does_not_pause_the_latest_play(self):
         self.check_latest_pending_play()
