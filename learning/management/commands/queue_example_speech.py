@@ -22,7 +22,7 @@ class Command(BaseCommand):
             raise CommandError("Learner account not found.") from None
         cards = Card.objects.filter(deck__owner=user, kind="vocabulary", ready=True, archived=False,
             deck__archived=False, active_pair__isnull=False).select_related("active_pair").order_by("pk")
-        missing = failed = enqueued = 0
+        missing = failed = enqueued = completed = 0
         for card in cards:
             # Re-read the active pair inside the enqueue transaction; a pair replaced since the
             # listing simply loses its references and is skipped by the worker, never published.
@@ -30,6 +30,8 @@ class Command(BaseCommand):
             clips = {clip.side: clip for clip in pair.speech_clips.all()}
             for side in ("target", "native"):
                 clip = clips.get(side)
+                if clip is not None and clip.state == "done":
+                    completed += 1
                 if clip is None:
                     missing += 1
                 elif clip.state == "failed":
@@ -45,7 +47,6 @@ class Command(BaseCommand):
                     clip.requested_at = timezone.now()
                     clip.save(update_fields=["state", "claim", "error", "error_category", "execution", "requested_at"])
                     enqueued += 1
-        completed = sum(clip.state == "done" for card in cards for pair in [card.active_pair] for clip in pair.speech_clips.all())
         if options["dry_run"]:
             self.stdout.write(f"Preview for {user.username}: missing sides {missing}, failed sides {failed}, "
                               f"already completed {completed}. Nothing was written or called.")

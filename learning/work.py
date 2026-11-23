@@ -80,17 +80,28 @@ def cleanup_audio():
 
 @transaction.atomic
 def cleanup_speech():
-    """Reclaim clips whose example revision lost every reference, after 24 hours of inactivity.
-    Keeps Example Revision text and frozen review records; only clip rows and files are removed."""
-    cutoff = timezone.now()-timedelta(hours=24)
-    for clip in SpeechClip.objects.select_related("pair").filter(updated_at__lt=cutoff):
-        if not speech_referenced(clip.pair):
+    """Reclaim clips whose example revision has been without any reference for a full day.
+    The grace starts when the last reference disappears and restarts if a reference returns;
+    the clip's own age never retires it. Example Revision text and frozen review records stay
+    untouched; current references are rechecked immediately before each retirement."""
+    now = timezone.now()
+    cutoff = now-timedelta(hours=24)
+    for clip in SpeechClip.objects.select_related("pair").all():
+        if speech_referenced(clip.pair):
+            if clip.unreferenced_at is not None:
+                SpeechClip.objects.filter(pk=clip.pk).update(unreferenced_at=None)
+            continue
+        if clip.unreferenced_at is None:
+            SpeechClip.objects.filter(pk=clip.pk).update(unreferenced_at=now)  # grace begins
+            continue
+        if clip.unreferenced_at <= cutoff:  # still unreferenced a full day later
             if clip.file:
                 (settings.TTS_DIR/clip.file).unlink(missing_ok=True)
             clip.delete()
-    # Interrupted or stale executions may leave files that no clip row references.
+    # Interrupted or stale executions may leave final files and writer partials that no clip
+    # row references; the sweep stays inside the speech file namespace.
     known = set(SpeechClip.objects.exclude(file="").values_list("file", flat=True))
-    for path in settings.TTS_DIR.glob("*.mp3"):
+    for path in settings.TTS_DIR.glob("*.mp3*"):
         if path.is_file() and path.name not in known and path.stat().st_mtime < time.time()-86400:
             path.unlink(missing_ok=True)
 
@@ -121,15 +132,20 @@ def expire_speech():
         error_category="timeout")
 
 
+@transaction.atomic
 def claim_speech():
+    """Atomic claim, mirroring claim_work: a competing connection that already selected the
+    same queued row loses the conditional claim and gets nothing instead of a duplicate."""
     expire_speech()
     clip = SpeechClip.objects.filter(state="queued").order_by("backfill", "requested_at", "pk").first()
     if not clip:
         return None
     now = timezone.now()
-    clip.state, clip.started_at, clip.deadline, clip.claim = "processing", now, now+timedelta(seconds=settings.SPEECH_TIMEOUT_SECONDS), uuid.uuid4()
-    clip.save(update_fields=["state", "started_at", "deadline", "claim"])
-    return clip.pk, clip.claim, clip.deadline
+    deadline = now+timedelta(seconds=settings.SPEECH_TIMEOUT_SECONDS)
+    claim = uuid.uuid4()
+    claimed = SpeechClip.objects.filter(pk=clip.pk, claim=clip.claim, state="queued").update(
+        state="processing", claim=claim, started_at=now, deadline=deadline)
+    return (clip.pk, claim, deadline) if claimed else None
 
 
 def process_speech(clip_id, claim):
@@ -152,7 +168,9 @@ def process_speech(clip_id, claim):
 
 
 def publish_speech(clip_id, claim, sound):
-    """Claim-specific file names: a stale execution can never replace a newer clip's file."""
+    """Claim-specific file names: a stale execution can never replace a newer clip's file.
+    Finalization rechecks the claim, remaining budget, and current references in one short
+    transaction; any failed guard reclaims the unpublished artifact instead of publishing it."""
     name = f"{clip_id}.{claim.hex}.mp3"
     path = settings.TTS_DIR/name
     temporary = path.with_name(path.name+".part")
@@ -163,14 +181,25 @@ def publish_speech(clip_id, claim, sound):
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
+        # The renamed directory entry must be durable before the database records Done.
+        directory = os.open(settings.TTS_DIR, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except OSError:
         raise providers.StageError("SPEECH", "The clip could not be stored. Retry the side explicitly.", "worker") from None
     finally:
         temporary.unlink(missing_ok=True)
-    published = SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").update(
-        state="done", file=name, completed_at=timezone.now(), error="", error_category="")
-    if not published:
-        path.unlink(missing_ok=True)  # a retried side owns the claim now; drop the stale file
+    now = timezone.now()
+    with transaction.atomic():
+        clip = SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").first()
+        eligible = bool(clip and clip.deadline and clip.deadline > now and speech_referenced(clip.pair))
+        if eligible:
+            SpeechClip.objects.filter(pk=clip_id, claim=claim, state="processing").update(
+                state="done", file=name, completed_at=now, error="", error_category="")
+    if not eligible:
+        path.unlink(missing_ok=True)  # stale, expired, or unreferenced: never publish the artifact
 
 
 @transaction.atomic

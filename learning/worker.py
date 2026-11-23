@@ -78,7 +78,12 @@ def run_worker(once=False, concurrency=None):
             expire_speech()
             if time.monotonic()-last_cleanup >= 60:
                 cleanup_audio()
-                cleanup_speech()
+                try:
+                    cleanup_speech()
+                except OSError as fault:
+                    # A speech-storage problem must never interrupt assessments or preparation.
+                    print(f"Speech cleanup stopped early ({fault.__class__.__name__}); it will retry on the next pass.",
+                        flush=True)
                 last_cleanup = time.monotonic()
             slots = concurrency or settings.WORKER_CONCURRENCY
             # Speech synthesis owns one dedicated slot; a stalled clip never takes an

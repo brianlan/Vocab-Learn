@@ -104,7 +104,9 @@ class SpeechClip(models.Model):
     error = models.CharField(max_length=300, blank=True)
     error_category = models.CharField(max_length=24, blank=True)
     retryable = models.BooleanField(default=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    # The 24-hour reclamation grace starts when the example loses its last reference and
+    # restarts if a reference returns; age of the clip itself never retires it.
+    unreferenced_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["pair", "side"], name="unique_speech_clip_per_pair_side")]

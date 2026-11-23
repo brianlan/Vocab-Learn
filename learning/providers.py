@@ -134,7 +134,7 @@ def profile(task):
         audio_defaults.get("model", "MiniMax-M3.1-Flash"))
     model = os.getenv(task + "_MODEL", model_default).strip()
     # Same audio-only fallback: unrelated tasks keep base behavior for empty model overrides.
-    if audio and not model:
+    if (audio or task == "SPEECH") and not model:
         model = model_default
     return Profile(task, endpoint, model,
         key, timeout, tokens, protocol, thinking, effort, api_mode)
