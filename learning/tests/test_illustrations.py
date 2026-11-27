@@ -37,17 +37,17 @@ def marker_webp(payload=b"scene"):
     return b"RIFF" + (12+len(payload)).to_bytes(4, "little") + b"WEBP" + payload
 
 
-def webp_image():
-    """A real 512×384 WebP rendered once by the local FFmpeg toolchain; no committed fixture."""
-    if "image" not in WEBP_CACHE:
-        WEBP_CACHE["image"] = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi",
-            "-i", "color=c=steelblue:s=512x384", "-frames:v", "1", "-c:v", "libwebp",
+def webp_image(size="512x384"):
+    """A real WebP rendered once by the local FFmpeg toolchain; no committed fixture."""
+    if size not in WEBP_CACHE:
+        WEBP_CACHE[size] = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi",
+            "-i", f"color=c=steelblue:s={size}", "-frames:v", "1", "-c:v", "libwebp",
             "-f", "webp", "pipe:1"], capture_output=True, check=True).stdout
-    return WEBP_CACHE["image"]
+    return WEBP_CACHE[size]
 
 
 @contextmanager
-def fake_renderer(content=None, status=200, revision="3b767", slow=False):
+def fake_renderer(content=None, status=200, revision="3b767", slow=False, extra_headers=None):
     """A local fake renderer that records each request; serves WebP bytes by default. With `slow`,
     the body streams in small chunks and `state["consumed"]` records what the client accepted."""
     requests = []
@@ -62,6 +62,8 @@ def fake_renderer(content=None, status=200, revision="3b767", slow=False):
             inner.send_header("Content-Type", "image/webp")
             inner.send_header("Content-Length", str(len(body)))
             inner.send_header("X-Illustration-Revision", revision)
+            for key, value in (extra_headers or {}).items():
+                inner.send_header(key, value)
             inner.end_headers()
             if slow:
                 consumed = 0
@@ -75,7 +77,10 @@ def fake_renderer(content=None, status=200, revision="3b767", slow=False):
                     time.sleep(0.01)
                 state["consumed"] = consumed
             else:
-                inner.wfile.write(body)
+                try:
+                    inner.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass  # the client rejected the response before reading the body
         def log_message(inner, *args): pass
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
@@ -302,6 +307,33 @@ class IllustrationTests(TestCase):
                          ("failed", "invalid_output", True))
         self.assertFalse(corrupt.file)
         self.assertTrue(list(self.folder.glob("*.webp")))  # only the good claim-published name exists
+
+    def test_an_invalid_riff_container_is_rejected_before_decoding(self):
+        card = self.ready(self.vocabulary())
+        lying = bytearray(webp_image())
+        lying[4:8] = (32).to_bytes(4, "little")  # the declared container size contradicts the body
+        row = self.run_live(bytes(lying))
+        self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "invalid_output", True))
+        self.assertFalse(row.file)
+        self.assertEqual(list(self.folder.glob("*.webp")), [])
+
+    def test_oversized_pixel_canvases_are_rejected_before_decoding(self):
+        card = self.ready(self.vocabulary())
+        huge = webp_image("2048x2048")  # a tiny encoded blob that decodes to 4M pixels
+        self.assertLess(len(huge), providers.ILLUSTRATION_MAX_BYTES)
+        row = self.run_live(huge)
+        self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "invalid_output", True))
+        self.assertFalse(row.file)
+        self.assertEqual(list(self.folder.glob("*.webp")), [])
+
+    def test_a_compressed_response_is_rejected_before_its_body_is_read(self):
+        card = self.ready(self.vocabulary())
+        body = b"\x1f\x8b" + b"compressed-junk" * (4 * 1024)
+        with fake_renderer(content=body, slow=True, extra_headers={"Content-Encoding": "gzip"}) as (_, port, state):
+            row = self.run_live_render(port)
+        self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "invalid_output", True))
+        self.assertFalse(row.file)
+        self.assertLess(wait_consumed(state), len(body))  # the compressed body was never consumed
 
     def test_an_invalid_port_is_a_configuration_error(self):
         with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": "https://isolated.invalid:not-a-port/render"}):
@@ -558,6 +590,7 @@ class IllustrationWorkerTests(TransactionTestCase):
                                         "ALLOW_INSECURE_PROVIDER_HTTP": "1"}), \
                 override_settings(ILLUSTRATIONS_DIR=folder):
             _, _, card = self.prepared_card()  # the save-time enqueue needs the configured endpoint
+            card.active_pair.speech_clips.all().delete()  # this illustration-only test never synthesizes
             run_worker(once=True, concurrency=1)
         connections.close_all()
         row = card.active_pair.illustration

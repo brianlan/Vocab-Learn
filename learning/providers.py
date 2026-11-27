@@ -19,6 +19,7 @@ TASK_LABELS = {"AUDIO_ASSESS": "Audio assessment", "GENERATOR": "Example prepara
                "SPEECH": "Speech synthesis", "ILLUSTRATION": "Illustration renderer"}
 ILLUSTRATION_DEFAULT_MODEL = "black-forest-labs/flux-3-image-klein"
 ILLUSTRATION_MAX_BYTES = 128*1024  # A 512×384 WebP at quality 76 measures 9–25 KiB; 128 KiB is a hard bound.
+ILLUSTRATION_PIXELS = 512*384  # Pre-decode pixel cap: encoded size alone cannot bound decoder memory.
 PROMPT_VERSIONS = {"AUDIO_ASSESS": AUDIO_PROMPT_VERSION, "GENERATOR": "lexical-pair-v7-a", "DEFINITION": "learner-entry-v2",
                    "EXAMPLE_REVIEWER": "example-review-v1"}
 # Budget key and thinking values follow the selected protocol dialect; no model-name inference.
@@ -491,13 +492,17 @@ def illustration_profile():
 
 
 async def _render(p, body):
-    """Stream the response: error statuses are rejected before their bodies are read, and a
-    successful body stops at the 128 KiB bound instead of buffering an unbounded response."""
+    """Stream the response: error statuses are rejected before their bodies are read, only identity
+    encoding is accepted, and a successful body stops at the 128 KiB bound instead of buffering an
+    unbounded — potentially transparently decompressed — response."""
     async with httpx.AsyncClient(timeout=httpx.Timeout(p.timeout), follow_redirects=False) as client:
-        async with client.stream("POST", p.endpoint, json=body, headers={"Authorization": "Bearer " + p.key}) as response:
+        async with client.stream("POST", p.endpoint, json=body,
+                headers={"Authorization": "Bearer " + p.key, "Accept-Encoding": "identity"}) as response:
             if response.status_code >= 300:
                 category = "configuration" if response.status_code in (400, 401, 403, 404) else "provider"
                 raise StageError(p.task, f"{TASK_LABELS[p.task]} returned HTTP {response.status_code}. Retry or ask the deployer to check the renderer and model.", category)
+            if response.headers.get("Content-Encoding", "identity") != "identity":
+                raise StageError(p.task, "The renderer returned a compressed response; identity encoding is required.")
             chunks, size = [], 0
             async for chunk in response.aiter_bytes():
                 size += len(chunk)
@@ -506,7 +511,8 @@ async def _render(p, body):
                 chunks.append(chunk)
             content = b"".join(chunks)
             checkpoint = response.headers.get("X-Illustration-Revision", "")
-    if len(content) < 16 or content[:4] != b"RIFF" or content[8:12] != b"WEBP":
+    if len(content) < 16 or content[:4] != b"RIFF" or int.from_bytes(content[4:8], "little") != len(content)-8 \
+            or content[8:12] != b"WEBP":
         raise StageError(p.task, "The renderer did not return a complete WebP image. Retry explicitly.")
     return content, checkpoint[:100]
 
@@ -526,19 +532,22 @@ def render_illustration(p, prompt, seed):
 
 
 def decode_webp(image, budget):
-    """Complete successful decode through the existing FFmpeg toolchain: a truncated or corrupt
-    body that still carries RIFF/WEBP markers can never reach publication."""
+    """Complete successful decode through the existing FFmpeg toolchain under a hard pixel bound:
+    the RIFF-declared size must match the body, and FFprobe/FFmpeg cap decoded pixels at the
+    specified 512 × 384 output before any input is decoded, so an encoded-blob thumbnail of a huge
+    canvas can never exhaust the shared worker's memory."""
     source = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
     try:
         source.write(image)
         source.close()
-        metadata = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,width,height", "-of", "json", source.name],
-            capture_output=True, timeout=max(0.05, budget), check=True).stdout)
+        metadata = json.loads(subprocess.run(["ffprobe", "-v", "error", "-max_pixels", str(ILLUSTRATION_PIXELS),
+            "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json",
+            source.name], capture_output=True, timeout=max(0.05, budget), check=True).stdout)
         stream = metadata["streams"][0]
         if stream.get("codec_name") != "webp" or not stream.get("width") or not stream.get("height"):
             raise ValueError
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", source.name, "-f", "null", "-"],
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-max_pixels", str(ILLUSTRATION_PIXELS),
+            "-i", source.name, "-f", "null", "-"],
             capture_output=True, timeout=max(0.05, budget), check=True)
     except (subprocess.SubprocessError, OSError, ValueError, KeyError, IndexError):
         raise StageError("ILLUSTRATION", "The renderer did not return a complete WebP image. Retry explicitly.") from None

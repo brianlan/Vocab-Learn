@@ -95,6 +95,7 @@ def run_worker(once=False, concurrency=None):
                         flush=True)
                 last_cleanup = time.monotonic()
             slots = concurrency or settings.WORKER_CONCURRENCY
+            paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
             # Assessments and preparation share the main slots; speech and illustration each own
             # one dedicated slot, so a stalled render or synthesis never delays an assessment and
             # neither media kind is blocked by the other's or a main execution.
@@ -103,7 +104,6 @@ def run_worker(once=False, concurrency=None):
                 if not job:
                     break
                 connections.close_all()
-                paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
                 process = context.Process(target=execute, args=(*job[:3], paths))
                 process.start()
                 active.append((*job, process))
@@ -111,7 +111,6 @@ def run_worker(once=False, concurrency=None):
                 clip = claim_speech()
                 if clip:
                     connections.close_all()
-                    paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
                     process = context.Process(target=execute, args=("speech", *clip[:2], paths))
                     process.start()
                     active.append(("speech", *clip, process))
@@ -119,7 +118,6 @@ def run_worker(once=False, concurrency=None):
                 row = claim_illustration()
                 if row:
                     connections.close_all()
-                    paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
                     process = context.Process(target=execute, args=("illustration", *row[:2], paths))
                     process.start()
                     active.append(("illustration", *row, process))
