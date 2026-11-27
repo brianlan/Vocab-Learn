@@ -64,6 +64,9 @@ class FakeComfyUI:
         self.history_delay = 0.0
         self.trickle_history = False
         self.trickle_headers = False  # valid responses whose headers take ~2 s to arrive
+        self.fail_history_read = False  # GET /history/<id> answers HTTP 503 once the job completes
+        self.drop_acknowledgement = False  # receive /prompt, then disconnect without answering
+        self.reject_prompts = False  # POST /prompt answers HTTP 400 like ComfyUI's rejection
         self.view_delay = 0.0
         self.trickle_view = False
         self.hold_jobs = threading.Event()  # clear to keep jobs out of the running slot
@@ -145,6 +148,14 @@ class FakeComfyUI:
                 body = json.loads(self.rfile.read(length)) if length else {}
                 self._record(body)
                 if self.path == "/prompt":
+                    if outer.reject_prompts:
+                        return self._send(400, "application/json",
+                                          json.dumps({"error": "Prompt queue full"}).encode())
+                    if outer.drop_acknowledgement:
+                        # the graph is received, but the connection drops before any answer; the
+                        # handler stays alive holding the submission until the gate releases it
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        self.connection.close()
                     if not outer.enqueue_gate.wait(60):  # held shut: the graph never arrives at all
                         return self._json({"prompt_id": body.get("prompt_id")})
                     time.sleep(outer.enqueue_delay)  # the runtime delays before the graph is queued
@@ -190,6 +201,9 @@ class FakeComfyUI:
                     prompt_id = self.path.rsplit("/", 1)[1]
                     with outer.lock:
                         entry = outer.history.get(prompt_id)
+                    if outer.fail_history_read and entry is not None:
+                        return self._send(503, "application/json",
+                                          json.dumps({"error": "temporarily unavailable"}).encode())
                     payload = json.dumps({prompt_id: entry} if entry else {}).encode()
                     if outer.trickle_headers:
                         return self._slow_headers(payload, "application/json")
@@ -599,6 +613,55 @@ class RendererContractTests(unittest.TestCase):
             self.assertEqual(self.comfyui.history, {})
             self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
         self.assertFalse(self.comfyui.overlapped)
+
+    def test_a_dropped_acknowledgement_gates_admission_until_it_is_reconciled(self):
+        self.comfyui.enqueue_gate.clear()  # the runtime holds the already-received submission
+        self.comfyui.drop_acknowledgement = True  # ...and disconnects without answering it
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 502)  # the lost acknowledgement surfaces as a failed render
+        self.assertTrue(self.renderer.Handler.abandoned)  # the outcome is uncertain: retained
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 503)  # no new inference beside a submission that may still appear
+        self.assertEqual(len(self.comfyui.submitted_ids()), 1)
+        self.comfyui.drop_acknowledgement = False
+        self.comfyui.enqueue_gate.set()  # the held submission finally enqueues
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the late job is reconciled first, then a fresh render runs
+        self.assertEqual(self.renderer.Handler.abandoned, {})
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+        self.assertFalse(self.comfyui.overlapped)
+
+    def test_a_failed_history_read_keeps_ownership_and_recovers(self):
+        self.comfyui.fail_history_read = True  # GET /history/<id> answers HTTP 503
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 502)  # a failed read is never mistaken for a terminal job
+        self.assertTrue(self.renderer.Handler.abandoned)  # the rendered file stays owned
+        self.comfyui.settle()
+        self.assertEqual(len(self.comfyui.temp_files()), 1)  # no leak while the gate holds
+        self.comfyui.fail_history_read = False
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the next healthy request finishes the recovery first
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+
+    def test_an_explicit_submission_rejection_is_reported_without_gating(self):
+        self.comfyui.reject_prompts = True  # POST /prompt answers HTTP 400 like ComfyUI's rejection
+        self.reparse(timeout=2.0)
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 502)  # the rejection surfaces immediately, not as a slow timeout
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(self.renderer.Handler.abandoned, {})  # nothing was enqueued: no gate
+        self.comfyui.reject_prompts = False
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # a healthy request renders without any recovery window
 
     def test_a_finished_late_submission_is_reconciled_whenever_it_appears(self):
         self.comfyui.enqueue_delay = 1.2  # enqueues long after the adapter gave up the acknowledgement

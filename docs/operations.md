@@ -406,12 +406,17 @@ whole round trip — every HTTP exchange including status and header reads — b
 timeout, lost acknowledgement) cancels its queued or running job, waits out the terminal state, removes the
 render's temporary files from ComfyUI's temp directory (they are not auto-cleaned and a history delete only forgets
 the in-memory entry), and only then erases the history entry, which stays behind as the ownership record while any
-file remains. A cleanup that cannot complete, or a submission whose acknowledgement was lost, is retained and
-retried, and gates admission: until recovery finishes the renderer answers a bounded 503 and submits no new
-inference. A submission whose outcome is unknown is never dropped for age or absence — current absence does not
-prove a not-yet-enqueued submission can no longer appear — so it keeps gating admission until it is observed in
-the runtime, cancelled and cleaned like any owned job; restarting the renderer is the explicit operator recovery
-for a submission that never arrives. Every exchange is interrupted by the absolute deadline via a watchdog that
+file remains. A cleanup that cannot complete, a failed upstream exchange, or a submission whose
+outcome is unknown — a timeout, a dropped connection after the graph was sent, or an unreadable
+acknowledgement — keeps the ownership record and gates admission: until recovery finishes the
+renderer answers a bounded 503 and submits no new inference. Unsuccessful HTTP statuses are
+rejected centrally, so a failed exchange is never decoded as successful state or image data.
+An uncertain submission is never dropped for age or absence — current absence does not prove a
+not-yet-enqueued submission can no longer appear — so it keeps gating admission until it is
+observed in the runtime, cancelled and cleaned like any owned job; only a connection the runtime
+refused before the graph could be sent, or a synchronous 4xx rejection, prove that nothing was
+issued. Restarting the renderer is the explicit operator recovery for a submission that never
+arrives. Every exchange is interrupted by the absolute deadline via a watchdog that
 shuts the socket down — trickling header or body senders cannot hold a render slot past the budget — and TLS
 handshakes run per connection with a finite
 timeout, so an idle connection cannot stall the listener for other clients. It returns a 512 × 384 WebP

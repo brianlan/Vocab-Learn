@@ -17,12 +17,15 @@ before a result is accepted, streamed response reads included — by one request
 its inference work end to end: every accepted graph carries a caller-supplied prompt id, a queued
 or running render is cancelled and waited out on failure or timeout, and the render's temporary
 output files are removed from ComfyUI's temp directory (they are not auto-cleaned and a history
-delete only forgets the in-memory entry). A cleanup that cannot complete keeps the history entry
-as the ownership record and gates admission — the renderer answers a bounded 503 instead of
-submitting new inference — until recovery finishes. A submission whose outcome is unknown is
-never forgotten for age or absence — the runtime may still enqueue it at any moment — so it too
-keeps gating admission until it is observed, cancelled and cleaned; restarting the renderer is
-the explicit operator recovery for a submission that never arrives. The renderer
+delete only forgets the in-memory entry). Unsuccessful HTTP statuses are rejected centrally: a
+failed exchange is never decoded as successful state or image data. A cleanup that cannot
+complete — including one whose exchanges fail — keeps the history entry as the ownership record
+and gates admission — the renderer answers a bounded 503 instead of submitting new inference —
+until recovery finishes. A submission whose outcome is unknown — a timeout, a dropped connection
+after the graph was sent, or an unreadable acknowledgement — is never forgotten for age or
+absence: it too keeps gating admission until it is observed, cancelled and cleaned; only a
+refused connection or a synchronous 4xx rejection prove that nothing was issued, and restarting
+the renderer is the explicit operator recovery for a submission that never arrives. The renderer
 refuses to start without --api-key, --temp-dir and a positive finite --timeout, and authenticates
 every request. Prompts and credentials never reach the logs.
 """
@@ -133,7 +136,13 @@ def comfyui_exchange(base, route, body, deadline):
         if watchdog is not None:
             watchdog.start()
         try:
-            answer = read_bounded(connection.getresponse(), deadline)
+            response = connection.getresponse()
+            if response.status >= 400:
+                # getresponse() returns 4xx/5xx bodies instead of raising; a failed exchange must
+                # never be decoded as successful state or image data.
+                raise urllib.error.HTTPError(base + route, response.status, response.reason,
+                                             response.headers, response)
+            answer = read_bounded(response, deadline)
         except OSError:
             remaining(deadline)  # re-raises TimeoutError once the budget is gone; else it was real
             raise
@@ -221,16 +230,24 @@ def render(workflow, arguments, prompt, seed, deadline):
     graph[SEED_NODE]["inputs"]["noise_seed"] = seed
     prompt_id = str(uuid.uuid4())  # owned before submission: tracked even if the acknowledgement is lost
     known = False
-    submitted = None  # None: uncertain; True: acknowledged; False: never reached the runtime
+    submitted = None  # None: uncertain; True: acknowledged; False: never issued, or rejected
     try:
         try:
             comfyui_request(arguments.comfyui, "/prompt",
                             {"prompt": graph, "prompt_id": prompt_id}, deadline=deadline)
             submitted = True  # the runtime answered: the graph was enqueued synchronously
-        except (urllib.error.URLError, OSError, ValueError) as error:
-            # A timeout may still be enqueued by the runtime at any moment; a refused or failed
-            # connection never reached it, so it can own nothing.
-            submitted = None if isinstance(error, TimeoutError) else False
+        except urllib.error.HTTPError as error:
+            # ComfyUI rejects a graph synchronously with a 4xx and without enqueueing it; a
+            # server-side failure leaves the outcome unknown.
+            submitted = False if error.code < 500 else None
+            raise
+        except ConnectionRefusedError:
+            submitted = False  # the connection was refused: nothing could be issued
+            raise
+        except Exception:
+            # A post-send disconnect, an unreadable acknowledgement or a timeout all leave the
+            # submission's fate unknown: the runtime may still hold or enqueue the graph.
+            submitted = None
             raise
         known = True  # the runtime accepted the id: absence now means terminal, not unknown
         while True:
