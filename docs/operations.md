@@ -407,8 +407,11 @@ timeout, lost acknowledgement) cancels its queued or running job, waits out the 
 render's temporary files from ComfyUI's temp directory (they are not auto-cleaned and a history delete only forgets
 the in-memory entry), and only then erases the history entry, which stays behind as the ownership record while any
 file remains. A cleanup that cannot complete, or a submission whose acknowledgement was lost, is retained and
-retried within a bounded window (cancelled if it appears later) and gates admission: until recovery finishes the
-renderer answers a bounded 503 and submits no new inference. TLS handshakes run per connection with a finite
+retried, and gates admission: until recovery finishes the renderer answers a bounded 503 and submits no new
+inference. A retained id is dropped only when a reachable runtime shows neither queue nor history entry for it past
+a bounded retention window — elapsed time alone never proves an in-flight submission can no longer appear — and a
+late-appearing job is cancelled and cleaned like any owned job. Response bodies are read under the absolute
+deadline, which interrupts trickling senders mid-read, and TLS handshakes run per connection with a finite
 timeout, so an idle connection cannot stall the listener for other clients. It returns a 512 × 384 WebP
 at quality 76 together with the INT8 checkpoint identity. The renderer refuses to start without `--api-key` and
 `--temp-dir`, rejects a non-positive or non-finite `--timeout`, and authenticates every request. For private HTTPS

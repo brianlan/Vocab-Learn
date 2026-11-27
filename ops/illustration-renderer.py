@@ -20,7 +20,8 @@ output files are removed from ComfyUI's temp directory (they are not auto-cleane
 delete only forgets the in-memory entry). A cleanup that cannot complete keeps the history entry
 as the ownership record and gates admission — the renderer answers a bounded 503 instead of
 submitting new inference — until recovery finishes; an id whose submission was never acknowledged
-is retained and reconciled for a bounded window, cancelled if it appears later. The renderer
+is retained and reconciled — cancelled if it appears later — and is only dropped once a reachable
+runtime shows positive absence past a bounded window. The renderer
 refuses to start without --api-key, --temp-dir and a positive finite --timeout, and authenticates
 every request. Prompts and credentials never reach the logs.
 """
@@ -30,6 +31,7 @@ import io
 import json
 import math
 import os
+import socket
 import ssl
 import threading
 import time
@@ -44,7 +46,7 @@ MAX_BODY_BYTES = 64 * 1024
 PROMPT_NODE, SEED_NODE, OUTPUT_NODE = "4", "6", "12"
 POLL_SECONDS = 0.125
 CLEANUP_SECONDS = 5.0  # bounded cancellation/cleanup window, independent of the render deadline
-RECONCILE_SECONDS = 60.0  # how long an unacknowledged submission id is retained for reconciliation
+RECONCILE_SECONDS = 60.0  # an unknown submission id is retained this long; expiry drops it only together with positive absence from a reachable runtime
 HANDSHAKE_SECONDS = 10.0  # bounded TLS handshake so one idle connection cannot stall the accept loop
 # The pilot host's HTTP proxy variables must not redirect loopback ComfyUI traffic.
 UPSTREAM = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -91,12 +93,36 @@ def remaining(deadline):
 
 
 def read_bounded(response, deadline):
-    """Read the whole response body while the absolute deadline holds: a socket timeout only bounds
-    one blocking read, so a trickling sender must be cut by the deadline itself, not per chunk."""
+    """Read the whole response body while the absolute deadline holds. A socket timeout only caps
+    inactivity, and a buffered ``read(n)`` can loop over many receives internally, so a watchdog
+    closes the raw socket the moment the budget expires — interrupting even a trickling sender
+    instead of letting one call hold the render slot. Timeouts raised by an interrupted read are
+    reported as budget timeouts; a watchdog close is only scheduled to fire at the deadline."""
+    sock = getattr(getattr(response.fp, "raw", None), "_sock", None)
     parts = []
     while True:
-        remaining(deadline)
-        chunk = response.read(65536)
+        left = remaining(deadline)
+        watchdog = None
+        cancelled = threading.Event()
+        if sock is not None:
+            def cut():
+                # close() does not wake a blocked receive on Linux; shutdown() does
+                if not cancelled.is_set():
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+            watchdog = threading.Timer(left, cut)
+            watchdog.start()
+        try:
+            chunk = response.read(65536)
+        except OSError:
+            remaining(deadline)  # re-raises TimeoutError once the budget is gone; else it was real
+            raise
+        finally:
+            cancelled.set()
+            if watchdog is not None:
+                watchdog.cancel()
         if not chunk:
             return b"".join(parts)
         parts.append(chunk)
@@ -136,18 +162,19 @@ def remove_owned_files(arguments, entry):
 def cleanup_job(arguments, prompt_id, known):
     """Cancel the owned job if it is queued or running, wait out its terminal state within the
     bounded cleanup window, then remove its temporary files and — only once they are gone — its
-    history entry, which is the ownership record. Returns (resolved, seen): unresolved files leave
-    the job unresolved, and an unknown submission that appears in neither queue nor history is not
-    treated as terminal, because it may still be queued by the runtime later."""
+    history entry, which is the ownership record. Returns (resolved, seen, probed): unresolved
+    files leave the job unresolved; seen records that the id was observed in the queue or history
+    — checked before the delete could remove a pending job — so a confirmed cancellation resolves
+    an unacknowledged id; probed is false when the runtime could not be reached, in which case
+    absence proves nothing."""
     deadline = time.monotonic() + CLEANUP_SECONDS
-
-    def left():
-        return max(0.01, deadline - time.monotonic())
-
     try:
+        queue = comfyui_request(arguments.comfyui, "/queue", deadline=deadline)
+        ids = [item[1] for section in ("queue_running", "queue_pending")
+               for item in queue.get(section) or []]
+        seen = prompt_id in ids  # evidence of existence, taken before the delete can remove it
         comfyui_request(arguments.comfyui, "/queue", {"delete": [prompt_id]}, deadline=deadline)
         comfyui_request(arguments.comfyui, "/interrupt", {"prompt_id": prompt_id}, deadline=deadline)
-        seen = False
         while time.monotonic() < deadline:
             queue = comfyui_request(arguments.comfyui, "/queue", deadline=deadline)
             ids = [item[1] for section in ("queue_running", "queue_pending")
@@ -157,17 +184,17 @@ def cleanup_job(arguments, prompt_id, known):
             seen = True
             time.sleep(POLL_SECONDS)
         else:
-            return False, seen  # the job never reached a terminal state within the window
+            return False, seen, True  # the job never reached a terminal state within the window
         entry = comfyui_request(arguments.comfyui, f"/history/{prompt_id}", deadline=deadline).get(prompt_id)
         if not entry:
-            return known or seen, seen  # an acknowledged-and-absent job is terminal; absence alone is not
+            return known or seen, seen, True  # an acknowledged-and-absent job is terminal; absence alone is not
         seen = True
         if not remove_owned_files(arguments, entry):
-            return False, seen  # keep the history entry until every owned file is gone
+            return False, seen, True  # keep the history entry until every owned file is gone
         comfyui_request(arguments.comfyui, "/history", {"delete": [prompt_id]}, deadline=deadline)
-        return True, seen
+        return True, seen, True
     except (urllib.error.URLError, OSError, ValueError):
-        return False, False  # ComfyUI unreachable or unresponsive; the job is retried before the next render
+        return False, False, False  # ComfyUI unreachable or unresponsive; the job is retried before the next render
 
 
 def render(workflow, arguments, prompt, seed, deadline):
@@ -206,7 +233,7 @@ def render(workflow, arguments, prompt, seed, deadline):
                 return encoded.getvalue()
             time.sleep(POLL_SECONDS)
     finally:
-        resolved, seen = cleanup_job(arguments, prompt_id, known)
+        resolved, seen, _ = cleanup_job(arguments, prompt_id, known)
         if not resolved:
             with Handler.abandoned_lock:
                 previous = Handler.abandoned.get(prompt_id)
@@ -283,20 +310,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def recover_abandoned(self):
         """Bounded best-effort recovery of jobs whose cleanup did not complete. Returns False while
-        any owned job remains unresolved, and the caller must then admit no new inference."""
+        any owned job remains unresolved, and the caller must then admit no new inference. An
+        unknown submission is dropped only when the reachable runtime shows neither queue nor
+        history entry for it past the retention window — elapsed time alone never proves that an
+        in-flight submission can no longer appear."""
         with self.abandoned_lock:
             stale = list(self.abandoned.items())
         for prompt_id, record in stale:
-            if not record["known"] and time.monotonic() - record["first_seen"] > RECONCILE_SECONDS:
-                with self.abandoned_lock:
-                    self.abandoned.pop(prompt_id, None)  # the submission never arrived; nothing is owned
-                continue
-            resolved, seen = cleanup_job(self.arguments, prompt_id, record["known"])
+            resolved, seen, probed = cleanup_job(self.arguments, prompt_id, record["known"])
             if seen:
                 record["known"] = True  # the job exists: reconcile and cancel it, however late
             if resolved:
                 with self.abandoned_lock:
                     self.abandoned.pop(prompt_id, None)
+            elif probed and not record["known"] and not seen \
+                    and time.monotonic() - record["first_seen"] > RECONCILE_SECONDS:
+                with self.abandoned_lock:
+                    self.abandoned.pop(prompt_id, None)  # positive absence from a reachable runtime
         with self.abandoned_lock:
             return not self.abandoned
 

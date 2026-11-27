@@ -57,9 +57,12 @@ class FakeComfyUI:
         self.temp_dir = self._temp.name
         self.job_duration = job_duration
         self.enqueue_delay = 0.0
+        self.enqueue_gate = threading.Event()  # clear to hold submissions back entirely
+        self.enqueue_gate.set()
         self.submission_delay = 0.0
         self.submission_hang = False  # enqueue the job, then never answer (lost acknowledgement)
         self.history_delay = 0.0
+        self.trickle_history = False
         self.view_delay = 0.0
         self.trickle_view = False
         self.hold_jobs = threading.Event()  # clear to keep jobs out of the running slot
@@ -141,6 +144,8 @@ class FakeComfyUI:
                 body = json.loads(self.rfile.read(length)) if length else {}
                 self._record(body)
                 if self.path == "/prompt":
+                    if not outer.enqueue_gate.wait(60):  # held shut: the graph never arrives at all
+                        return self._json({"prompt_id": body.get("prompt_id")})
                     time.sleep(outer.enqueue_delay)  # the runtime delays before the graph is queued
                     with outer.lock:
                         if outer.jobs_pending or outer.jobs_running:
@@ -184,6 +189,9 @@ class FakeComfyUI:
                     prompt_id = self.path.rsplit("/", 1)[1]
                     with outer.lock:
                         entry = outer.history.get(prompt_id)
+                    payload = json.dumps({prompt_id: entry} if entry else {}).encode()
+                    if outer.trickle_history:
+                        return self._trickled(payload, "application/json")
                     return self._json({prompt_id: entry} if entry else {})
                 if self.path.startswith("/queue"):
                     with outer.lock:
@@ -195,19 +203,29 @@ class FakeComfyUI:
                     query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     with open(os.path.join(outer.temp_dir, query["filename"][0]), "rb") as handle:
                         payload = handle.read()
+                    if outer.trickle_view:  # valid bytes, but the stream outlasts any small budget
+                        return self._trickled(payload, "image/png")
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
-                    if outer.trickle_view:  # valid bytes, but the stream outlasts any small budget
-                        for index in range(0, len(payload), 512):
-                            self.wfile.write(payload[index:index + 512])
-                            self.wfile.flush()
-                            time.sleep(0.05)
-                        return
                     self.wfile.write(payload)
                     return
                 self.send_error(404)
+
+            def _trickled(self, payload, content_type):
+                """The first bytes arrive one at a time, far slower than any small render budget;
+                the buffered reader must be interrupted by the absolute deadline, not by chunking."""
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                for index in range(min(45, len(payload))):
+                    self.wfile.write(payload[index:index + 1])
+                    self.wfile.flush()
+                    time.sleep(0.04)
+                self.wfile.write(payload[45:])
+                self.wfile.flush()
 
             def _record(self, body):
                 with outer.lock:
@@ -536,28 +554,102 @@ class RendererContractTests(unittest.TestCase):
             self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
 
     def test_an_unacknowledged_submission_is_reconciled_after_a_bounded_window(self):
-        self.comfyui.enqueue_delay = 30.0  # far beyond the retention window: the graph never queues
+        self.comfyui.enqueue_gate.clear()  # the submission never arrives at all
         self.comfyui.submission_hang = True
         self.reparse(timeout=0.15)
         self.renderer.RECONCILE_SECONDS = 0.5
         self.assertEqual(self.render_request(timeout=30)[0], 504)
         self.assertEqual(self.render_request(timeout=30)[0], 503)  # retained while the window holds
-        time.sleep(0.7)  # the bounded retention expires with nothing ever having appeared
+        time.sleep(0.7)  # the retention expires with a reachable runtime that never saw the graph
+        self.comfyui.submission_hang = False
+        self.comfyui.enqueue_gate.set()  # later submissions arrive normally
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # positive absence past the window: the unknown id is dropped
+        self.assertEqual(self.renderer.Handler.abandoned, {})
+
+    def test_a_finished_late_submission_is_reconciled_even_after_the_window(self):
+        self.comfyui.enqueue_delay = 1.2  # enqueues long after the adapter gave up the acknowledgement
+        self.comfyui.submission_hang = True
+        self.comfyui.job_duration = 0.15
+        self.reparse(timeout=0.15)
+        self.renderer.RECONCILE_SECONDS = 0.5
+        self.assertEqual(self.render_request(timeout=30)[0], 504)
+        self.assertTrue(self.renderer.Handler.abandoned)
+        time.sleep(2.0)  # the delayed submission queues, runs and finishes — no requests in between
         self.comfyui.enqueue_delay = 0.0
         self.comfyui.submission_hang = False
         self.reparse(timeout=2.0)
         status, _, _, _ = self.render_request(timeout=30)
-        self.assertEqual(status, 200)  # the unknown id is dropped and the renderer serves again
-        self.assertEqual(self.renderer.Handler.abandoned, {})
+        self.assertEqual(status, 200)  # recovery still checks the runtime: the late job is cleaned
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])  # the late PNG did not leak
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+
+    def test_a_running_late_submission_is_cancelled_even_after_the_window(self):
+        self.comfyui.enqueue_delay = 1.2
+        self.comfyui.submission_hang = True
+        self.comfyui.job_duration = 30.0  # still running when the first recovery arrives
+        self.reparse(timeout=0.15)
+        self.renderer.RECONCILE_SECONDS = 0.5
+        self.assertEqual(self.render_request(timeout=30)[0], 504)
+        self.assertTrue(self.renderer.Handler.abandoned)
+        time.sleep(2.0)  # the delayed submission queued its job, which is still running
+        self.comfyui.enqueue_delay = 0.0
+        self.comfyui.submission_hang = False
+        self.comfyui.job_duration = 0.15  # only for the fresh render; the old job keeps its wait
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the late job is cancelled first, then a fresh render runs
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+        self.assertFalse(self.comfyui.overlapped)  # no inference ever ran beside the owned job
+
+    def test_a_pending_job_with_a_lost_acknowledgement_is_resolved_by_its_cancellation(self):
+        self.comfyui.hold_jobs.clear()  # the job stays pending
+        self.comfyui.submission_hang = True  # ...and the acknowledgement never arrives
+        self.reparse(timeout=0.4)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 504)
+        self.assertEqual(self.renderer.Handler.abandoned, {})  # confirmed cancellation resolves it
+        self.comfyui.hold_jobs.set()
+        self.comfyui.submission_hang = False  # the next submission is acknowledged normally
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # served immediately — no unknown window, no 503
 
     def test_a_trickling_body_cannot_outlast_the_deadline(self):
-        self.comfyui.trickle_view = True  # valid bytes, streamed slower than the budget
+        self.comfyui.trickle_view = True  # a valid PNG, one byte at a time — 1.8 s of stream
+        self.renderer.CLEANUP_SECONDS = 0.15
         self.reparse(timeout=0.3)
         status, _, _, elapsed = self.render_request(timeout=30)
-        self.assertEqual(status, 504)  # the streamed read is cut by the absolute deadline
-        self.assertLess(elapsed, 1.5)
+        self.assertEqual(status, 504)  # the streamed read is interrupted by the absolute deadline
+        self.assertLess(elapsed, 0.8)  # budget + bounded cleanup, far under the stream's length
         self.comfyui.settle()
         self.assertEqual(self.comfyui.temp_files(), [])  # the fetched-then-abandoned output is cleaned
+        self.comfyui.trickle_view = False  # the renderer is healthy again
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the render slot is free again immediately
+
+    def test_a_trickling_json_body_is_cut_by_the_deadline_too(self):
+        self.comfyui.trickle_history = True  # the shared JSON read path, same trickling shape
+        self.reparse(timeout=0.3)
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 504)
+        self.assertLess(elapsed, 1.5)  # budget + bounded cleanup, not the stream's full length
+        self.assertTrue(self.renderer.Handler.abandoned)  # the cleanup could not finish in time
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [self.comfyui.temp_files()[0]])  # still owned
+        self.comfyui.trickle_history = False
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the next request finishes the recovery and renders
+        self.assertEqual(self.comfyui.temp_files(), [])
 
     def test_the_timeout_must_be_positive_and_finite(self):
         for value in ("0", "-1", "nan", "inf"):
