@@ -402,16 +402,18 @@ SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a` — t
 request's prompt text and noise seed substituted. The graph pins the INT8 loaders, the 768 × 576 latent, the 16-step
 Euler schedule and every other inference input. Each accepted graph carries a caller-supplied prompt id, so the
 adapter owns its inference work end to end: it admits one render at a time within the request budget, bounds the
-whole round trip — streamed response reads included — by one deadline, and on every exit path (success, failure,
+whole round trip — every HTTP exchange including status and header reads — by one deadline, and on every exit path (success, failure,
 timeout, lost acknowledgement) cancels its queued or running job, waits out the terminal state, removes the
 render's temporary files from ComfyUI's temp directory (they are not auto-cleaned and a history delete only forgets
 the in-memory entry), and only then erases the history entry, which stays behind as the ownership record while any
 file remains. A cleanup that cannot complete, or a submission whose acknowledgement was lost, is retained and
 retried, and gates admission: until recovery finishes the renderer answers a bounded 503 and submits no new
-inference. A retained id is dropped only when a reachable runtime shows neither queue nor history entry for it past
-a bounded retention window — elapsed time alone never proves an in-flight submission can no longer appear — and a
-late-appearing job is cancelled and cleaned like any owned job. Response bodies are read under the absolute
-deadline, which interrupts trickling senders mid-read, and TLS handshakes run per connection with a finite
+inference. A submission whose outcome is unknown is never dropped for age or absence — current absence does not
+prove a not-yet-enqueued submission can no longer appear — so it keeps gating admission until it is observed in
+the runtime, cancelled and cleaned like any owned job; restarting the renderer is the explicit operator recovery
+for a submission that never arrives. Every exchange is interrupted by the absolute deadline via a watchdog that
+shuts the socket down — trickling header or body senders cannot hold a render slot past the budget — and TLS
+handshakes run per connection with a finite
 timeout, so an idle connection cannot stall the listener for other clients. It returns a 512 × 384 WebP
 at quality 76 together with the INT8 checkpoint identity. The renderer refuses to start without `--api-key` and
 `--temp-dir`, rejects a non-positive or non-finite `--timeout`, and authenticates every request. For private HTTPS

@@ -63,6 +63,7 @@ class FakeComfyUI:
         self.submission_hang = False  # enqueue the job, then never answer (lost acknowledgement)
         self.history_delay = 0.0
         self.trickle_history = False
+        self.trickle_headers = False  # valid responses whose headers take ~2 s to arrive
         self.view_delay = 0.0
         self.trickle_view = False
         self.hold_jobs = threading.Event()  # clear to keep jobs out of the running slot
@@ -190,6 +191,8 @@ class FakeComfyUI:
                     with outer.lock:
                         entry = outer.history.get(prompt_id)
                     payload = json.dumps({prompt_id: entry} if entry else {}).encode()
+                    if outer.trickle_headers:
+                        return self._slow_headers(payload, "application/json")
                     if outer.trickle_history:
                         return self._trickled(payload, "application/json")
                     return self._json({prompt_id: entry} if entry else {})
@@ -203,6 +206,8 @@ class FakeComfyUI:
                     query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     with open(os.path.join(outer.temp_dir, query["filename"][0]), "rb") as handle:
                         payload = handle.read()
+                    if outer.trickle_headers:
+                        return self._slow_headers(payload, "image/png")
                     if outer.trickle_view:  # valid bytes, but the stream outlasts any small budget
                         return self._trickled(payload, "image/png")
                     self.send_response(200)
@@ -212,6 +217,25 @@ class FakeComfyUI:
                     self.wfile.write(payload)
                     return
                 self.send_error(404)
+
+            def _slow_headers(self, payload, content_type):
+                """A valid response whose X-Slow header value arrives one byte at a time, far
+                slower than any small budget: reading the status and headers must be interruptible
+                by the absolute deadline too, not only the body."""
+                head = (f"HTTP/1.0 200 OK\r\n"
+                        f"Content-Type: {content_type}\r\n"
+                        f"Content-Length: {len(payload)}\r\n"
+                        f"X-Slow: ").encode()
+                self.wfile.write(head)
+                self.wfile.flush()
+                for byte in b"31337" * 10:  # 50 bytes at 0.04 s each — about two seconds of headers
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.04)
+                self.wfile.write(b"\r\n\r\n")
+                self.wfile.flush()
+                self.wfile.write(payload)
+                self.wfile.flush()
 
             def _trickled(self, payload, content_type):
                 """The first bytes arrive one at a time, far slower than any small render budget;
@@ -537,7 +561,7 @@ class RendererContractTests(unittest.TestCase):
         status, _, _, _ = self.render_request(timeout=30)
         self.assertEqual(status, 504)
         self.assertTrue(self.renderer.Handler.abandoned)  # the unknown submission is retained
-        status, _, _, _ = self.render_request(timeout=30)  # while the retention window holds
+        status, _, _, _ = self.render_request(timeout=30)  # while the late id stays unobserved
         self.assertEqual(status, 503)  # unresolved owned work blocks new inference
         self.assertEqual(len(self.comfyui.submitted_ids()), 1)
         time.sleep(0.5)  # the delayed submission queues its job after the fact
@@ -553,27 +577,34 @@ class RendererContractTests(unittest.TestCase):
             self.assertEqual(self.comfyui.history, {})
             self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
 
-    def test_an_unacknowledged_submission_is_reconciled_after_a_bounded_window(self):
-        self.comfyui.enqueue_gate.clear()  # the submission never arrives at all
+    def test_an_uncertain_submission_gates_admission_until_it_is_reconciled(self):
+        self.comfyui.enqueue_gate.clear()  # the submission is issued but the runtime holds it back
         self.comfyui.submission_hang = True
         self.reparse(timeout=0.15)
-        self.renderer.RECONCILE_SECONDS = 0.5
         self.assertEqual(self.render_request(timeout=30)[0], 504)
-        self.assertEqual(self.render_request(timeout=30)[0], 503)  # retained while the window holds
-        time.sleep(0.7)  # the retention expires with a reachable runtime that never saw the graph
+        self.assertEqual(self.render_request(timeout=30)[0], 503)  # retained: the state is unknown
+        time.sleep(0.7)  # far past any retention window — current absence still proves nothing
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 503)  # no new inference beside a submission that may still appear
+        self.assertEqual(len(self.comfyui.submitted_ids()), 1)
+        self.comfyui.enqueue_gate.set()  # the held submission finally enqueues
         self.comfyui.submission_hang = False
-        self.comfyui.enqueue_gate.set()  # later submissions arrive normally
         self.reparse(timeout=2.0)
         status, _, _, _ = self.render_request(timeout=30)
-        self.assertEqual(status, 200)  # positive absence past the window: the unknown id is dropped
+        self.assertEqual(status, 200)  # the late job is reconciled first, then a fresh render runs
         self.assertEqual(self.renderer.Handler.abandoned, {})
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+        self.assertFalse(self.comfyui.overlapped)
 
-    def test_a_finished_late_submission_is_reconciled_even_after_the_window(self):
+    def test_a_finished_late_submission_is_reconciled_whenever_it_appears(self):
         self.comfyui.enqueue_delay = 1.2  # enqueues long after the adapter gave up the acknowledgement
         self.comfyui.submission_hang = True
         self.comfyui.job_duration = 0.15
         self.reparse(timeout=0.15)
-        self.renderer.RECONCILE_SECONDS = 0.5
         self.assertEqual(self.render_request(timeout=30)[0], 504)
         self.assertTrue(self.renderer.Handler.abandoned)
         time.sleep(2.0)  # the delayed submission queues, runs and finishes — no requests in between
@@ -587,12 +618,11 @@ class RendererContractTests(unittest.TestCase):
         with self.comfyui.lock:
             self.assertEqual(self.comfyui.history, {})
 
-    def test_a_running_late_submission_is_cancelled_even_after_the_window(self):
+    def test_a_running_late_submission_is_cancelled_whenever_it_appears(self):
         self.comfyui.enqueue_delay = 1.2
         self.comfyui.submission_hang = True
         self.comfyui.job_duration = 30.0  # still running when the first recovery arrives
         self.reparse(timeout=0.15)
-        self.renderer.RECONCILE_SECONDS = 0.5
         self.assertEqual(self.render_request(timeout=30)[0], 504)
         self.assertTrue(self.renderer.Handler.abandoned)
         time.sleep(2.0)  # the delayed submission queued its job, which is still running
@@ -635,6 +665,23 @@ class RendererContractTests(unittest.TestCase):
         self.reparse(timeout=2.0)
         status, _, _, _ = self.render_request(timeout=30)
         self.assertEqual(status, 200)  # the render slot is free again immediately
+
+    def test_a_trickling_header_cannot_outlast_the_deadline(self):
+        self.comfyui.trickle_headers = True  # valid responses, but the headers take ~2 s to arrive
+        self.renderer.CLEANUP_SECONDS = 0.15
+        self.reparse(timeout=0.3)
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 504)  # the header read is interrupted by the absolute deadline
+        self.assertLess(elapsed, 0.8)  # budget + bounded cleanup, not the stream's full length
+        self.assertTrue(self.renderer.Handler.abandoned)  # the cleanup was cut mid-exchange too
+        self.comfyui.settle()
+        self.assertEqual(len(self.comfyui.temp_files()), 1)  # the rendered file stays owned
+        self.comfyui.trickle_headers = False
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the next request finishes the recovery and renders
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
 
     def test_a_trickling_json_body_is_cut_by_the_deadline_too(self):
         self.comfyui.trickle_history = True  # the shared JSON read path, same trickling shape
