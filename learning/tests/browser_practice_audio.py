@@ -561,6 +561,34 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.evaluate(
             "Boolean(document.querySelector('#back [data-illustration-figure] img').getAttribute('src'))"))
 
+    def test_polling_restores_a_deliberately_closed_parent_as_closed(self):
+        # Reveal, close the panel, then let polling replace the fragment: the parent must stay
+        # closed while the loaded image is retained inside it for when the learner reopens.
+        self.statuses = [payload_json("processing", back_html("<p>one</p>", panel_open=False)),
+                         payload_json("processing", back_html("<p>two</p>", panel_open=False)),
+                         payload_json("assessed", back_html("<p>done</p>", panel_open=False))]
+        self.load(state="submitted")
+        self.page.wait_for_selector("#back [data-illustration-toggle]", state="attached")
+        self.page.click("#back .paired-examples > summary")
+        self.page.click("#back [data-illustration-toggle]")
+        self.until("document.querySelector('#back [data-illustration-figure]').hidden === false")
+        self.assertEqual(len(self.image_requests), 1)
+        self.page.evaluate("window.__img = document.querySelector('#back [data-illustration-figure] img')")
+        self.page.click("#back .paired-examples > summary")  # the learner deliberately closes it
+        self.until("document.querySelector('#back .paired-examples').open === false")
+        self.until("document.querySelector('#back').textContent.includes('two')")  # intermediate update
+        self.assertFalse(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.until("document.querySelector('#back').textContent.includes('done')")  # terminal completion
+        self.assertFalse(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+        self.assertEqual(len(self.image_requests), 1)  # nothing refetched while hidden
+        self.page.click("#back .paired-examples > summary")  # reopening retains the loaded image
+        self.assertFalse(self.page.evaluate("document.querySelector('#back [data-illustration-figure]').hidden"))
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+        self.assertEqual(len(self.image_requests), 1)
+
     def test_polling_update_preserves_open_state_loaded_image_and_focus(self):
         # The real panel starts closed; the learner opens it, reveals the scene, and polling must
         # keep panel, scene, image node and focus through updates and the terminal completion.

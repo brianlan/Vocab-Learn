@@ -74,7 +74,10 @@
     const region = $("#back [data-illustration]");
     if (!region || !state) return false;
     const figure = region.querySelector("[data-illustration-figure]");
-    if (state.open || state.panelOpen) region.closest("details").open = true;
+    // The parent panel restores to exactly its captured state: a panel the learner
+    // deliberately closed stays closed, with the loaded image retained inside it.
+    const panel = region.closest("details");
+    if (panel) panel.open = state.panelOpen;
     if (state.image.getAttribute("src")) figure.querySelector("img").replaceWith(state.image);
     figure.hidden = !state.open;
     const toggle = region.querySelector("[data-illustration-toggle]");
