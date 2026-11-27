@@ -402,12 +402,17 @@ SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a` — t
 request's prompt text and noise seed substituted. The graph pins the INT8 loaders, the 768 × 576 latent, the 16-step
 Euler schedule and every other inference input. Each accepted graph carries a caller-supplied prompt id, so the
 adapter owns its inference work end to end: it admits one render at a time within the request budget, bounds the
-whole round trip by one deadline, and on every exit path (success, failure, timeout, lost acknowledgement) cancels
-its queued or running job, waits out the terminal state, removes the render's temporary files from ComfyUI's temp
-directory (they are not auto-cleaned and a history delete only forgets the in-memory entry), erases the history
-entry, and retries a cleanup that could not complete before admitting the next render. It returns a 512 × 384 WebP
+whole round trip — streamed response reads included — by one deadline, and on every exit path (success, failure,
+timeout, lost acknowledgement) cancels its queued or running job, waits out the terminal state, removes the
+render's temporary files from ComfyUI's temp directory (they are not auto-cleaned and a history delete only forgets
+the in-memory entry), and only then erases the history entry, which stays behind as the ownership record while any
+file remains. A cleanup that cannot complete, or a submission whose acknowledgement was lost, is retained and
+retried within a bounded window (cancelled if it appears later) and gates admission: until recovery finishes the
+renderer answers a bounded 503 and submits no new inference. TLS handshakes run per connection with a finite
+timeout, so an idle connection cannot stall the listener for other clients. It returns a 512 × 384 WebP
 at quality 76 together with the INT8 checkpoint identity. The renderer refuses to start without `--api-key` and
-`--temp-dir` and authenticates every request. For private HTTPS it can terminate TLS itself:
+`--temp-dir`, rejects a non-positive or non-finite `--timeout`, and authenticates every request. For private HTTPS
+it can terminate TLS itself:
 
 ```sh
 # once, on the GPU host: a private CA and a leaf certificate valid for the private LAN address

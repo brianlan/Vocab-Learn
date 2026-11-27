@@ -1,20 +1,25 @@
 """Contract tests for the INT8 ComfyUI adapter in ops/illustration-renderer.py (issue #29).
 
 A fake loopback ComfyUI stands in for the real runtime and models the upstream's distinct
-lifetimes: /prompt enqueues under the caller-supplied id, one job runs at a time and writes a real
-temp file on completion, /queue deletes pending ids, /interrupt with a prompt id cancels the
-running job, and a history delete forgets only the in-memory entry — files outlive it, exactly as
-in ComfyUI v0.46.0. The adapter must submit the pinned graph byte-for-byte except for the prompt
-text and noise seed, reject unauthenticated, mismatched and malformed requests before any
-inference is queued, admit one render at a time within the request budget, bound the whole round
-trip by one deadline, cancel its owned job and remove its owned files on every exit path, and
-retry a cleanup that could not complete.
+lifetimes: /prompt enqueues under the caller-supplied id (possibly only after a delay), one job
+runs at a time and writes a real temp file on completion, /queue deletes pending ids, /interrupt
+with a prompt id cancels the running job, and a history delete forgets only the in-memory entry —
+files outlive it, exactly as in ComfyUI v0.46.0. The adapter must submit the pinned graph
+byte-for-byte except for the prompt text and noise seed, reject unauthenticated, mismatched and
+malformed requests before any inference is queued, admit one render at a time, bound the whole
+round trip — streamed reads included — by one deadline, cancel its owned job and remove its owned
+files on every exit path, gate new inference behind unfinished recovery, reconcile a submission
+that was never acknowledged, and keep serving verified TLS clients while an idle connection
+lingers.
 """
 import contextlib
 import importlib.util
 import io
 import json
 import os
+import socket
+import ssl
+import subprocess
 import tempfile
 import threading
 import time
@@ -48,12 +53,15 @@ class FakeComfyUI:
     """A loopback ComfyUI stand-in with real job, history and temp-file lifetimes."""
 
     def __init__(self, job_duration=0.15):
-        self.temp_dir = tempfile.mkdtemp(prefix="fake-comfy-temp-")
+        self._temp = tempfile.TemporaryDirectory(prefix="fake-comfy-temp-")
+        self.temp_dir = self._temp.name
         self.job_duration = job_duration
+        self.enqueue_delay = 0.0
         self.submission_delay = 0.0
         self.submission_hang = False  # enqueue the job, then never answer (lost acknowledgement)
         self.history_delay = 0.0
         self.view_delay = 0.0
+        self.trickle_view = False
         self.hold_jobs = threading.Event()  # clear to keep jobs out of the running slot
         self.hold_jobs.set()
         self.hang_cancellation = False
@@ -82,6 +90,7 @@ class FakeComfyUI:
         self.thread.join(timeout=5)
         self.server.shutdown()
         self.server.server_close()
+        self._temp.cleanup()
 
     def settle(self):
         """Wait until no job is pending or running."""
@@ -93,6 +102,10 @@ class FakeComfyUI:
 
     def temp_files(self):
         return sorted(os.listdir(self.temp_dir))
+
+    def submitted_ids(self):
+        return [request["body"]["prompt_id"] for request in self.requests
+                if request["path"] == "/prompt" and isinstance(request["body"], dict)]
 
     def _run(self):
         while not self.stopping.is_set():
@@ -128,6 +141,7 @@ class FakeComfyUI:
                 body = json.loads(self.rfile.read(length)) if length else {}
                 self._record(body)
                 if self.path == "/prompt":
+                    time.sleep(outer.enqueue_delay)  # the runtime delays before the graph is queued
                     with outer.lock:
                         if outer.jobs_pending or outer.jobs_running:
                             outer.overlapped = True
@@ -180,7 +194,19 @@ class FakeComfyUI:
                     time.sleep(outer.view_delay)
                     query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     with open(os.path.join(outer.temp_dir, query["filename"][0]), "rb") as handle:
-                        return self._raw(handle.read())
+                        payload = handle.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    if outer.trickle_view:  # valid bytes, but the stream outlasts any small budget
+                        for index in range(0, len(payload), 512):
+                            self.wfile.write(payload[index:index + 512])
+                            self.wfile.flush()
+                            time.sleep(0.05)
+                        return
+                    self.wfile.write(payload)
+                    return
                 self.send_error(404)
 
             def _record(self, body):
@@ -192,9 +218,6 @@ class FakeComfyUI:
 
             def _empty(self):
                 self._send(200, "application/json", b"")
-
-            def _raw(self, payload):
-                self._send(200, "image/png", payload)
 
             def _send(self, status, content_type, payload):
                 self.send_response(status)
@@ -217,10 +240,10 @@ class RendererContractTests(unittest.TestCase):
         self.renderer.CLEANUP_SECONDS = 0.8  # bounded cleanup window, kept small for the tests
         self.comfyui = FakeComfyUI()
         self.upstream = self.comfyui.start()
-        self.arguments = self.reparse()
-        self.renderer.Handler.abandoned = set()
+        self.reparse()
+        self.renderer.Handler.abandoned = {}
         self.renderer.Handler.workflow = self.renderer.load_workflow(OPS / "illustration-workflow.json")
-        self.server = self.renderer.ThreadingHTTPServer(("127.0.0.1", 0), self.renderer.Handler)
+        self.server = self.renderer.Server(("127.0.0.1", 0), self.renderer.Handler)
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.endpoint = f"http://127.0.0.1:{self.server.server_address[1]}/render"
@@ -231,12 +254,9 @@ class RendererContractTests(unittest.TestCase):
         self.comfyui.stop()
 
     def reparse(self, timeout=2.0, comfyui=None):
-        arguments = self.renderer.build_parser().parse_args(
+        self.renderer.Handler.arguments = self.renderer.build_parser().parse_args(
             ["--api-key", "scene-key", "--comfyui", comfyui or self.upstream, "--temp-dir", self.comfyui.temp_dir,
-             "--revision", "int8-test@cafe", "--host", "127.0.0.1", "--port", "0",
-             "--timeout", str(timeout)])
-        self.renderer.Handler.arguments = arguments
-        return arguments
+             "--revision", "int8-test@cafe", "--host", "127.0.0.1", "--port", "0", "--timeout", str(timeout)])
 
     def render_request(self, body=None, authorization="Bearer scene-key", timeout=30, raw=None):
         payload = raw if raw is not None else json.dumps(
@@ -268,7 +288,6 @@ class RendererContractTests(unittest.TestCase):
         pinned = json.loads((OPS / "illustration-workflow.json").read_text())["prompt"]
         self.assertEqual(submitted["prompt"]["4"]["inputs"]["text"], "A hand-painted kitchen scene.")
         self.assertEqual(submitted["prompt"]["6"]["inputs"]["noise_seed"], 987654)
-        self.assertTrue(all(part in submitted["prompt_id"] for part in submitted["prompt_id"].split("-")))
         del submitted["prompt"]["4"], submitted["prompt"]["6"]
         del pinned["4"], pinned["6"]
         self.assertEqual(submitted["prompt"], pinned)  # loaders, latent size, sigmas: all pinned
@@ -439,13 +458,116 @@ class RendererContractTests(unittest.TestCase):
         self.assertTrue(self.renderer.Handler.abandoned)  # the unfinished cleanup is not forgotten
         self.comfyui.hang_cancellation = False
         self.comfyui.settle()  # the abandoned job eventually finishes and writes its file
-        abandoned_files = self.comfyui.temp_files()
-        self.assertEqual(len(abandoned_files), 1)
+        self.assertEqual(len(self.comfyui.temp_files()), 1)
         self.comfyui.job_duration = 0.15  # the next healthy render is quick again
         self.reparse(timeout=2.0)
         status, _, _, _ = self.render_request(timeout=30)  # the next healthy render
         self.assertEqual(status, 200)
         self.assertEqual(self.comfyui.temp_files(), [])  # the abandoned file is removed with the new one
+
+    def test_recovery_failure_blocks_new_renders_until_resolved(self):
+        foreign = os.path.join(self.comfyui.temp_dir, "unrelated.png")
+        with open(foreign, "wb") as handle:
+            handle.write(scene_png(16, 16))
+        self.comfyui.job_duration = 3.0
+        self.comfyui.hang_cancellation = True
+        self.reparse(timeout=0.5)
+        self.assertEqual(self.render_request(timeout=30)[0], 504)  # abandoned: cancellation hung
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 503)  # no new inference while an owned job is unresolved
+        self.assertLess(elapsed, 2.5)  # the recovery attempt itself stays bounded
+        self.assertEqual(len(self.comfyui.submitted_ids()), 1)  # nothing new was submitted
+        self.comfyui.hang_cancellation = False
+        self.comfyui.job_duration = 0.15
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)  # recovery first, then a fresh render
+        self.assertEqual(status, 200)
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), ["unrelated.png"])  # only our own files were touched
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+
+    def test_a_transient_file_removal_failure_keeps_ownership(self):
+        self.comfyui.hang_cancellation = True
+        self.reparse(timeout=0.5)
+        self.assertEqual(self.render_request(timeout=30)[0], 200)  # the image rendered; cleanup hangs
+        self.assertTrue(self.renderer.Handler.abandoned)  # and the file cleanup did not complete
+        self.comfyui.hang_cancellation = False
+        self.comfyui.settle()  # the abandoned job finishes and writes its file
+        [owned] = self.comfyui.temp_files()
+        [submitted_id] = self.comfyui.submitted_ids()
+        os.chmod(self.comfyui.temp_dir, 0o500)  # unlink now fails with PermissionError
+        try:
+            status, _, _, _ = self.render_request(timeout=30)
+            self.assertEqual(status, 503)  # recovery did not complete: no new inference
+            with self.comfyui.lock:
+                self.assertIn(submitted_id, self.comfyui.history)  # the ownership record is kept
+            self.assertTrue(os.path.exists(os.path.join(self.comfyui.temp_dir, owned)))
+        finally:
+            os.chmod(self.comfyui.temp_dir, 0o700)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # recovery completes once deletion becomes possible
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertNotIn(submitted_id, self.comfyui.history)
+
+    def test_a_submission_that_was_never_acknowledged_is_reconciled(self):
+        self.comfyui.enqueue_delay = 0.4  # the runtime delays before the graph is queued
+        self.comfyui.submission_hang = True  # and the acknowledgement never arrives
+        self.comfyui.job_duration = 3.0
+        self.reparse(timeout=0.15)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 504)
+        self.assertTrue(self.renderer.Handler.abandoned)  # the unknown submission is retained
+        status, _, _, _ = self.render_request(timeout=30)  # while the retention window holds
+        self.assertEqual(status, 503)  # unresolved owned work blocks new inference
+        self.assertEqual(len(self.comfyui.submitted_ids()), 1)
+        time.sleep(0.5)  # the delayed submission queues its job after the fact
+        self.comfyui.enqueue_delay = 0.0
+        self.comfyui.submission_hang = False  # the next submission is answered normally
+        self.comfyui.job_duration = 0.15  # only for the fresh render; the old job keeps its wait
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # recovery reconciles and cancels the late job, then renders
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+
+    def test_an_unacknowledged_submission_is_reconciled_after_a_bounded_window(self):
+        self.comfyui.enqueue_delay = 30.0  # far beyond the retention window: the graph never queues
+        self.comfyui.submission_hang = True
+        self.reparse(timeout=0.15)
+        self.renderer.RECONCILE_SECONDS = 0.5
+        self.assertEqual(self.render_request(timeout=30)[0], 504)
+        self.assertEqual(self.render_request(timeout=30)[0], 503)  # retained while the window holds
+        time.sleep(0.7)  # the bounded retention expires with nothing ever having appeared
+        self.comfyui.enqueue_delay = 0.0
+        self.comfyui.submission_hang = False
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the unknown id is dropped and the renderer serves again
+        self.assertEqual(self.renderer.Handler.abandoned, {})
+
+    def test_a_trickling_body_cannot_outlast_the_deadline(self):
+        self.comfyui.trickle_view = True  # valid bytes, streamed slower than the budget
+        self.reparse(timeout=0.3)
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 504)  # the streamed read is cut by the absolute deadline
+        self.assertLess(elapsed, 1.5)
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])  # the fetched-then-abandoned output is cleaned
+
+    def test_the_timeout_must_be_positive_and_finite(self):
+        for value in ("0", "-1", "nan", "inf"):
+            with self.subTest(value=value):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        self.renderer.require_bounded_timeout(self.renderer.build_parser().parse_args(
+                            ["--temp-dir", "/tmp/x", "--timeout", value]))
+        self.renderer.require_bounded_timeout(self.renderer.build_parser().parse_args(
+            ["--temp-dir", "/tmp/x", "--timeout", "0.5"]))  # a valid budget is accepted
 
     def test_the_renderer_refuses_to_listen_without_a_credential(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -464,6 +586,68 @@ class RendererContractTests(unittest.TestCase):
             handle.flush()
             with self.assertRaises(SystemExit):
                 self.renderer.load_workflow(handle.name)
+
+
+class TLSListenerTests(unittest.TestCase):
+    """The adapter's own TLS listener must keep serving verified clients while an idle
+    unauthenticated connection lingers, and must keep enforcing verification (R6)."""
+
+    def setUp(self):
+        self.renderer = renderer_module()
+        self.renderer.CLEANUP_SECONDS = 0.8
+        self.comfyui = FakeComfyUI()
+        self.upstream = self.comfyui.start()
+        self.renderer.Handler.abandoned = {}
+        self.renderer.Handler.workflow = self.renderer.load_workflow(OPS / "illustration-workflow.json")
+        self.certs = tempfile.TemporaryDirectory(prefix="renderer-tls-")
+        certificate = os.path.join(self.certs.name, "cert.pem")
+        key = os.path.join(self.certs.name, "key.pem")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
+                        "-out", certificate, "-days", "2", "-subj", "/CN=127.0.0.1",
+                        "-addext", "subjectAltName=IP:127.0.0.1"], check=True, capture_output=True)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, key)
+        self.server = self.renderer.Server(("127.0.0.1", 0), self.renderer.Handler, context=context)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.renderer.Handler.arguments = self.renderer.build_parser().parse_args(
+            ["--api-key", "scene-key", "--comfyui", self.upstream, "--temp-dir", self.comfyui.temp_dir,
+             "--host", "127.0.0.1", "--port", "0", "--timeout", "2"])
+        self.port = self.server.server_address[1]
+        self.trusted = ssl.create_default_context(cafile=certificate)
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.comfyui.stop()
+        self.certs.cleanup()
+
+    def verified_request(self, host="127.0.0.1", context=None, timeout=5):
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(
+            context=context or self.trusted))
+        request = urllib.request.Request(f"https://{host}:{self.port}/render", data=b"{}", method="POST")
+        started = time.monotonic()
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                return response.status, time.monotonic() - started
+        except urllib.error.HTTPError as error:
+            return error.code, time.monotonic() - started
+
+    def test_an_idle_connection_cannot_block_verified_clients(self):
+        idle = socket.create_connection(("127.0.0.1", self.port))  # connects, sends no TLS bytes
+        try:
+            status, elapsed = self.verified_request()
+            self.assertEqual(status, 401)  # verified TLS, unauthenticated: rejected, never stalled
+            self.assertLess(elapsed, 3.0)
+            status, _ = self.verified_request()  # the listener keeps serving after the drop
+            self.assertEqual(status, 401)
+        finally:
+            idle.close()
+
+    def test_certificate_and_hostname_verification_stay_enforced(self):
+        with self.assertRaises(urllib.error.URLError) as failure:
+            self.verified_request(host="localhost")  # the certificate names the IP, not localhost
+        self.assertIn("certificate verify failed", str(failure.exception.reason))
 
 
 if __name__ == "__main__":
