@@ -6,6 +6,7 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE can select a locally installed Chromium.
 import io
 import os
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 import re
 import tempfile
@@ -18,10 +19,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from playwright.async_api import async_playwright, expect
 
 from learning import authoring, review
-from learning.models import Deck, ExampleIllustration, ExamplePair, LearnerPreferences, SpeechClip
+from learning.models import Attempt, Deck, ExampleIllustration, ExamplePair, LearnerPreferences, SpeechClip
 from learning.tests.test_illustrations import webp_image
 
 
@@ -291,3 +293,45 @@ class PracticeAudioLayoutTests(StaticLiveServerTestCase):
         for direction in ("recognition", "production"):
             with self.subTest(direction=direction, width=360):
                 async_to_sync(self.layout_flow)(self.presentation(direction), 360)
+
+    def test_polling_keeps_an_open_answer_disclosure_visible_and_focused(self):
+        """Real-template R1 regression: panel, scene, node and focus survive a terminal update."""
+        presentation = self.presentation("recognition")
+        review.submit(presentation, "speak", duration=2.0, audio_name="response.webm")
+        image_requests = []
+
+        def set_state(**fields):
+            Attempt.objects.filter(presentation=presentation).update(**fields)
+
+        async_to_sync(self.polling_flow)(presentation, 1366, image_requests, set_state)
+        self.assertEqual(len(image_requests), 1)  # the revealed scene is fetched once, never refetched
+
+    async def polling_flow(self, presentation, width, image_requests, set_state):
+        from asgiref.sync import sync_to_async
+        async with self.browser_page(width) as page:
+            page.on("request", lambda request: image_requests.append(request.url)
+                    if "/illustrations/" in request.url else None)
+            await page.goto(reverse("presentation", args=[presentation.pk]))
+            await expect(page.locator("#back")).to_be_visible()
+            await page.locator("#back .paired-examples > summary").click()  # open the real enclosing panel
+            toggle = page.locator("#back [data-illustration-toggle]")
+            await toggle.click()
+            figure = page.locator("#back [data-illustration-figure]")
+            await expect(figure).to_be_visible()
+            await figure.locator("img").evaluate("node => node.decode()")
+            await page.evaluate("window.__img = document.querySelector('#back [data-illustration-figure] img')")
+            await toggle.focus()
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await sync_to_async(set_state)(state="processing", transcript="a quiet glimmer")
+            # The terminal update replaces the answer fragment while the disclosure holds focus.
+            await sync_to_async(set_state)(state="assessed", grade="A", reason="You chose Forgot.",
+                                           next_due=timezone.now()+timedelta(days=1))
+            await expect(page.locator("#back")).to_contain_text("Needs a refresh")
+            await expect(figure).to_be_visible()  # the retained panel stayed open around the image
+            self.assertTrue(await page.evaluate(
+                "document.querySelector('#back .paired-examples').open"))
+            self.assertTrue(await page.evaluate(
+                "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+            await expect(toggle).to_have_attribute("aria-expanded", "true")
+            await expect(toggle).to_be_focused()  # a held disclosure keeps focus over Next card
+            self.assertNotEqual(await page.evaluate("document.activeElement && document.activeElement.id"), "next-card")

@@ -55,26 +55,33 @@
     // The image loads on first reveal, so a collapsed scene sends no request.
     if (figure.hidden && !image.getAttribute("src")) image.src = region.dataset.illustrationSrc;
     figure.hidden = !figure.hidden;
-    region.querySelector("[data-illustration-toggle]").textContent = figure.hidden ? "Show illustration" : "Hide illustration";
+    const toggle = region.querySelector("[data-illustration-toggle]");
+    toggle.setAttribute("aria-expanded", String(!figure.hidden));
+    toggle.textContent = figure.hidden ? "Show illustration" : "Hide illustration";
   }
   // Polling replaces the answer fragment; an open, loaded or focused disclosure survives it.
-  // The revealed img element is carried over, so an already-loaded scene is never refetched.
+  // The enclosing paired-examples panel and the revealed img element are carried over too, so
+  // the scene stays visible and is never refetched.
   function illustrationState() {
     const region = $("#back [data-illustration]");
     if (!region) return null;
     const figure = region.querySelector("[data-illustration-figure]");
-    return {open: !figure.hidden, image: figure.querySelector("img"),
+    const panel = region.closest("details");
+    return {open: !figure.hidden, panelOpen: panel ? panel.open : false, image: figure.querySelector("img"),
         focused: document.activeElement === region.querySelector("[data-illustration-toggle]")};
   }
   function restoreIllustration(state) {
     const region = $("#back [data-illustration]");
-    if (!region || !state) return;
+    if (!region || !state) return false;
     const figure = region.querySelector("[data-illustration-figure]");
+    if (state.open || state.panelOpen) region.closest("details").open = true;
     if (state.image.getAttribute("src")) figure.querySelector("img").replaceWith(state.image);
     figure.hidden = !state.open;
     const toggle = region.querySelector("[data-illustration-toggle]");
+    toggle.setAttribute("aria-expanded", String(state.open));
     toggle.textContent = state.open ? "Hide illustration" : "Show illustration";
-    if (state.focused) toggle.focus();
+    if (state.focused) { toggle.focus(); return true; }  // a held disclosure keeps focus over Next card
+    return false;
   }
   function endPermission() {
     if (waitStart !== null) { excluded += (performance.now()-waitStart)/1000; waitStart = null; }
@@ -162,10 +169,11 @@
     stoppedAt = null;
     deadlineAt = data.deadline ? Date.parse(data.deadline) : null;
     if (deadlineAt !== null && Date.now() < deadlineAt) announced = false;  // A confirmed new execution restarts announcements.
+    let disclosureFocused = false;
     if (data.back_html !== lastPayload) {
       const disclosure = illustrationState();
       $("#back").innerHTML = data.back_html;
-      restoreIllustration(disclosure);
+      disclosureFocused = restoreIllustration(disclosure);
       lastPayload = data.back_html;
     }
     for (const [name,value] of Object.entries(data.metrics || {})) {
@@ -179,7 +187,7 @@
     if (!terminal()) {
       if (overdue()) announceOverdue();
       else { $("#reconnect-controls").hidden = true; tell(""); }
-    } else { $("#reconnect-controls").hidden = true; announced = false; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
+    } else { $("#reconnect-controls").hidden = true; announced = false; if (["assessed", "skipped", "closed_unassessed"].includes(phase) && !disclosureFocused) $("#next-card")?.focus(); }
   }
   function reconnect(message) {
     tell(message + " The server outcome is unconfirmed. Check status or retry the same request.");

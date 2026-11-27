@@ -369,7 +369,7 @@ def illustration_image(request, pair_id):
     """The ready illustration of one example pair, reachable only by the pair's deck owner."""
     pair = get_object_or_404(ExamplePair.objects.select_related("card__deck"), pk=pair_id,
                              card__deck__owner=request.user)
-    row = illustrations.available_illustration(pair)
+    row = illustrations.ready_illustration(pair_id)
     if not row:
         raise Http404("This illustration is not available.")
     try:

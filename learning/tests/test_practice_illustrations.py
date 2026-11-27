@@ -54,11 +54,14 @@ class PracticeIllustrationTests(TestCase):
             target_highlight_start=PAIR["target_highlight_start"], native_sentence=PAIR["native_sentence"],
             native_highlight=PAIR["native_highlight"], native_highlight_start=PAIR["native_highlight_start"])
 
-    def assert_disclosure(self, markup, url):
+    def assert_disclosure(self, markup, url, figure_id="back-illustration-figure"):
         self.assertIn(f'data-illustration-src="{url}"', markup)
-        self.assertInHTML('<button type="button" class="button illustration-toggle" data-illustration-toggle>Show illustration</button>', markup)
+        self.assertIn('data-illustration-toggle aria-expanded="false"', markup)
+        self.assertIn(f'aria-controls="{figure_id}"', markup)
+        self.assertIn("Show illustration", markup)
         # Collapsed by default: the image element carries no source, so nothing is fetched yet.
-        self.assertInHTML('<figure class="illustration-figure" data-illustration-figure hidden><img data-illustration-image alt="Illustration of the example scene"></figure>', markup)
+        self.assertIn(f'<figure class="illustration-figure" data-illustration-figure id="{figure_id}" hidden>', markup)
+        self.assertIn('<img data-illustration-image alt="Illustration of the example scene">', markup)
 
     def test_question_and_answer_share_one_collapsed_disclosure_for_the_frozen_pair(self):
         card = self.prepared_card()
@@ -66,7 +69,7 @@ class PracticeIllustrationTests(TestCase):
         for direction in ("recognition", "production"):
             p = self.present(card, direction)
             page = self.client.get(reverse("presentation", args=[p.pk])).content.decode()
-            self.assert_disclosure(page, url)
+            self.assert_disclosure(page, url, figure_id="front-illustration-figure")
             review.submit(p, "skip")
             back = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
             self.assert_disclosure(back, url)
@@ -75,11 +78,19 @@ class PracticeIllustrationTests(TestCase):
         card = self.prepared_card()
         url = self.publish(card.active_pair)
         p = self.present(card, "recognition")
-        Attempt.objects.create(presentation=p, action="speak", state="submitted",
-            deadline=timezone.now()+timedelta(seconds=30))
-        back = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
-        self.assert_disclosure(back, url)
+        # A real spoken submission: the deadline defaults to the full assessment window.
+        review.submit(p, "speak", duration=2.0, audio_name="response.webm")
+        data = self.client.get(reverse("status", args=[p.pk])).json()
+        self.assertEqual(data["state"], "submitted")  # still Checking, not expired to failed
+        self.assert_disclosure(data["back_html"], url)
+
+    def test_forgot_reveals_a_collapsed_disclosure_on_a_fresh_presentation(self):
+        card = self.prepared_card()
+        url = self.publish(card.active_pair)
+        p = self.present(card, "recognition")
         review.submit(p, "forgot")
+        attempt = Attempt.objects.get(presentation=p)
+        self.assertEqual((attempt.action, attempt.state, attempt.grade), ("forgot", "assessed", "A"))
         back = self.client.get(reverse("status", args=[p.pk])).json()["back_html"]
         self.assert_disclosure(back, url)
 
@@ -121,7 +132,8 @@ class PracticeIllustrationTests(TestCase):
     def test_missing_artifact_renders_no_control(self):
         card = self.prepared_card()
         url = self.publish(card.active_pair)
-        (Path(settings.ILLUSTRATIONS_DIR)/f"{card.active_pair_id}.scene.webp").unlink()
+        row = ExampleIllustration.objects.get(pair=card.active_pair)
+        (Path(settings.ILLUSTRATIONS_DIR)/row.file).unlink()  # delete the stored artifact by its own name
         p = self.present(card, "recognition")
         page = self.client.get(reverse("presentation", args=[p.pk])).content.decode()
         self.assertNotIn("data-illustration", page)
