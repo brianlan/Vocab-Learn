@@ -1,68 +1,311 @@
-"""Supervised private FLUX.3 Image Klein renderer for Vocabulary example illustrations.
+"""Supervised private FLUX.3 Klein INT8 renderer for Vocabulary example illustrations.
 
-Run on the GPU host with the isolated `vocab-image-flux3` Conda interpreter:
+Run on the GPU host beside loopback ComfyUI with the isolated INT8 interpreter:
 
-    <miniforge>/envs/vocab-image-flux3/bin/python ops/illustration-renderer.py \
+    <miniforge>/envs/vocab-image-flux3-int8/bin/python ops/illustration-renderer.py \
         --model black-forest-labs/flux-3-image-klein \
-        --checkpoint /models/flux3-image-klein \
-        --revision 3b767ff9b5261d71645e2ec49d87d298d955238d \
-        --api-key <worker credential> --host 127.0.0.1 --port 8790
+        --api-key <worker credential> --host <gpu-host private IP> --port 8443 \
+        --temp-dir <ComfyUI base-directory>/temp \
+        --tls-certfile <cert.pem> --tls-keyfile <key.pem>
 
-Set ILLUSTRATION_ENDPOINT / ILLUSTRATION_MODEL / ILLUSTRATION_API_KEY on the application to point
-at http://<host>:<port>/render and share the same API key. The renderer loads
-one operator-configured compatible checkpoint from local disk at startup, authenticates the worker
-with the Bearer credential, serves one inference at a time, keeps prompt upsampling disabled, and
-returns a 512×384 WebP (encoded from one 768×576 render at 16 steps) with the checkpoint revision
-in the X-Illustration-Revision header. A request naming another model identifier is a clear 400.
+Set ILLUSTRATION_ENDPOINT / ILLUSTRATION_MODEL / ILLUSTRATION_API_KEY on the application to point at
+the renderer's private HTTPS endpoint and share the same API key. The adapter submits the pinned
+repository graph (ops/illustration-workflow.json, the tested INT8 pilot) to the loopback ComfyUI
+v0.46.0 runtime with only the request's prompt text and noise seed substituted, admits one render
+at a time, and bounds the entire round trip — admission, submission, every poll, the expiry check
+before a result is accepted, streamed response reads included — by one request deadline. It owns
+its inference work end to end: every accepted graph carries a caller-supplied prompt id, a queued
+or running render is cancelled and waited out on failure or timeout, and the render's temporary
+output files are removed from ComfyUI's temp directory (they are not auto-cleaned and a history
+delete only forgets the in-memory entry). Unsuccessful HTTP statuses are rejected centrally: a
+failed exchange is never decoded as successful state or image data. A cleanup that cannot
+complete — including one whose exchanges fail — keeps the history entry as the ownership record
+and gates admission — the renderer answers a bounded 503 instead of submitting new inference —
+until recovery finishes. A submission whose outcome is unknown — a timeout, a dropped connection
+after the graph was sent, or an unreadable acknowledgement — is never forgotten for age or
+absence: it too keeps gating admission until it is observed, cancelled and cleaned; only a
+refused connection or a synchronous 4xx rejection prove that nothing was issued, and restarting
+the renderer is the explicit operator recovery for a submission that never arrives. The renderer
+refuses to start without --api-key, --temp-dir and a positive finite --timeout, and authenticates
+every request. Prompts and credentials never reach the logs.
 """
 import argparse
+import copy
+import http.client
 import io
 import json
+import math
+import os
+import socket
+import ssl
 import threading
+import time
+import urllib.error
+import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 MAX_BODY_BYTES = 64 * 1024
+PROMPT_NODE, SEED_NODE, OUTPUT_NODE = "4", "6", "12"
+POLL_SECONDS = 0.125
+CLEANUP_SECONDS = 5.0  # bounded cancellation/cleanup window, independent of the render deadline
+HANDSHAKE_SECONDS = 10.0  # bounded TLS handshake so one idle connection cannot stall the accept loop
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="black-forest-labs/flux-3-image-klein",
                         help="the only model identifier this renderer accepts")
-    parser.add_argument("--checkpoint", required=True, help="local path of the compatible checkpoint")
-    parser.add_argument("--revision", default="", help="checkpoint revision recorded in image provenance")
+    parser.add_argument("--workflow", default=None,
+                        help="path of the pinned ComfyUI graph; defaults to the file beside this script")
+    parser.add_argument("--comfyui", default="http://127.0.0.1:8188",
+                        help="loopback base URL of the local ComfyUI runtime")
+    parser.add_argument("--temp-dir", required=True,
+                        help="ComfyUI's temp directory, where this adapter removes its owned render files")
+    parser.add_argument("--revision", default="int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d",
+                        help="INT8 checkpoint identity recorded in image provenance")
     parser.add_argument("--api-key", default="", help="worker credential; empty disables authentication")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--timeout", type=float, default=120.0,
+                        help="bounded budget in seconds for one admitted render, including its queue wait")
+    parser.add_argument("--tls-certfile", default=None, help="certificate chain for private HTTPS")
+    parser.add_argument("--tls-keyfile", default=None, help="private key for private HTTPS")
     return parser
 
 
-def load_pipeline(args):
-    """Load the compatible checkpoint once at startup; one inference at a time, upsampling off."""
-    import torch
-    from diffusers import DiffusionPipeline
-    pipeline = DiffusionPipeline.from_pretrained(args.checkpoint, torch_dtype=torch.bfloat16)
-    pipeline.to("cuda" if torch.cuda.is_available() else "cpu")
-    return pipeline
+def load_workflow(path):
+    """The pinned graph is the tested pilot artifact byte for byte: loaders, dimensions, the
+    16-step Euler schedule and every other inference input stay fixed; only the prompt text and
+    noise seed are substituted per request."""
+    graph = json.loads(Path(path).read_text())["prompt"]
+    for node in (PROMPT_NODE, SEED_NODE, OUTPUT_NODE):
+        if node not in graph:
+            raise SystemExit(f"--workflow is missing the pinned node {node}.")
+    return graph
 
 
-def render(pipeline, args, prompt, seed):
-    import torch
-    from PIL import Image
-    generator = torch.Generator(device=pipeline.device).manual_seed(seed)
-    with torch.inference_mode():
-        result = pipeline(prompt=prompt, width=768, height=576, num_inference_steps=16,
-                          guidance_scale=2.5, prompt_upsampling=False, generator=generator)
-    image = result.images[0]
-    image.thumbnail((512, 384), Image.LANCZOS)
-    encoded = io.BytesIO()
-    image.save(encoded, format="WEBP", quality=76)
-    return encoded.getvalue()
+def remaining(deadline):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("The render did not finish within its time budget.")
+    return left
+
+
+def read_bounded(response, deadline):
+    """Read the whole response body while the absolute deadline holds. The exchange's watchdog
+    interrupts a trickling sender mid-read — a buffered ``read(n)`` may loop over many receives
+    internally, and only the socket shutdown ends one that never stops — while this loop
+    re-checks the budget between reads. An interrupted read surfaces as a budget timeout."""
+    parts = []
+    while True:
+        remaining(deadline)
+        chunk = response.read(65536)
+        if not chunk:
+            return b"".join(parts)
+        parts.append(chunk)
+
+
+def comfyui_exchange(base, route, body, deadline):
+    """One raw HTTP exchange against ComfyUI under the absolute deadline. The watchdog is armed
+    once the request is sent — before the status and headers are read — and disarmed only when
+    the whole body is consumed, so neither trickling headers nor a trickling body can hold a
+    render slot past the budget. An interruption at the deadline surfaces as TimeoutError; real
+    network errors stay errors."""
+    url = urllib.parse.urlsplit(base + route)
+    payload = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    factory = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+    connection = factory(url.hostname, url.port, timeout=remaining(deadline))
+    try:
+        connection.request("POST" if payload is not None else "GET",
+                           url.path + (f"?{url.query}" if url.query else ""), payload, headers)
+        sock = connection.sock
+        cancelled = threading.Event()
+
+        def cut():
+            # close() does not wake a blocked receive on Linux; shutdown() does
+            if not cancelled.is_set():
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        watchdog = threading.Timer(remaining(deadline), cut) if sock is not None else None
+        if watchdog is not None:
+            watchdog.start()
+        try:
+            response = connection.getresponse()
+            if response.status >= 400:
+                # getresponse() returns 4xx/5xx bodies instead of raising; a failed exchange must
+                # never be decoded as successful state or image data.
+                raise urllib.error.HTTPError(base + route, response.status, response.reason,
+                                             response.headers, response)
+            answer = read_bounded(response, deadline)
+        except OSError:
+            remaining(deadline)  # re-raises TimeoutError once the budget is gone; else it was real
+            raise
+        finally:
+            cancelled.set()
+            if watchdog is not None:
+                watchdog.cancel()
+    finally:
+        connection.close()
+    return answer
+
+
+def comfyui_request(base, route, body=None, *, deadline):
+    payload = comfyui_exchange(base, route, body, deadline)
+    return json.loads(payload) if payload else {}  # the history delete answers an empty 200
+
+
+def remove_owned_files(arguments, entry):
+    """Unlink the temp files this job's history entry owns — never any other file. A file that is
+    already gone counts as clean; anything outside the temp directory is refused."""
+    temp_root = os.path.realpath(arguments.temp_dir)
+    removed = True
+    for node in (entry.get("outputs") or {}).values():
+        for image in node.get("images", []):
+            if image.get("type") != "temp":
+                continue
+            path = os.path.realpath(os.path.join(arguments.temp_dir, image.get("subfolder", ""),
+                                                 image["filename"]))
+            if os.path.dirname(path) != temp_root:
+                removed = False
+                continue
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    removed = False
+    return removed
+
+
+def cleanup_job(arguments, prompt_id, known):
+    """Cancel the owned job if it is queued or running, wait out its terminal state within the
+    bounded cleanup window, then remove its temporary files and — only once they are gone — its
+    history entry, which is the ownership record. Returns (resolved, seen): unresolved files leave
+    the job unresolved, and seen records that the id was observed in the queue or history —
+    checked before the delete could remove a pending job — so a confirmed cancellation resolves an
+    unacknowledged id. Absence alone never resolves an unknown id: a submission the runtime has
+    not enqueued yet may still appear, so absence resolves only an acknowledged job."""
+    deadline = time.monotonic() + CLEANUP_SECONDS
+    try:
+        queue = comfyui_request(arguments.comfyui, "/queue", deadline=deadline)
+        ids = [item[1] for section in ("queue_running", "queue_pending")
+               for item in queue.get(section) or []]
+        seen = prompt_id in ids  # evidence of existence, taken before the delete can remove it
+        comfyui_request(arguments.comfyui, "/queue", {"delete": [prompt_id]}, deadline=deadline)
+        comfyui_request(arguments.comfyui, "/interrupt", {"prompt_id": prompt_id}, deadline=deadline)
+        while time.monotonic() < deadline:
+            queue = comfyui_request(arguments.comfyui, "/queue", deadline=deadline)
+            ids = [item[1] for section in ("queue_running", "queue_pending")
+                   for item in queue.get(section) or []]
+            if prompt_id not in ids:
+                break
+            seen = True
+            time.sleep(POLL_SECONDS)
+        else:
+            return False, seen  # the job never reached a terminal state within the window
+        entry = comfyui_request(arguments.comfyui, f"/history/{prompt_id}", deadline=deadline).get(prompt_id)
+        if not entry:
+            return known or seen, seen  # an acknowledged-and-absent job is terminal; absence alone is not
+        seen = True
+        if not remove_owned_files(arguments, entry):
+            return False, seen  # keep the history entry until every owned file is gone
+        comfyui_request(arguments.comfyui, "/history", {"delete": [prompt_id]}, deadline=deadline)
+        return True, seen
+    except (urllib.error.URLError, OSError, ValueError):
+        return False, False  # ComfyUI unreachable or unresponsive; the job is retried before the next render
+
+
+def render(workflow, arguments, prompt, seed, deadline):
+    """One ComfyUI round trip inside the caller's budget: submit the pinned graph under a
+    caller-supplied prompt id, poll until the deadline, and fetch the temporary output. The
+    finally block cancels the job and removes its files whether the render succeeded or not;
+    an unresolved cleanup is retained so admission stays gated until recovery completes."""
+    graph = copy.deepcopy(workflow)
+    graph[PROMPT_NODE]["inputs"]["text"] = prompt
+    graph[SEED_NODE]["inputs"]["noise_seed"] = seed
+    prompt_id = str(uuid.uuid4())  # owned before submission: tracked even if the acknowledgement is lost
+    known = False
+    submitted = None  # None: uncertain; True: acknowledged; False: never issued, or rejected
+    try:
+        try:
+            comfyui_request(arguments.comfyui, "/prompt",
+                            {"prompt": graph, "prompt_id": prompt_id}, deadline=deadline)
+            submitted = True  # the runtime answered: the graph was enqueued synchronously
+        except urllib.error.HTTPError as error:
+            # ComfyUI rejects a graph synchronously with a 4xx and without enqueueing it; a
+            # server-side failure leaves the outcome unknown.
+            submitted = False if error.code < 500 else None
+            raise
+        except ConnectionRefusedError:
+            submitted = False  # the connection was refused: nothing could be issued
+            raise
+        except Exception:
+            # A post-send disconnect, an unreadable acknowledgement or a timeout all leave the
+            # submission's fate unknown: the runtime may still hold or enqueue the graph.
+            submitted = None
+            raise
+        known = True  # the runtime accepted the id: absence now means terminal, not unknown
+        while True:
+            history = comfyui_request(arguments.comfyui, f"/history/{prompt_id}",
+                                      deadline=deadline).get(prompt_id)
+            if history is not None:
+                status = history["status"]
+                if not status["completed"] or status["status_str"] != "success":
+                    raise RuntimeError(f"ComfyUI reported the render as {status['status_str']}.")
+                remaining(deadline)  # a late completion is not served past its budget
+                [output] = history["outputs"][OUTPUT_NODE]["images"]
+                query = urllib.parse.urlencode({key: output[key] for key in ("filename", "subfolder", "type")})
+                scene = comfyui_exchange(arguments.comfyui, "/view?" + query, None, deadline)
+                from PIL import Image
+                with Image.open(io.BytesIO(scene)) as image:
+                    image.thumbnail((512, 384), Image.LANCZOS)
+                    encoded = io.BytesIO()
+                    image.save(encoded, format="WEBP", quality=76)
+                remaining(deadline)  # an expired render is cancelled, not served late
+                return encoded.getvalue()
+            time.sleep(POLL_SECONDS)
+    finally:
+        resolved, seen = cleanup_job(arguments, prompt_id, known)
+        if not resolved and (seen or submitted is not False):
+            # An uncertain submission keeps its ownership and gates admission for as long as it
+            # takes: the runtime may still enqueue it, whatever the queue said moments ago.
+            with Handler.abandoned_lock:
+                previous = Handler.abandoned.get(prompt_id)
+                Handler.abandoned[prompt_id] = {
+                    "known": known or seen or (previous["known"] if previous else False)}
+
+
+class Server(ThreadingHTTPServer):
+    """TLS handshakes run in each connection's own thread with a finite timeout, so an idle or
+    invalid connection can never stall the accept loop for other clients."""
+
+    def __init__(self, address, handler, context=None):
+        self.context = context
+        super().__init__(address, handler)
+
+    def process_request_thread(self, request, client_address):
+        if self.context is None:
+            return super().process_request_thread(request, client_address)
+        request = self.context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        request.settimeout(HANDSHAKE_SECONDS)
+        try:
+            request.do_handshake()
+        except (OSError, ssl.SSLError):
+            return self.shutdown_request(request)  # drop it; other clients keep being served
+        super().process_request_thread(request, client_address)
 
 
 class Handler(BaseHTTPRequestHandler):
-    pipeline = None
+    workflow = None
     arguments = None
     lock = threading.Lock()  # one inference at a time
+    abandoned = {}  # prompt id -> {"known"}: owned jobs whose cleanup did not complete
+    abandoned_lock = threading.Lock()
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -74,23 +317,53 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except ValueError:
             return self.reply(400, "The request body is not valid JSON.")
+        if not isinstance(body, dict):
+            return self.reply(400, "The request body must be a JSON object.")
         if body.get("model") != self.arguments.model:
             return self.reply(400, f"This renderer serves {self.arguments.model}; configure ILLUSTRATION_MODEL to match.")
         prompt = body.get("prompt")
         seed = body.get("seed")
-        if not isinstance(prompt, str) or not prompt.strip() or not isinstance(seed, int) or not 0 <= seed < 2**32:
-            return self.reply(400, "The request needs a nonempty prompt and a 32-bit seed.")
-        with self.lock:
+        if not isinstance(prompt, str) or not prompt.strip() or type(seed) is not int or not 0 <= seed < 2**32:
+            return self.reply(400, "The request needs a nonempty prompt and a 32-bit integer seed.")
+        deadline = time.monotonic() + self.arguments.timeout  # one budget across admission and the round trip
+        if not self.lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return self.reply(503, "The renderer is busy with another render; retry shortly.")
+        try:
+            if not self.recover_abandoned():
+                return self.reply(503, "The renderer is still recovering an earlier render; retry shortly.")
             try:
-                image = render(self.pipeline, self.arguments, prompt, seed)
+                image = render(self.workflow, self.arguments, prompt, seed, deadline)
+            except TimeoutError:
+                return self.reply(504, "The render exceeded its time budget. Retry once the renderer is healthy.")
             except Exception as error:
-                return self.reply(500, f"Rendering failed: {error.__class__.__name__}.")
+                return self.reply(502, f"Rendering failed: {error.__class__.__name__}.")
+        finally:
+            self.lock.release()
         self.send_response(200)
         self.send_header("Content-Type", "image/webp")
         self.send_header("Content-Length", str(len(image)))
         self.send_header("X-Illustration-Revision", self.arguments.revision)
         self.end_headers()
         self.wfile.write(image)
+
+    def recover_abandoned(self):
+        """Reconcile jobs whose cleanup did not complete before admitting new work. Returns False
+        while any owned job remains unresolved, and the caller must then admit no new inference.
+        An uncertain submission is never dropped for age or absence — the runtime may still
+        enqueue it at any moment — so it keeps gating admission until it is observed here,
+        cancelled and cleaned; restarting the renderer is the explicit operator recovery for a
+        submission that never arrives."""
+        with self.abandoned_lock:
+            stale = list(self.abandoned.items())
+        for prompt_id, record in stale:
+            resolved, seen = cleanup_job(self.arguments, prompt_id, record["known"])
+            if seen:
+                record["known"] = True  # the job exists: reconcile and cancel it, however late
+            if resolved:
+                with self.abandoned_lock:
+                    self.abandoned.pop(prompt_id, None)
+        with self.abandoned_lock:
+            return not self.abandoned
 
     def reply(self, status, message):
         body = json.dumps({"error": message}).encode()
@@ -110,15 +383,29 @@ def require_worker_credential(arguments):
         raise SystemExit("--api-key is required: the renderer refuses to listen without a worker credential.")
 
 
+def require_bounded_timeout(arguments):
+    """A non-positive or non-finite --timeout would leave renders unbounded."""
+    if not math.isfinite(arguments.timeout) or arguments.timeout <= 0:
+        raise SystemExit("--timeout must be a positive, finite number of seconds.")
+
+
 def main():
     arguments = build_parser().parse_args()
     require_worker_credential(arguments)
+    require_bounded_timeout(arguments)
     Handler.arguments = arguments
-    print(f"Loading checkpoint {arguments.checkpoint} ...", flush=True)
-    Handler.pipeline = load_pipeline(arguments)
-    server = ThreadingHTTPServer((arguments.host, arguments.port), Handler)
+    Handler.workflow = load_workflow(arguments.workflow or
+                                     Path(__file__).resolve().parent / "illustration-workflow.json")
+    context = None
+    if bool(arguments.tls_certfile) != bool(arguments.tls_keyfile):
+        raise SystemExit("--tls-certfile and --tls-keyfile must be provided together.")
+    if arguments.tls_certfile:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(arguments.tls_certfile, arguments.tls_keyfile)
+    server = Server((arguments.host, arguments.port), Handler, context=context)
     server.daemon_threads = True
-    print(f"Illustration renderer serving {arguments.model} on {arguments.host}:{arguments.port}", flush=True)
+    print(f"Illustration renderer serving {arguments.model} via {arguments.comfyui} "
+          f"on {'https' if context else 'http'}://{arguments.host}:{arguments.port}", flush=True)
     server.serve_forever()
 
 

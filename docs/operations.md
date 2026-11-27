@@ -394,26 +394,79 @@ files under `ILLUSTRATIONS_DIR` (default `/data/illustrations` in the `app_data`
 served only to the owning learner through an authenticated route. Recorded provenance carries the model, endpoint,
 prompt version, seed and checkpoint revision — never credentials.
 
-Start the supervised renderer on the GPU host with the isolated `vocab-image-flux3` Conda interpreter; it loads the
-operator-configured compatible checkpoint from local disk, keeps prompt upsampling disabled, renders one image at a
-time at 768 × 576 with 16 steps and returns a 512 × 384 WebP at quality 76 together with the checkpoint revision.
-Bind it to an interface the worker container can reach — a private LAN address, or loopback plus a TLS-terminating
-proxy that forwards to the renderer. The renderer refuses to start without `--api-key` and authenticates every
-request:
+The renderer is a thin authenticated adapter in front of the pinned INT8 ComfyUI runtime. The runtime is ComfyUI
+v0.46.0 with Triton serving `http://127.0.0.1:8188` on the GPU host, supervised by the `vocab-illustration-int8` user
+service in the `vocab-image-flux3-int8` Conda environment of the operator's SSD Miniforge installation. The service
+must start ComfyUI with `--force-output-rerun`: the adapter removes each render's temporary output after the round
+trip, and without that flag ComfyUI's node-output cache would re-emit the removed filename for a repeated
+prompt+seed pair instead of rendering again, so an identical-input retry (the worker's revision path reuses both)
+would keep failing with a missing-file error while the runtime was healthy. The flag re-runs the output node and
+re-materializes the file while upstream nodes stay cached. The adapter
+submits the repository-owned pinned graph `ops/illustration-workflow.json` — the tested INT8 pilot graph,
+SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a` — to loopback ComfyUI with only the
+request's prompt text and noise seed substituted. The graph pins the INT8 loaders, the 768 × 576 latent, the 16-step
+Euler schedule and every other inference input. Each accepted graph carries a caller-supplied prompt id, so the
+adapter owns its inference work end to end: it admits one render at a time within the request budget, bounds the
+whole round trip — every HTTP exchange including status and header reads — by one deadline, and on every exit path (success, failure,
+timeout, lost acknowledgement) cancels its queued or running job, waits out the terminal state, removes the
+render's temporary files from ComfyUI's temp directory (they are not auto-cleaned and a history delete only forgets
+the in-memory entry), and only then erases the history entry, which stays behind as the ownership record while any
+file remains. A cleanup that cannot complete, a failed upstream exchange, or a submission whose
+outcome is unknown — a timeout, a dropped connection after the graph was sent, or an unreadable
+acknowledgement — keeps the ownership record and gates admission: until recovery finishes the
+renderer answers a bounded 503 and submits no new inference. Unsuccessful HTTP statuses are
+rejected centrally, so a failed exchange is never decoded as successful state or image data.
+An uncertain submission is never dropped for age or absence — current absence does not prove a
+not-yet-enqueued submission can no longer appear — so it keeps gating admission until it is
+observed in the runtime, cancelled and cleaned like any owned job; only a connection the runtime
+refused before the graph could be sent, or a synchronous 4xx rejection, prove that nothing was
+issued. Restarting the renderer is the explicit operator recovery for a submission that never
+arrives. Every exchange is interrupted by the absolute deadline via a watchdog that
+shuts the socket down — trickling header or body senders cannot hold a render slot past the budget — and TLS
+handshakes run per connection with a finite
+timeout, so an idle connection cannot stall the listener for other clients. It returns a 512 × 384 WebP
+at quality 76 together with the INT8 checkpoint identity. The renderer refuses to start without `--api-key` and
+`--temp-dir`, rejects a non-positive or non-finite `--timeout`, and authenticates every request. For private HTTPS
+it can terminate TLS itself:
 
 ```sh
-~/miniforge/envs/vocab-image-flux3/bin/python ops/illustration-renderer.py \
+# once, on the GPU host: a private CA and a leaf certificate valid for the private LAN address
+cd <renderer root>
+openssl req -x509 -newkey rsa:2048 -nodes -keyout renderer-ca.key -out renderer-ca.crt -days 825 \
+    -subj "/CN=Vocab Renderer Dev CA"
+openssl req -newkey rsa:2048 -nodes -keyout renderer.key -out renderer.csr -subj "/CN=<gpu-host private IP>"
+printf "subjectAltName=IP:<gpu-host private IP>\nextendedKeyUsage=serverAuth\n" > san.ext
+openssl x509 -req -in renderer.csr -CA renderer-ca.crt -CAkey renderer-ca.key -CAcreateserial \
+    -out renderer.crt -days 825 -extfile san.ext && rm san.ext renderer.csr
+chmod 600 renderer-ca.key renderer.key
+
+# on the GPU host, under a supervisor (here a transient systemd user unit)
+~/miniforge/envs/vocab-image-flux3-int8/bin/python ops/illustration-renderer.py \
     --model black-forest-labs/flux-3-image-klein \
-    --checkpoint /models/flux3-image-klein \
-    --revision 3b767ff9b5261d71645e2ec49d87d298d955238d \
-    --api-key <worker credential> --host <gpu-host private IP> --port 8790
+    --comfyui http://127.0.0.1:8188 \
+    --temp-dir <ComfyUI base-directory>/temp \
+    --revision int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d \
+    --api-key <worker credential> --host <gpu-host private IP> --port 8443 \
+    --tls-certfile renderer.crt --tls-keyfile renderer.key
 ```
 
-Set `ILLUSTRATION_ENDPOINT` (for example `https://<gpu-host>/illustrations/render` behind the TLS proxy, or
-`http://<gpu-host-private-IP>:8790/render` with `ALLOW_INSECURE_PROVIDER_HTTP=1` — a development-only opt-in for
-plain HTTP inside the private network), `ILLUSTRATION_MODEL` (default `black-forest-labs/flux-3-image-klein`) and
-`ILLUSTRATION_API_KEY` in the application environment; an empty endpoint disables queueing and dispatch. A model
-mismatch returns a clear configuration error. The worker gives illustrations one dedicated execution slot (separate
+Checkpoint provenance: base `black-forest-labs/flux-3-image-klein` revision
+`3b767ff9b5261d71645e2ec49d87d298d955238d` as a local INT8 ConvRot conversion of authorized BF16 weights — denoiser
+`flux3-klein-3b767ff-local-int8-convrot.safetensors` under `models/diffusion_models/`, text encoder
+`qwen3vl-4b-3b767ff-local-int8-convrot.safetensors` under `models/text_encoders/`, and pilot VAE
+`flux2-vae-3b767ff.safetensors` under `models/vae/` on the GPU host.
+
+Set `ILLUSTRATION_ENDPOINT` (for example `https://<gpu-host-private-IP>:8443/render` for the adapter's own TLS
+endpoint; `http://…:8790/render` with `ALLOW_INSECURE_PROVIDER_HTTP=1` remains a development-only opt-in for plain
+HTTP and does not satisfy the private-HTTPS requirement), `ILLUSTRATION_MODEL` (default
+`black-forest-labs/flux-3-image-klein`) and `ILLUSTRATION_API_KEY` in the application environment; an empty endpoint
+disables queueing and dispatch. The worker verifies the renderer certificate with normal TLS trust: copy
+`renderer-ca.crt` to the application host (a private, ignored directory is fine), point `RENDERER_CA_FILE` at it,
+and the worker builds its trust bundle from the system store plus that CA at startup — no application code change,
+and external provider verification keeps working. `ALLOW_INSECURE_PROVIDER_HTTP` stays `0` in production. When a
+proxy is injected into the containers (for example by the Docker client), add the renderer address to
+`NO_PROXY_DESTINATIONS` so private renderer traffic bypasses it. A model mismatch returns a clear configuration
+error. The worker gives illustrations one dedicated execution slot (separate
 from speech), prefers newly saved revisions over backfill, and reclaims images whose revision loses its last
 reference after 24 hours of inactivity under the same rules as speech; a returning reference resets the grace, and
 example text and frozen history are never touched.
@@ -428,15 +481,35 @@ docker compose exec web python manage.py queue_example_illustrations alice --lim
 The preview records missing, failed, queued, processing and ready counts with zero writes. Queueing affects only
 missing or failed illustrations and coalesces repeated runs.
 
-**Required development GPU sample before broad backfill.** This machine has no GPU, `vocab-image-flux3` environment
-or FLUX.3 Klein checkpoint, so the shipped renderer has not been exercised yet. An authorized operator must run the
-command above with the pinned revision, exercise the configured renderer from the development worker, and inspect
-representative English–Chinese, English–Spanish and Spanish–Chinese pairs for scene fidelity and visible lettering.
-Record the configuration, commands and sample outcomes here before any broad backfill:
+**Required development GPU sample before broad backfill.** Completed 2026-11-27 in development against the pinned
+INT8 runtime: ComfyUI v0.46.0 + Triton (`vocab-illustration-int8` user service, loopback `127.0.0.1:8188`,
+started with `--force-output-rerun` so removed temp outputs render again on identical inputs) on the
+GPU host, with the adapter from this repository run beside it as the transient `vocab-illustration-adapter-dev`
+user unit (copy kept in the pilot root; `systemctl --user stop vocab-illustration-adapter-dev` ends it) bound to the
+private LAN address and terminating private HTTPS itself (private CA, leaf certificate with the address as SAN).
+The recorded dispatch below ran through the verified HTTPS endpoint with normal certificate and hostname
+verification (`ALLOW_INSECURE_PROVIDER_HTTP=0`, the CA trusted via `RENDERER_CA_FILE`), the renderer address added
+to `NO_PROXY_DESTINATIONS` to bypass the injected container proxy:
 
-- Renderer host, bind address, checkpoint path and revision: _pending operator run_
-- Worker dispatch evidence and file sizes: _pending operator run_
-- Scene-fidelity/lettering review across the three language pairs: _pending operator run_
+- Renderer host, bind address, checkpoint path and revision: GPU host `10.133.109.47`, adapter `https://0.0.0.0:8443`
+  (private CA + IP-SAN leaf in the pilot root; CA copy trusted by the worker), loopback ComfyUI `127.0.0.1:8188`,
+  temp directory `<ComfyUI base-directory>/temp`; pinned graph `ops/illustration-workflow.json`
+  (SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a`, verified against the pilot copy);
+  the INT8 ConvRot denoiser, text encoder and pilot VAE per the checkpoint identities above; revision
+  `int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d`.
+- Worker dispatch evidence and file sizes: one development learner with twelve ready pairs (four per language pair)
+  was previewed (`--dry-run --limit 12`: missing 12, failed 0) and then queued (`--limit 12`); all 12 reached
+  `done` with per-revision seeds, the checkpoint revision and the verified HTTPS endpoint recorded in provenance.
+  Stored WebPs measured 25–44 KiB (432 KiB total). Owner retrieval returned 200 `image/webp`, another learner 404
+  and an anonymous request 302. Warm worker-to-renderer re-renders of six saved pairs (two per language pair, same
+  prompts and seeds) measured a 2.36 s median (2.34–2.44 s) over the verified HTTPS endpoint, consistent with the
+  pilot's 2.39 s loopback median. After the run ComfyUI's temp directory held no leftovers — the adapter had
+  cancelled and cleaned up every owned job and file.
+- Scene-fidelity/lettering review across the three language pairs: six stored images reviewed (two per pair). The
+  pond daybreak glimmer, pan washing at the sink, blue-umbrella hand-off, cat stretching on the sunny windowsill
+  and blowing out the birthday candles all read clearly in the pilot gouache style with no lettering or captions;
+  the baila kitchen scene conveyed the kitchen and a mid-motion standing figure but not a lone dancer — recorded
+  for future prompt tuning, no change in this repository.
 
 ## Persistence, audio expiry, and upgrade
 

@@ -1,0 +1,121 @@
+{
+  "prompt": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "flux3-klein-3b767ff-local-int8-convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl-4b-3b767ff-local-int8-convrot.safetensors",
+        "type": "flux3",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae-3b767ff.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "A soft hand-painted gouache storybook illustration for an adult language-learning card. Warm ivory paper, muted moss green and terracotta, matte color, soft edges, a light brush texture, and gentle natural light. A single clear moment, with the main action and enough surrounding setting both visible in the landscape frame. All surfaces are plain and unlettered. A wordless illustration without a caption or decorative border. A woman turns at a kitchen table and accidentally knocks a glass of water over with her elbow. The glass is tipping and the elbow is next to it. Show the woman, her elbow, the tipping glass, the spilled water, and the surrounding kitchen.",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "EmptyFlux2LatentImage",
+      "inputs": {
+        "width": 768,
+        "height": 576,
+        "batch_size": 1
+      }
+    },
+    "6": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": 7100
+      }
+    },
+    "7": {
+      "class_type": "BasicGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "conditioning": [
+          "4",
+          0
+        ]
+      }
+    },
+    "8": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "euler"
+      }
+    },
+    "9": {
+      "class_type": "ManualSigmas",
+      "inputs": {
+        "sigmas": "1.0000000000, 0.9904716532, 0.9798020602, 0.9677731228, 0.9541073887, 0.9384463868, 0.9203187251, 0.8990918264, 0.8738965952, 0.8435054773, 0.8061264056, 0.7590361446, 0.6978851964, 0.6152707902, 0.4974874372, 0.3160054720, 0.0000000000"
+      }
+    },
+    "10": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "6",
+          0
+        ],
+        "guider": [
+          "7",
+          0
+        ],
+        "sampler": [
+          "8",
+          0
+        ],
+        "sigmas": [
+          "9",
+          0
+        ],
+        "latent_image": [
+          "5",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "10",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "PreviewImage",
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ]
+      }
+    }
+  }
+}
