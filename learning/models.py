@@ -114,6 +114,28 @@ class SpeechClip(models.Model):
         indexes = [models.Index(fields=["state", "requested_at"], name="speech_queue_order")]
 
 
+class ExampleIllustration(models.Model):
+    pair = models.OneToOneField(ExamplePair, on_delete=models.CASCADE, related_name="illustration")
+    state = models.CharField(max_length=12, default="queued")
+    backfill = models.BooleanField(default=False)
+    execution = models.PositiveIntegerField(default=1)
+    claim = models.UUIDField(default=uuid.uuid4)
+    file = models.CharField(max_length=120, blank=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    deadline = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    provenance = models.JSONField(default=dict)
+    error = models.CharField(max_length=300, blank=True)
+    error_category = models.CharField(max_length=24, blank=True)
+    retryable = models.BooleanField(default=True)
+    # The same reference-inactivity grace as speech; the age of the image itself never retires it.
+    unreferenced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["state", "requested_at"], name="illustration_queue_order")]
+
+
 class Presentation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
