@@ -14,7 +14,7 @@ from django.db.models import F, Q
 from django.db.models.functions import Now
 from django.utils import timezone
 from . import providers, lexical
-from .models import Attempt, Card, ExamplePair, GenerationJob, SpeechClip
+from .models import Attempt, Card, ExampleIllustration, ExamplePair, GenerationJob, SpeechClip
 from .review import TERMINAL, commit_grade, grade_units, valid_presentation, defer, adopt_corrected_cue
 
 
@@ -231,7 +231,8 @@ def save_stage(attempt_id, claim, **fields):
 
 @transaction.atomic
 def fail(kind, job_id, claim, error):
-    model = {"assessment": Attempt, "generation": GenerationJob, "speech": SpeechClip}[kind]
+    model = {"assessment": Attempt, "generation": GenerationJob, "speech": SpeechClip,
+             "illustration": ExampleIllustration}[kind]
     job = model.objects.get(pk=job_id)
     if job.claim != claim or job.state not in ["processing", "submitted", "queued"]:
         return
@@ -327,6 +328,8 @@ def save_pair(job_id, claim, data, provenance):
         if job.mode == "initial":
             Card.objects.filter(pk=job.card_id).update(active_pair=pair, ready=True)
         enqueue_speech(pair)
+        from .illustrations import enqueue_illustration
+        enqueue_illustration(pair)
     if pair is None:
         return None
     job.result, job.provenance, job.state = pair, {**job.provenance, **provenance, "phase": "ready"}, "done"
@@ -352,6 +355,8 @@ def save_corrected_pair(card_id, source_version, previous_pair_id, data, provena
             state="cancelled", claim=uuid.uuid4())
     adopt_corrected_cue(card)
     enqueue_speech(pair)
+    from .illustrations import enqueue_illustration
+    enqueue_illustration(pair)
     return pair
 
 

@@ -14,13 +14,15 @@ def execute(kind, job_id, claim, paths):
     os.environ.update(paths)
     import django
     django.setup()
+    from .illustrations import process_illustration
     from .work import process_assessment, process_generation, process_speech, fail
     from .providers import StageError
     def interrupted(signum, frame):
         raise StageError("worker", "Execution was stopped before completion. Retry explicitly.")
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        (process_assessment if kind == "assessment" else process_generation if kind == "generation" else process_speech)(job_id, claim)
+        (process_assessment if kind == "assessment" else process_generation if kind == "generation"
+         else process_speech if kind == "speech" else process_illustration)(job_id, claim)
     except StageError as error:
         fail(kind, job_id, claim, error)
     except Exception:
@@ -47,6 +49,7 @@ def terminate(process, grace):
 
 
 def run_worker(once=False, concurrency=None):
+    from .illustrations import claim_illustration, cleanup_illustrations, expire_illustration
     from .models import Attempt
     from .review import expire_attempt
     from .work import claim_work, claim_speech, expire_generations, expire_speech, cleanup_audio, cleanup_speech, fail
@@ -76,6 +79,7 @@ def run_worker(once=False, concurrency=None):
                 expire_attempt(a)
             expire_generations()
             expire_speech()
+            expire_illustration()
             if time.monotonic()-last_cleanup >= 60:
                 cleanup_audio()
                 try:
@@ -84,16 +88,21 @@ def run_worker(once=False, concurrency=None):
                     # A speech-storage problem must never interrupt assessments or preparation.
                     print(f"Speech cleanup stopped early ({fault.__class__.__name__}); it will retry on the next pass.",
                         flush=True)
+                try:
+                    cleanup_illustrations()
+                except OSError as fault:
+                    print(f"Illustration cleanup stopped early ({fault.__class__.__name__}); it will retry on the next pass.",
+                        flush=True)
                 last_cleanup = time.monotonic()
             slots = concurrency or settings.WORKER_CONCURRENCY
-            # Speech synthesis owns one dedicated slot; a stalled clip never takes an
-            # assessment or preparation slot, and only one clip synthesizes at a time.
+            # Speech synthesis and image rendering each own one dedicated slot; a stalled clip or
+            # render never takes an assessment or preparation slot, and only one runs at a time.
             while sum(item[0] != "speech" for item in active) < slots:
                 job = claim_work()
                 if not job:
                     break
                 connections.close_all()
-                paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR)}
+                paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
                 process = context.Process(target=execute, args=(*job[:3], paths))
                 process.start()
                 active.append((*job, process))
@@ -101,10 +110,18 @@ def run_worker(once=False, concurrency=None):
                 clip = claim_speech()
                 if clip:
                     connections.close_all()
-                    paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR)}
+                    paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
                     process = context.Process(target=execute, args=("speech", *clip[:2], paths))
                     process.start()
                     active.append(("speech", *clip, process))
+            if sum(item[0] == "illustration" for item in active) < 1 and len(active) < slots+2:
+                row = claim_illustration()
+                if row:
+                    connections.close_all()
+                    paths = {"DATABASE_PATH": str(connections["default"].settings_dict["NAME"]), "AUDIO_DIR": str(settings.AUDIO_DIR), "TTS_DIR": str(settings.TTS_DIR), "ILLUSTRATIONS_DIR": str(settings.ILLUSTRATIONS_DIR)}
+                    process = context.Process(target=execute, args=("illustration", *row[:2], paths))
+                    process.start()
+                    active.append(("illustration", *row, process))
             if once and not active:
                 break
             time.sleep(0.2)

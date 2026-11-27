@@ -460,13 +460,15 @@ class CompletionRecoveryTests(TransactionTestCase):
 
     def assert_fresh_recovery(self, card):
         def snapshot():
-            # Speech clips are a regenerable synthesis cache: a schema rollback below 0013 drops
-            # them and the documented backfill re-queues them; durable learning data must match exactly.
+            # Speech clips and illustrations are regenerable media caches: a schema rollback below
+            # 0013/0015 drops them and the documented backfill re-queues them; durable learning
+            # data must match exactly.
             return {model.__name__: list(model.objects.order_by("pk").values())
-                    for model in apps.get_app_config("learning").get_models() if model.__name__ != "SpeechClip"}
+                    for model in apps.get_app_config("learning").get_models()
+                    if model.__name__ not in ("SpeechClip", "ExampleIllustration")}
 
         before = snapshot()
-        target = "0014_learnerpreferences_autoplay_enabled"
+        target = "0015_exampleillustration"
         with tempfile.TemporaryDirectory() as folder:
             ordinary = Path(folder) / "ordinary.json"
             call_command("vocabulary_fields", "export", str(ordinary), stdout=io.StringIO())

@@ -29,6 +29,8 @@ AUDIO_DIR = Path(os.getenv("AUDIO_DIR", str(DATA_DIR / "audio")))
 AUDIO_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 TTS_DIR = Path(os.getenv("TTS_DIR", str(DATA_DIR / "tts")))
 TTS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+ILLUSTRATIONS_DIR = Path(os.getenv("ILLUSTRATIONS_DIR", str(DATA_DIR / "illustrations")))
+ILLUSTRATIONS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": os.getenv("DATABASE_PATH", str(DATA_DIR / "db.sqlite3")),
     "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
     "TEST": {"NAME": str(DATA_DIR / "test.sqlite3")}}}
@@ -73,6 +75,7 @@ def positive_budget(name, default):
 ASSESSMENT_TIMEOUT_SECONDS = positive_budget("ASSESSMENT_TIMEOUT_SECONDS", 15)
 GENERATION_TIMEOUT_SECONDS = positive_budget("GENERATION_TIMEOUT_SECONDS", 420)
 SPEECH_TIMEOUT_SECONDS = positive_budget("SPEECH_TIMEOUT_SECONDS", 120)
+ILLUSTRATION_TIMEOUT_SECONDS = positive_budget("ILLUSTRATION_TIMEOUT_SECONDS", 300)
 WORKER_CLEANUP_GRACE_SECONDS = positive_budget("WORKER_CLEANUP_GRACE_SECONDS", 10)
 try:
     WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "2"))

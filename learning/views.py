@@ -19,9 +19,9 @@ from django.utils import timezone
 from django.urls import reverse
 from urllib.parse import urlencode
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
-from . import authoring, lexical, review, work
+from . import authoring, illustrations, lexical, review, work
 from .forms import DeckForm, CardForm, ImportForm, LearnerPreferencesForm
-from .models import Deck, Card, Presentation, Attempt, ScoredReview, GenerationJob, LearnerPreferences, SpeechClip
+from .models import Deck, Card, ExamplePair, Presentation, Attempt, ScoredReview, GenerationJob, LearnerPreferences, SpeechClip
 from .rendering import render
 
 
@@ -358,6 +358,24 @@ def clip_audio(request, presentation_id, side):
     except FileNotFoundError:
         raise Http404("This clip is not available.") from None
     response = FileResponse(audio, content_type="audio/mpeg")
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
+@login_required
+@require_GET
+def illustration_image(request, pair_id):
+    """The ready illustration of one example pair, reachable only by the pair's deck owner."""
+    pair = get_object_or_404(ExamplePair.objects.select_related("card__deck"), pk=pair_id,
+                             card__deck__owner=request.user)
+    row = illustrations.available_illustration(pair)
+    if not row:
+        raise Http404("This illustration is not available.")
+    try:
+        image = (settings.ILLUSTRATIONS_DIR/row.file).open("rb")
+    except FileNotFoundError:
+        raise Http404("This illustration is not available.") from None
+    response = FileResponse(image, content_type="image/webp")
     response["Cache-Control"] = "private, no-store"
     return response
 

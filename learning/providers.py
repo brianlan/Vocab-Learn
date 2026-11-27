@@ -15,7 +15,9 @@ from .audio_prompts import VERSION as AUDIO_PROMPT_VERSION, assessment_prompt
 
 TASK_LABELS = {"AUDIO_ASSESS": "Audio assessment", "GENERATOR": "Example preparation",
                "DEFINITION": "Vocabulary completion", "EXAMPLE_REVIEWER": "Example review",
-               "SPEECH": "Speech synthesis"}
+               "SPEECH": "Speech synthesis", "ILLUSTRATION": "Illustration renderer"}
+ILLUSTRATION_DEFAULT_MODEL = "black-forest-labs/flux-3-image-klein"
+ILLUSTRATION_MAX_BYTES = 128*1024  # A 512×384 WebP at quality 76 measures 9–25 KiB; 128 KiB is a hard bound.
 PROMPT_VERSIONS = {"AUDIO_ASSESS": AUDIO_PROMPT_VERSION, "GENERATOR": "lexical-pair-v7-a", "DEFINITION": "learner-entry-v2",
                    "EXAMPLE_REVIEWER": "example-review-v1"}
 # Budget key and thinking values follow the selected protocol dialect; no model-name inference.
@@ -456,6 +458,59 @@ def audio_assessment(snapshot, audio_path, p=None):
 SPEECH_VOICES = {"English": ("SPEECH_VOICE_ENGLISH", "English_CalmWoman"),
                  "Spanish": ("SPEECH_VOICE_SPANISH", "Spanish_DeterminedManager"),
                  "Chinese": ("SPEECH_VOICE_MANDARIN", "Chinese (Mandarin)_Warm_Bestie")}
+
+
+def illustration_profile():
+    """Configured private-renderer access; raises when configuration is incomplete. Queueing only
+    consults illustration_enabled(), so an unavailable renderer never blocks pair saving."""
+    endpoint = os.getenv("ILLUSTRATION_ENDPOINT", "").strip()
+    model = (os.getenv("ILLUSTRATION_MODEL") or ILLUSTRATION_DEFAULT_MODEL).strip()
+    try:
+        url = urlsplit(endpoint)
+    except ValueError:
+        raise StageError("ILLUSTRATION", "Renderer URL is malformed.", "configuration") from None
+    if url.username or url.password or url.query or url.fragment or not url.hostname:
+        raise StageError("ILLUSTRATION", "Configure a full renderer URL without embedded credentials or query parameters.", "configuration") from None
+    if url.scheme != "https" and not (url.scheme == "http" and os.getenv("ALLOW_INSECURE_PROVIDER_HTTP") == "1"):
+        raise StageError("ILLUSTRATION", "Renderer endpoints require HTTPS; enable internal HTTP explicitly for development.", "configuration") from None
+    key = os.getenv("ILLUSTRATION_API_KEY", "").strip()
+    if not key:
+        raise StageError("ILLUSTRATION", "Renderer credentials are missing. Ask the deployer to configure this task.", "configuration") from None
+    try:
+        timeout = float(os.getenv("ILLUSTRATION_TIMEOUT_SECONDS", "300"))
+        if timeout <= 0 or not math.isfinite(timeout):
+            raise ValueError
+    except ValueError:
+        raise StageError("ILLUSTRATION", "Renderer budgets must be positive numbers.", "configuration") from None
+    return Profile("ILLUSTRATION", endpoint, model, key, timeout)
+
+
+async def _render(p, body):
+    async with httpx.AsyncClient(timeout=httpx.Timeout(p.timeout), follow_redirects=False) as client:
+        response = await client.post(p.endpoint, json=body, headers={"Authorization": "Bearer " + p.key})
+        if response.status_code >= 300:
+            category = "configuration" if response.status_code in (400, 401, 403, 404) else "provider"
+            raise StageError(p.task, f"{TASK_LABELS[p.task]} returned HTTP {response.status_code}. Retry or ask the deployer to check the renderer and model.", category)
+        content, checkpoint = response.content, response.headers.get("X-Illustration-Revision", "")
+    if len(content) > ILLUSTRATION_MAX_BYTES:
+        raise StageError(p.task, "The renderer response exceeded the 128 KiB image limit.")
+    if len(content) < 16 or content[:4] != b"RIFF" or content[8:12] != b"WEBP":
+        raise StageError(p.task, "The renderer did not return a complete WebP image. Retry explicitly.")
+    return content, checkpoint[:100]
+
+
+def render_illustration(p, prompt, seed):
+    """One synchronous renderer request returns complete WebP bytes and the checkpoint revision."""
+    try:
+        return asyncio.run(asyncio.wait_for(_render(p, {"model": p.model, "prompt": prompt, "seed": seed}), timeout=p.timeout))
+    except StageError:
+        raise
+    except (TimeoutError, httpx.TimeoutException):
+        raise StageError(p.task, f"{TASK_LABELS[p.task]} timed out. You can retry the fixed input.", "timeout") from None
+    except (httpx.HTTPError, OSError):
+        raise StageError(p.task, f"{TASK_LABELS[p.task]} could not connect. You can retry the fixed input.", "transport") from None
+    except (ValueError, TypeError, AttributeError):
+        raise StageError(p.task, "The renderer returned an unreadable response.") from None
 
 
 def speech_voice(language):
