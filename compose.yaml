@@ -12,8 +12,8 @@ x-app: &app
     TRUST_PROXY: "1"
     APP_DATA_DIR: /data
     AUDIO_DIR: /audio
-    NO_PROXY: localhost,127.0.0.1,web,caddy
-    no_proxy: localhost,127.0.0.1,web,caddy
+    NO_PROXY: ${NO_PROXY_DESTINATIONS:-localhost,127.0.0.1,web,caddy}
+    no_proxy: ${NO_PROXY_DESTINATIONS:-localhost,127.0.0.1,web,caddy}
     MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
     AUDIO_ASSESS_PROVIDER: ${AUDIO_ASSESS_PROVIDER:-qwen}
     AUDIO_ASSESS_API_MODE: ${AUDIO_ASSESS_API_MODE:-chat_completions}

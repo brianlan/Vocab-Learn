@@ -772,9 +772,9 @@ class RendererScriptTests(TestCase):
     def test_startup_refuses_without_a_worker_credential(self):
         module = self.load()
         with self.assertRaises(SystemExit):
-            module.require_worker_credential(module.build_parser().parse_args(["--checkpoint", "/models/x"]))
+            module.require_worker_credential(module.build_parser().parse_args(["--comfyui", "http://127.0.0.1:8188"]))
         module.require_worker_credential(module.build_parser().parse_args(
-            ["--checkpoint", "/models/x", "--api-key", "secret"]))  # configured: no refusal
+            ["--comfyui", "http://127.0.0.1:8188", "--api-key", "secret"]))  # configured: no refusal
 
     def test_the_renderer_authenticates_and_validates_the_model(self):
         module = self.load()

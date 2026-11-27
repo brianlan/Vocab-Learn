@@ -394,26 +394,39 @@ files under `ILLUSTRATIONS_DIR` (default `/data/illustrations` in the `app_data`
 served only to the owning learner through an authenticated route. Recorded provenance carries the model, endpoint,
 prompt version, seed and checkpoint revision — never credentials.
 
-Start the supervised renderer on the GPU host with the isolated `vocab-image-flux3` Conda interpreter; it loads the
-operator-configured compatible checkpoint from local disk, keeps prompt upsampling disabled, renders one image at a
-time at 768 × 576 with 16 steps and returns a 512 × 384 WebP at quality 76 together with the checkpoint revision.
-Bind it to an interface the worker container can reach — a private LAN address, or loopback plus a TLS-terminating
-proxy that forwards to the renderer. The renderer refuses to start without `--api-key` and authenticates every
-request:
+The renderer is a thin authenticated adapter in front of the pinned INT8 ComfyUI runtime. The runtime is ComfyUI
+v0.46.0 with Triton serving `http://127.0.0.1:8188` on the GPU host, supervised by the `vocab-illustration-int8` user
+service in the `vocab-image-flux3-int8` Conda environment of the operator's SSD Miniforge installation. The adapter
+submits the repository-owned pinned graph `ops/illustration-workflow.json` — the tested INT8 pilot graph,
+SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a` — to loopback ComfyUI with only the
+request's prompt text and noise seed substituted. The graph pins the INT8 loaders, the 768 × 576 latent, the 16-step
+Euler schedule and every other inference input. The adapter admits one render at a time, bounds the wait with
+`--timeout`, deletes its temporary inference output after every attempt, and returns a 512 × 384 WebP at quality 76
+together with the INT8 checkpoint identity. Bind the adapter to an interface the worker container can reach — a
+private LAN address, or loopback plus a TLS-terminating proxy that forwards to it. The renderer refuses to start
+without `--api-key` and authenticates every request:
 
 ```sh
-~/miniforge/envs/vocab-image-flux3/bin/python ops/illustration-renderer.py \
+~/miniforge/envs/vocab-image-flux3-int8/bin/python ops/illustration-renderer.py \
     --model black-forest-labs/flux-3-image-klein \
-    --checkpoint /models/flux3-image-klein \
-    --revision 3b767ff9b5261d71645e2ec49d87d298d955238d \
+    --comfyui http://127.0.0.1:8188 \
+    --revision int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d \
     --api-key <worker credential> --host <gpu-host private IP> --port 8790
 ```
+
+Checkpoint provenance: base `black-forest-labs/flux-3-image-klein` revision
+`3b767ff9b5261d71645e2ec49d87d298d955238d` as a local INT8 ConvRot conversion of authorized BF16 weights — denoiser
+`flux3-klein-3b767ff-local-int8-convrot.safetensors` under `models/diffusion_models/`, text encoder
+`qwen3vl-4b-3b767ff-local-int8-convrot.safetensors` under `models/text_encoders/`, and pilot VAE
+`flux2-vae-3b767ff.safetensors` under `models/vae/` on the GPU host.
 
 Set `ILLUSTRATION_ENDPOINT` (for example `https://<gpu-host>/illustrations/render` behind the TLS proxy, or
 `http://<gpu-host-private-IP>:8790/render` with `ALLOW_INSECURE_PROVIDER_HTTP=1` — a development-only opt-in for
 plain HTTP inside the private network), `ILLUSTRATION_MODEL` (default `black-forest-labs/flux-3-image-klein`) and
-`ILLUSTRATION_API_KEY` in the application environment; an empty endpoint disables queueing and dispatch. A model
-mismatch returns a clear configuration error. The worker gives illustrations one dedicated execution slot (separate
+`ILLUSTRATION_API_KEY` in the application environment; an empty endpoint disables queueing and dispatch. When a
+proxy is injected into the containers (for example by the Docker client), add the renderer address to
+`NO_PROXY_DESTINATIONS` so private renderer traffic bypasses it. A model mismatch returns a clear configuration
+error. The worker gives illustrations one dedicated execution slot (separate
 from speech), prefers newly saved revisions over backfill, and reclaims images whose revision loses its last
 reference after 24 hours of inactivity under the same rules as speech; a returning reference resets the grace, and
 example text and frozen history are never touched.
@@ -428,15 +441,29 @@ docker compose exec web python manage.py queue_example_illustrations alice --lim
 The preview records missing, failed, queued, processing and ready counts with zero writes. Queueing affects only
 missing or failed illustrations and coalesces repeated runs.
 
-**Required development GPU sample before broad backfill.** This machine has no GPU, `vocab-image-flux3` environment
-or FLUX.3 Klein checkpoint, so the shipped renderer has not been exercised yet. An authorized operator must run the
-command above with the pinned revision, exercise the configured renderer from the development worker, and inspect
-representative English–Chinese, English–Spanish and Spanish–Chinese pairs for scene fidelity and visible lettering.
-Record the configuration, commands and sample outcomes here before any broad backfill:
+**Required development GPU sample before broad backfill.** Completed 2026-11-27 in development against the pinned
+INT8 runtime: ComfyUI v0.46.0 + Triton (`vocab-illustration-int8` user service, loopback `127.0.0.1:8188`) on the
+GPU host, with the adapter from this repository run beside it as the transient `vocab-illustration-adapter-dev`
+user unit (copy kept in the pilot root; `systemctl --user stop vocab-illustration-adapter-dev` ends it) bound to the
+private LAN address. The development worker dispatched over plain HTTP with `ALLOW_INSECURE_PROVIDER_HTTP=1` and the
+renderer host added to `NO_PROXY_DESTINATIONS`:
 
-- Renderer host, bind address, checkpoint path and revision: _pending operator run_
-- Worker dispatch evidence and file sizes: _pending operator run_
-- Scene-fidelity/lettering review across the three language pairs: _pending operator run_
+- Renderer host, bind address, checkpoint path and revision: GPU host `10.133.109.47`, adapter `0.0.0.0:8790`,
+  loopback ComfyUI `127.0.0.1:8188`; pinned graph `ops/illustration-workflow.json`
+  (SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a`, verified against the pilot copy);
+  the INT8 ConvRot denoiser, text encoder and pilot VAE per the checkpoint identities above; revision
+  `int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d`.
+- Worker dispatch evidence and file sizes: one development learner with twelve ready pairs (four per language pair)
+  was previewed (`--dry-run --limit 12`: missing 12, failed 0) and then queued (`--limit 12`); all 12 reached
+  `done` with per-revision seeds and the checkpoint revision recorded. Stored WebPs measured 25–44 KiB (432 KiB
+  total). Owner retrieval returned 200 `image/webp`, another learner 404 and an anonymous request 302. Warm
+  worker-to-renderer re-renders of six saved pairs (two per language pair, same prompts and seeds) measured a
+  2.32 s median (2.31–2.44 s), consistent with the pilot's 2.39 s loopback median.
+- Scene-fidelity/lettering review across the three language pairs: six stored images reviewed (two per pair). The
+  pond daybreak glimmer, pan washing at the sink, blue-umbrella hand-off, cat stretching on the sunny windowsill
+  and blowing out the birthday candles all read clearly in the pilot gouache style with no lettering or captions;
+  the baila kitchen scene conveyed the kitchen and a mid-motion standing figure but not a lone dancer — recorded
+  for future prompt tuning, no change in this repository.
 
 ## Persistence, audio expiry, and upgrade
 
