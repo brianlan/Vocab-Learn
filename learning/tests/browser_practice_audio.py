@@ -4,6 +4,7 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium python -m unittest learning.tes
 Requires the optional Playwright Python installation and a Chromium browser, not a running app/database.
 """
 
+import base64
 import io
 import json
 import os
@@ -19,6 +20,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (ROOT / "static/review.js").read_text()
 PRONUNCIATION_SCRIPT = (ROOT / "static/pronunciation.js").read_text()
 ORIGIN = "https://practice.test"  # getUserMedia needs a secure context
+# A known-valid 1x1 lossless WebP; the browser only needs decodable bytes, not the real scene.
+SCENE_WEBP = base64.b64decode("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==")
+ILLUSTRATION = ('<div class="illustration" data-illustration data-illustration-src="/illustrations/1/">'
+    '<button type="button" class="button illustration-toggle" data-illustration-toggle aria-expanded="false"'
+    ' aria-controls="synthetic-illustration-figure">Show illustration</button>'
+    '<figure class="illustration-figure" data-illustration-figure id="synthetic-illustration-figure" hidden>'
+    '<img data-illustration-image alt="Illustration of the example scene"></figure></div>')
 
 
 def clip_bytes(seconds=6):
@@ -32,18 +40,20 @@ def clip_bytes(seconds=6):
 CLIP = clip_bytes()
 
 
-def back_html(marker=""):
+def back_html(marker="", panel_open=True):
     return ('<section class="recall-result"><span class="eyebrow">YOUR RECALL THIS TIME</span>' + marker + "</section>"
         '<button type="button" class="button pronunciation-button" aria-label="Play pronunciation"'
         ' data-pronounce="sentence" data-pronounce-language="English"><span aria-hidden="true">🔊︎</span></button>'
         '<span class="quiet" role="status" data-pronunciation-status></span>'
-        '<details class="paired-examples" open><summary>Paired examples</summary>'
+        '<details class="paired-examples"' + (" open" if panel_open else "") + '><summary>Paired examples</summary>'
+        '<div class="illustration-inline with-illustration"><div class="illustration-sentences">'
         '<p class="sentence-audio"><span data-selection-region>The sentence.</span>'
         '<button type="button" class="button pronunciation-button" aria-label="Play target example sentence (English)"'
         ' data-play="target" data-src="/review/p-1/audio/target/"><span aria-hidden="true">🔊︎</span></button></p>'
         '<p class="sentence-audio"><span data-selection-region>句子。</span>'
         '<button type="button" class="button pronunciation-button" aria-label="Play native example sentence (Chinese)"'
-        ' data-play="native" data-src="/review/p-1/audio/native/"><span aria-hidden="true">🔊︎</span></button></p></details>'
+        ' data-play="native" data-src="/review/p-1/audio/native/"><span aria-hidden="true">🔊︎</span></button></p></div>'
+        + ILLUSTRATION + '</div></details>'
         '<div class="back-actions"><a id="next-card" class="button primary" href="/next">Next card</a></div>')
 
 
@@ -88,6 +98,7 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.errors = []
         self.unexpected = []
         self.audio_requests = []
+        self.image_requests = []
         self.statuses = [ASSESSED]
         self.hold_audio = False
         self.held_audio = []
@@ -113,6 +124,9 @@ class PracticeAudioBrowserTests(unittest.TestCase):
                 self.held_audio.append(route)
             else:
                 route.fulfill(content_type="audio/wav", body=CLIP)
+        elif path.startswith("/illustrations/"):
+            self.image_requests.append(path)
+            route.fulfill(content_type="image/webp", body=SCENE_WEBP)
         elif path == "/next":
             self.held_next.append(route)
         elif path == "/review/p-1/restart/":
@@ -135,11 +149,13 @@ class PracticeAudioBrowserTests(unittest.TestCase):
             f' data-first-display="{first_display}" data-autoplay="{autoplay}"'
             f' data-action-url="/action/" data-status-url="/status/" data-retry-url="/retry/" data-exit-url="/exit/">'
             '<audio id="clip-player" preload="none"></audio>'
-            '<div id="front"><div class="prompt prose"><div class="sentence-audio">'
+            '<div id="front"><div class="prompt prose"><div class="illustration-inline with-illustration">'
+            '<div class="sentence-audio">'
             '<span data-selection-region>The sentence.</span>'
             '<button type="button" class="button pronunciation-button" aria-label="Play question sentence"'
             ' data-play="target" data-src="/review/p-1/audio/target/"><span aria-hidden="true">🔊︎</span></button>'
-            '</div></div><div id="recording-indicator" class="recording-status" aria-live="polite"></div>'
+            '</div>' + ILLUSTRATION + '</div></div>'
+            '<div id="recording-indicator" class="recording-status" aria-live="polite"></div>'
             '<div class="front-actions"><button class="button" data-action="skip">Skip</button>'
             '<button class="button primary" id="speak" data-action="speak">Speak</button>'
             '<button class="button" data-action="forgot">Forgot</button></div>'
@@ -484,3 +500,130 @@ class PracticeAudioBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.evaluate("document.querySelector('#clip-player') === window.__player"))
         self.assertFalse(self.page.evaluate("document.querySelector('#clip-player').paused"))
         self.assertEqual(self.audio_requests, ["native"])
+
+    def test_illustration_loads_on_first_reveal_and_show_and_hide_leave_playback_and_clock_alone(self):
+        self.load()
+        self.wait_for_audio("target")
+        self.assertEqual(self.image_requests, [])  # collapsed by default: no image request
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#front [data-illustration-toggle]').getAttribute('aria-expanded')"), "false")
+        before = self.clock_elapsed()
+        self.page.click("#front [data-illustration-toggle]")
+        self.until("document.querySelector('#front [data-illustration-figure]').hidden === false")
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#front [data-illustration-toggle]').getAttribute('aria-expanded')"), "true")
+        self.assertEqual(len(self.image_requests), 1)  # fetched on first reveal
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#front [data-illustration-figure] img').src.endsWith('/illustrations/1/')"))
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#front [data-illustration-toggle]').textContent"), "Hide illustration")
+        self.assertFalse(self.page.evaluate("document.querySelector('#clip-player').paused"))  # playback untouched
+        self.page.wait_for_timeout(700)
+        self.assertGreater(self.clock_elapsed(), before)  # the recall clock keeps running
+        self.page.locator("#front [data-illustration-toggle]").focus()
+        self.page.keyboard.press("Enter")  # keyboard opens and closes the same control
+        self.assertTrue(self.page.evaluate("document.querySelector('#front [data-illustration-figure]').hidden"))
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#front [data-illustration-toggle]').textContent"), "Show illustration")
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#front [data-illustration-toggle]').getAttribute('aria-expanded')"), "false")
+        self.assertEqual(len(self.image_requests), 1)  # hiding never refetches
+        self.page.keyboard.press("Enter")
+        self.assertFalse(self.page.evaluate("document.querySelector('#front [data-illustration-figure]').hidden"))
+        self.assertFalse(self.page.evaluate("document.querySelector('#clip-player').paused"))
+
+    def test_show_and_hide_leave_a_pending_play_promise_alone(self):
+        self.hold_audio = True
+        self.load(autoplay="0")
+        self.page.click("[data-play]")
+        self.wait_for_audio("target")
+        self.assertEqual(self.page.evaluate("document.querySelector('#clip-player').readyState"), 0)
+        self.page.click("#front [data-illustration-toggle]")  # open during a pending start
+        self.page.click("#front [data-illustration-toggle]")  # and closed again
+        self.hold_audio = False
+        for route in self.held_audio:
+            route.fulfill(content_type="audio/wav", body=CLIP)
+        self.until("document.querySelector('#clip-player').currentTime > 0.1")
+        self.page.wait_for_timeout(300)
+        self.assertFalse(self.page.evaluate("document.querySelector('#clip-player').paused"))
+
+    def test_the_first_answer_starts_collapsed_even_when_the_question_image_was_open(self):
+        self.load()
+        self.page.click("#front [data-illustration-toggle]")
+        self.until("document.querySelector('#front [data-illustration-figure]').hidden === false")
+        self.assertEqual(len(self.image_requests), 1)
+        self.page.click("[data-action=skip]")
+        self.page.wait_for_selector("#back [data-illustration-toggle]", state="visible")
+        self.assertTrue(self.page.evaluate("document.querySelector('#back [data-illustration-figure]').hidden"))
+        self.assertEqual(len(self.image_requests), 1)  # the answer scene loads only on its own Show
+        self.page.click("#back [data-illustration-toggle]")
+        self.until("document.querySelector('#back [data-illustration-figure]').hidden === false")
+        self.assertTrue(self.page.evaluate(
+            "Boolean(document.querySelector('#back [data-illustration-figure] img').getAttribute('src'))"))
+
+    def test_polling_restores_a_deliberately_closed_parent_as_closed(self):
+        # Reveal, close the panel, then let polling replace the fragment: the parent must stay
+        # closed while the loaded image is retained inside it for when the learner reopens.
+        self.statuses = [payload_json("processing", back_html("<p>one</p>", panel_open=False)),
+                         payload_json("processing", back_html("<p>two</p>", panel_open=False)),
+                         payload_json("assessed", back_html("<p>done</p>", panel_open=False))]
+        self.load(state="submitted")
+        self.page.wait_for_selector("#back [data-illustration-toggle]", state="attached")
+        self.page.click("#back .paired-examples > summary")
+        self.page.click("#back [data-illustration-toggle]")
+        self.until("document.querySelector('#back [data-illustration-figure]').hidden === false")
+        self.assertEqual(len(self.image_requests), 1)
+        self.page.evaluate("window.__img = document.querySelector('#back [data-illustration-figure] img')")
+        self.page.click("#back .paired-examples > summary")  # the learner deliberately closes it
+        self.until("document.querySelector('#back .paired-examples').open === false")
+        self.until("document.querySelector('#back').textContent.includes('two')")  # intermediate update
+        self.assertFalse(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.until("document.querySelector('#back').textContent.includes('done')")  # terminal completion
+        self.assertFalse(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+        self.assertEqual(len(self.image_requests), 1)  # nothing refetched while hidden
+        self.page.click("#back .paired-examples > summary")  # reopening retains the loaded image
+        self.assertFalse(self.page.evaluate("document.querySelector('#back [data-illustration-figure]').hidden"))
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+        self.assertEqual(len(self.image_requests), 1)
+
+    def test_polling_update_preserves_open_state_loaded_image_and_focus(self):
+        # The real panel starts closed; the learner opens it, reveals the scene, and polling must
+        # keep panel, scene, image node and focus through updates and the terminal completion.
+        self.statuses = [payload_json("processing", back_html("<p>one</p>", panel_open=False)),
+                         payload_json("processing", back_html("<p>two</p>", panel_open=False)),
+                         payload_json("assessed", back_html("<p>done</p>", panel_open=False))]
+        self.load(state="submitted")
+        toggle_attached = self.page.wait_for_selector("#back [data-illustration-toggle]", state="attached")
+        self.assertEqual(self.image_requests, [])
+        self.assertEqual(toggle_attached.get_attribute("aria-expanded"), "false")
+        self.assertFalse(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.page.click("#back .paired-examples > summary")  # open the actual enclosing panel
+        self.page.click("#back [data-illustration-toggle]")
+        self.until("document.querySelector('#back [data-illustration-figure]').hidden === false")
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-toggle]').getAttribute('aria-expanded')"), "true")
+        self.assertEqual(len(self.image_requests), 1)
+        self.page.evaluate("window.__img = document.querySelector('#back [data-illustration-figure] img')")
+        self.page.evaluate("document.querySelector('#back [data-illustration-toggle]').focus()")
+        self.until("document.querySelector('#back').textContent.includes('two')")  # intermediate update
+        self.assertTrue(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.assertFalse(self.page.evaluate("document.querySelector('#back [data-illustration-figure]').hidden"))
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+        self.assertEqual(len(self.image_requests), 1)  # the loaded image is never refetched
+        self.assertTrue(self.page.evaluate(
+            "document.activeElement === document.querySelector('#back [data-illustration-toggle]')"))
+        self.assertEqual(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-toggle]').getAttribute('aria-expanded')"), "true")
+        self.until("document.querySelector('#back').textContent.includes('done')")  # terminal completion
+        self.assertTrue(self.page.evaluate("document.querySelector('#back .paired-examples').open"))
+        self.assertFalse(self.page.evaluate("document.querySelector('#back [data-illustration-figure]').hidden"))
+        self.assertTrue(self.page.evaluate(
+            "document.querySelector('#back [data-illustration-figure] img') === window.__img"))
+        self.assertEqual(len(self.image_requests), 1)
+        self.assertTrue(self.page.evaluate(
+            "document.activeElement === document.querySelector('#back [data-illustration-toggle]')"))
+        self.assertNotEqual(self.page.evaluate("document.activeElement && document.activeElement.id"), "next-card")

@@ -243,7 +243,7 @@ class IllustrationTests(TestCase):
         path = self.folder/row.file
         self.assertEqual(path.read_bytes(), webp_image())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(illustrations.available_illustration(row.pair).pk, row.pk)
+        self.assertEqual(illustrations.ready_illustration(row.pair_id).pk, row.pk)
         self.client.force_login(self.user)
         response = self.client.get(reverse("illustration_image", args=[row.pair_id]))
         self.assertEqual(response.status_code, 200)
@@ -258,7 +258,7 @@ class IllustrationTests(TestCase):
         self.client.force_login(self.user)
         (self.folder/row.file).unlink()
         self.assertEqual(self.client.get(reverse("illustration_image", args=[row.pair_id])).status_code, 404)
-        self.assertIsNone(illustrations.available_illustration(row.pair))  # missing file advertises nothing
+        self.assertIsNone(illustrations.ready_illustration(row.pair_id))  # missing file advertises nothing
 
     def test_response_validation_rejects_bad_images(self):
         card = self.ready(self.vocabulary())
@@ -377,7 +377,7 @@ class IllustrationTests(TestCase):
         illustrations.publish_illustration(pk, claim, marker_webp(b"orphan"), "")
         row = ExampleIllustration.objects.get(pk=pk)
         self.assertNotEqual(row.state, "done")
-        self.assertIsNone(illustrations.available_illustration(lost.active_pair))
+        self.assertIsNone(illustrations.ready_illustration(lost.active_pair_id))
         self.assertFalse(list(self.folder.glob("*.webp")))
 
     def test_a_directory_sync_failure_fails_the_row_without_publishing(self):

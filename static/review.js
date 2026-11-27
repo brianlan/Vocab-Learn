@@ -49,6 +49,43 @@
     clipRequested = false;
     if (player && !player.paused) player.pause();
   }
+  function toggleIllustration(region) {
+    const figure = region.querySelector("[data-illustration-figure]");
+    const image = figure.querySelector("img");
+    // The image loads on first reveal, so a collapsed scene sends no request.
+    if (figure.hidden && !image.getAttribute("src")) image.src = region.dataset.illustrationSrc;
+    figure.hidden = !figure.hidden;
+    const toggle = region.querySelector("[data-illustration-toggle]");
+    toggle.setAttribute("aria-expanded", String(!figure.hidden));
+    toggle.textContent = figure.hidden ? "Show illustration" : "Hide illustration";
+  }
+  // Polling replaces the answer fragment; an open, loaded or focused disclosure survives it.
+  // The enclosing paired-examples panel and the revealed img element are carried over too, so
+  // the scene stays visible and is never refetched.
+  function illustrationState() {
+    const region = $("#back [data-illustration]");
+    if (!region) return null;
+    const figure = region.querySelector("[data-illustration-figure]");
+    const panel = region.closest("details");
+    return {open: !figure.hidden, panelOpen: panel ? panel.open : false, image: figure.querySelector("img"),
+        focused: document.activeElement === region.querySelector("[data-illustration-toggle]")};
+  }
+  function restoreIllustration(state) {
+    const region = $("#back [data-illustration]");
+    if (!region || !state) return false;
+    const figure = region.querySelector("[data-illustration-figure]");
+    // The parent panel restores to exactly its captured state: a panel the learner
+    // deliberately closed stays closed, with the loaded image retained inside it.
+    const panel = region.closest("details");
+    if (panel) panel.open = state.panelOpen;
+    if (state.image.getAttribute("src")) figure.querySelector("img").replaceWith(state.image);
+    figure.hidden = !state.open;
+    const toggle = region.querySelector("[data-illustration-toggle]");
+    toggle.setAttribute("aria-expanded", String(state.open));
+    toggle.textContent = state.open ? "Hide illustration" : "Show illustration";
+    if (state.focused) { toggle.focus(); return true; }  // a held disclosure keeps focus over Next card
+    return false;
+  }
   function endPermission() {
     if (waitStart !== null) { excluded += (performance.now()-waitStart)/1000; waitStart = null; }
   }
@@ -135,7 +172,13 @@
     stoppedAt = null;
     deadlineAt = data.deadline ? Date.parse(data.deadline) : null;
     if (deadlineAt !== null && Date.now() < deadlineAt) announced = false;  // A confirmed new execution restarts announcements.
-    if (data.back_html !== lastPayload) { $("#back").innerHTML = data.back_html; lastPayload = data.back_html; }
+    let disclosureFocused = false;
+    if (data.back_html !== lastPayload) {
+      const disclosure = illustrationState();
+      $("#back").innerHTML = data.back_html;
+      disclosureFocused = restoreIllustration(disclosure);
+      lastPayload = data.back_html;
+    }
     for (const [name,value] of Object.entries(data.metrics || {})) {
       document.querySelectorAll('[data-metric="'+name+'"]').forEach(node => { node.textContent = value ?? "—"; });
     }
@@ -147,7 +190,7 @@
     if (!terminal()) {
       if (overdue()) announceOverdue();
       else { $("#reconnect-controls").hidden = true; tell(""); }
-    } else { $("#reconnect-controls").hidden = true; announced = false; if (["assessed", "skipped", "closed_unassessed"].includes(phase)) $("#next-card")?.focus(); }
+    } else { $("#reconnect-controls").hidden = true; announced = false; if (["assessed", "skipped", "closed_unassessed"].includes(phase) && !disclosureFocused) $("#next-card")?.focus(); }
   }
   function reconnect(message) {
     tell(message + " The server outcome is unconfirmed. Check status or retry the same request.");
@@ -173,6 +216,9 @@
   $("#clock-recovery form").addEventListener("submit", stopClip);
   card.addEventListener("click", async event => {
     if (event.target.closest("#next-card, [data-pronounce]")) { stopClip(); return; }
+    // Show and Hide stay separate from playback and review actions: neither pauses the clip.
+    const illustrationToggle = event.target.closest("[data-illustration-toggle]");
+    if (illustrationToggle) { toggleIllustration(illustrationToggle.closest("[data-illustration]")); return; }
     const playButton = event.target.closest("[data-play]");
     if (playButton) {
       if (!playButton.disabled && !busy) playClip(playButton);
