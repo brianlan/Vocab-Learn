@@ -236,6 +236,7 @@ def card_view(request, card_id):
         mode="manual", source_version=card.source_version, state="cancelled").order_by("-requested_at").first()
     teaching = lexical.details(card) if card.kind == "vocabulary" else {"explanation": card.explanation}
     return page(request, "learning/card.html", {"card": card, "job": job, "manual": manual, "superseded": superseded, "nav": "decks",
+        "card_illustration": illustration_url(card.active_pair_id) if card.active_pair_id else None,
         "definition_generated": card.kind == "vocabulary" and authoring.definition_generated(card),
         "question_html": render(card.question, card.answer, True).html,
         "teaching": teaching, "explanation_html": render(teaching["explanation"]).html})
@@ -380,13 +381,26 @@ def illustration_image(request, pair_id):
     return response
 
 
-def render_back(request, a, audio):
+def practice_illustration(p):
+    """The frozen pair's ready-image URL for Practice; None renders no disclosure anywhere.
+    One shared image serves both sides, so it never exposes a hidden sentence by itself."""
+    pair_id = p.snapshot.get("pair_id")
+    if p.snapshot.get("kind") != "vocabulary" or not pair_id:
+        return None
+    return illustration_url(pair_id)
+
+
+def illustration_url(pair_id):
+    return reverse("illustration_image", args=[pair_id]) if illustrations.ready_illustration(pair_id) else None
+
+
+def render_back(request, a, audio, illustration):
     p = a.presentation
     card = Card.objects.get(pk=p.card_id)
     return render_to_string("learning/back.html", {"attempt": a, "p": p, "back": p.snapshot,
         "explanation_html": render(p.snapshot["explanation"]).html, "label": review.LABELS.get(a.grade),
         "next_review": review.relative_due(a.next_due or card.available_at) if a.state != "processing" and a.state != "submitted" else "After checking",
-        "practice_url": practice_url(p.scope_deck_id), "audio": audio,
+        "practice_url": practice_url(p.scope_deck_id), "audio": audio, "illustration": illustration,
         "terminal": a.state in review.TERMINAL,
         "can_retry": a.state == "failed" and a.duration is not None and a.error_stage != "timing"}, request=request)
 
@@ -396,10 +410,13 @@ def payload(request, a, *, fresh_page=False):
     a = review.expire_attempt(a)
     a.presentation = p
     card = Card.objects.get(pk=p.card_id)
+    # A fresh page of a finished review is history: no playback or illustration controls.
+    history = fresh_page and a.state in review.TERMINAL
     return {"state": a.state, "transcript": a.transcript, "grade": a.grade, "next_due": a.next_due.isoformat() if a.next_due else None,
         "deadline": a.deadline.isoformat() if a.deadline and a.state in ("submitted", "processing") else None,
         "metrics": counts(request.user, p.scope_deck), "collection": card.collection,
-        "back_html": render_back(request, a, {} if fresh_page and a.state in review.TERMINAL else practice_audio(request, p, a))}
+        "back_html": render_back(request, a, {} if history else practice_audio(request, p, a),
+                                 None if history else practice_illustration(p))}
 
 
 @login_required
@@ -420,10 +437,12 @@ def presentation_view(request, presentation_id):
     else:
         audio = practice_audio(request, p, None) if review.valid_presentation(p) else {}
         front_audio = next(iter(audio.values()), None)
+    front_illustration = practice_illustration(p) if not attempt else None
     autoplay = LearnerPreferences.objects.filter(user=request.user).values_list("autoplay_enabled", flat=True).first()
     return page(request, "learning/review.html", {"p": p, "front": front, "back_html": data["back_html"] if data else "",
         "initial_state": data["state"] if data else "question", "initial_deadline": data["deadline"] if data else "",
-        "first_display": first_display, "front_audio": front_audio, "autoplay": autoplay is not False,
+        "first_display": first_display, "front_audio": front_audio, "front_illustration": front_illustration,
+        "autoplay": autoplay is not False,
         "nav": "study", **counts(request.user, p.scope_deck)})
 
 

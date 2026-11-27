@@ -21,7 +21,8 @@ from django.urls import reverse
 from playwright.async_api import async_playwright, expect
 
 from learning import authoring, review
-from learning.models import Deck, ExamplePair, LearnerPreferences, SpeechClip
+from learning.models import Deck, ExampleIllustration, ExamplePair, LearnerPreferences, SpeechClip
+from learning.tests.test_illustrations import webp_image
 
 
 ENGLISH = (
@@ -42,6 +43,11 @@ class PracticeAudioLayoutTests(StaticLiveServerTestCase):
         override = override_settings(TTS_DIR=Path(directory.name))
         override.enable()
         self.addCleanup(override.disable)
+        scenes = tempfile.TemporaryDirectory(dir="/tmp/opencode", prefix="practice-layout-scenes-")
+        self.addCleanup(scenes.cleanup)
+        scene_override = override_settings(ILLUSTRATIONS_DIR=Path(scenes.name))
+        scene_override.enable()
+        self.addCleanup(scene_override.disable)
         self.user = get_user_model().objects.create_user("practice-layout-learner")
         self.client.force_login(self.user)
         LearnerPreferences.objects.create(user=self.user, autoplay_enabled=False, selection_add_enabled=True)
@@ -79,6 +85,9 @@ class PracticeAudioLayoutTests(StaticLiveServerTestCase):
             SpeechClip.objects.update_or_create(pair=pair, side=side,
                 defaults={"language": language, "state": "done", "file": name})
             (settings.TTS_DIR / name).write_bytes(self.sound)
+        scene = f"{pair.pk}.scene.webp"
+        ExampleIllustration.objects.get_or_create(pair=pair, defaults={"state": "done", "file": scene})
+        (settings.ILLUSTRATIONS_DIR / scene).write_bytes(webp_image())
         return review.next_question(self.user, deck)
 
     @asynccontextmanager
@@ -205,6 +214,47 @@ class PracticeAudioLayoutTests(StaticLiveServerTestCase):
                 return player.currentSrc === url && !player.paused && player.currentTime > 0.1;
             }""", arg=url)
 
+    async def assert_illustration(self, page, scope, presentation, *, expect_fetch):
+        """Collapsed by default; keyboard reveal shows the whole scene and Hide reloads nothing."""
+        pair_id = presentation.snapshot["pair_id"]
+        url = reverse("illustration_image", args=[pair_id])
+        region = page.locator(f"{scope} .illustration")
+        toggle = region.locator("[data-illustration-toggle]")
+        figure = region.locator("[data-illustration-figure]")
+        image = figure.locator("img")
+        await expect(toggle).to_have_accessible_name("Show illustration")
+        await expect(figure).to_be_hidden()
+        self.assertIsNone(await image.get_attribute("src"))  # collapsed: nothing is fetched
+        await toggle.focus()
+        if expect_fetch:
+            async with page.expect_response(self.live_server_url + url) as response:
+                await page.keyboard.press("Enter")
+            self.assertTrue((await response.value).ok)
+        else:
+            await page.keyboard.press("Enter")  # the same scene is already cached in the page
+        await expect(toggle).to_have_accessible_name("Hide illustration")
+        await expect(figure).to_be_visible()
+        self.assertEqual(await image.get_attribute("src"), url)
+        await image.evaluate("node => node.decode()")  # the full scene decoded without clipping
+        geometry = await figure.evaluate("""node => {
+            const img = node.querySelector('img');
+            return {clipped: node.scrollWidth > node.clientWidth + 1,
+                overflow: document.documentElement.scrollWidth > innerWidth,
+                box: img.getBoundingClientRect().toJSON()};
+        }""")
+        self.assertFalse(geometry["clipped"])
+        self.assertFalse(geometry["overflow"])
+        sentence = await page.locator(f"{scope} .sentence-audio").first.bounding_box()
+        if await toggle.evaluate("node => matchMedia('(min-width: 621px)').matches"):
+            self.assertGreaterEqual(geometry["box"]["x"], sentence["x"] + sentence["width"] - 1)  # beside
+        else:
+            self.assertGreaterEqual(geometry["box"]["y"], sentence["y"] + sentence["height"] - 1)  # stacked
+        await page.keyboard.press("Enter")
+        await expect(figure).to_be_hidden()
+        self.assertIsNotNone(await image.get_attribute("src"))  # hidden but still loaded
+        await page.keyboard.press("Enter")
+        await expect(figure).to_be_visible()
+
     async def layout_flow(self, presentation, width):
         async with self.browser_page(width) as page:
             await page.goto(reverse("presentation", args=[presentation.pk]))
@@ -215,18 +265,22 @@ class PracticeAudioLayoutTests(StaticLiveServerTestCase):
             text, language = (ENGLISH, "English") if side == "target" else (MANDARIN, "Chinese")
             await self.assert_sentence(page, "#front .sentence-audio", text, language)
             await self.assert_keyboard_replay(page, "#front [data-play]", presentation, side)
+            await self.assert_illustration(page, "#front", presentation, expect_fetch=True)
+            await self.assert_actions(page)  # the wide Speak row survives the revealed scene
 
             async with page.expect_response(self.live_server_url + reverse("action", args=[presentation.pk])) as response:
                 await page.locator('[data-action="skip"]').click()
             self.assertTrue((await response.value).ok)
             await expect(page.locator("#back")).to_be_visible()
             await page.locator("#back .paired-examples > summary").click()
+            await expect(page.locator("#back [data-illustration-figure]")).to_be_hidden()  # first answer starts collapsed
             for index, (side, text, language) in enumerate([
                 ("target", ENGLISH, "English"), ("native", MANDARIN, "Chinese"),
             ]):
                 await self.assert_sentence(page, f"#back .paired-examples .sentence-audio:nth-of-type({index + 1})",
                                            text, language)
                 await self.assert_keyboard_replay(page, f'#back [data-play="{side}"]', presentation, side)
+            await self.assert_illustration(page, "#back", presentation, expect_fetch=False)
 
     def test_desktop_styled_sentences_selection_and_keyboard_playback(self):
         for direction in ("recognition", "production"):

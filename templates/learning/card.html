@@ -13,6 +13,7 @@
     <h2>Current example pair</h2>
     <p data-selection-region data-selection-language="{{ card.target_language }}">{{ card.active_pair.target_sentence }}</p>
     <p data-selection-region data-selection-language="{{ card.native_language }}">{{ card.active_pair.native_sentence }}</p>
+    {% if card_illustration %}<img class="card-illustration" src="{{ card_illustration }}" alt="Illustration of the current example scene">{% endif %}
     {% if manual.state == 'queued' %}
       <p role="status">Regenerating examples. Waiting for an available slot; you can leave this page.</p><a class="button" href="{% url 'card' card.pk %}">Refresh status</a>
     {% elif manual.state == 'processing' %}

@@ -49,6 +49,33 @@
     clipRequested = false;
     if (player && !player.paused) player.pause();
   }
+  function toggleIllustration(region) {
+    const figure = region.querySelector("[data-illustration-figure]");
+    const image = figure.querySelector("img");
+    // The image loads on first reveal, so a collapsed scene sends no request.
+    if (figure.hidden && !image.getAttribute("src")) image.src = region.dataset.illustrationSrc;
+    figure.hidden = !figure.hidden;
+    region.querySelector("[data-illustration-toggle]").textContent = figure.hidden ? "Show illustration" : "Hide illustration";
+  }
+  // Polling replaces the answer fragment; an open, loaded or focused disclosure survives it.
+  // The revealed img element is carried over, so an already-loaded scene is never refetched.
+  function illustrationState() {
+    const region = $("#back [data-illustration]");
+    if (!region) return null;
+    const figure = region.querySelector("[data-illustration-figure]");
+    return {open: !figure.hidden, image: figure.querySelector("img"),
+        focused: document.activeElement === region.querySelector("[data-illustration-toggle]")};
+  }
+  function restoreIllustration(state) {
+    const region = $("#back [data-illustration]");
+    if (!region || !state) return;
+    const figure = region.querySelector("[data-illustration-figure]");
+    if (state.image.getAttribute("src")) figure.querySelector("img").replaceWith(state.image);
+    figure.hidden = !state.open;
+    const toggle = region.querySelector("[data-illustration-toggle]");
+    toggle.textContent = state.open ? "Hide illustration" : "Show illustration";
+    if (state.focused) toggle.focus();
+  }
   function endPermission() {
     if (waitStart !== null) { excluded += (performance.now()-waitStart)/1000; waitStart = null; }
   }
@@ -135,7 +162,12 @@
     stoppedAt = null;
     deadlineAt = data.deadline ? Date.parse(data.deadline) : null;
     if (deadlineAt !== null && Date.now() < deadlineAt) announced = false;  // A confirmed new execution restarts announcements.
-    if (data.back_html !== lastPayload) { $("#back").innerHTML = data.back_html; lastPayload = data.back_html; }
+    if (data.back_html !== lastPayload) {
+      const disclosure = illustrationState();
+      $("#back").innerHTML = data.back_html;
+      restoreIllustration(disclosure);
+      lastPayload = data.back_html;
+    }
     for (const [name,value] of Object.entries(data.metrics || {})) {
       document.querySelectorAll('[data-metric="'+name+'"]').forEach(node => { node.textContent = value ?? "—"; });
     }
@@ -173,6 +205,9 @@
   $("#clock-recovery form").addEventListener("submit", stopClip);
   card.addEventListener("click", async event => {
     if (event.target.closest("#next-card, [data-pronounce]")) { stopClip(); return; }
+    // Show and Hide stay separate from playback and review actions: neither pauses the clip.
+    const illustrationToggle = event.target.closest("[data-illustration-toggle]");
+    if (illustrationToggle) { toggleIllustration(illustrationToggle.closest("[data-illustration]")); return; }
     const playButton = event.target.closest("[data-play]");
     if (playButton) {
       if (!playButton.disabled && !busy) playClip(playButton);

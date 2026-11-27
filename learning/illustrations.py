@@ -53,7 +53,12 @@ def enqueue_illustration(pair, *, backfill=False):
 
 
 def available_illustration(pair):
-    row = ExampleIllustration.objects.filter(pair=pair, state="done").exclude(file="").first()
+    return ready_illustration(pair.pk)
+
+
+def ready_illustration(pair_id):
+    """The ready row of one pair by id, so frozen Practice snapshots can resolve their image."""
+    row = ExampleIllustration.objects.filter(pair_id=pair_id, state="done").exclude(file="").first()
     if row and (settings.ILLUSTRATIONS_DIR/row.file).is_file():
         return row
     return None
