@@ -1,10 +1,13 @@
 """Contract tests for the INT8 ComfyUI adapter in ops/illustration-renderer.py (issue #29).
 
 A fake loopback ComfyUI stands in for the real runtime and models the upstream's distinct
-lifetimes: /prompt enqueues under the caller-supplied id (possibly only after a delay), one job
-runs at a time and writes a real temp file on completion, /queue deletes pending ids, /interrupt
-with a prompt id cancels the running job, and a history delete forgets only the in-memory entry —
-files outlive it, exactly as in ComfyUI v0.46.0. The adapter must submit the pinned graph
+lifetimes: /prompt enqueues with a prompt id (possibly only after a delay), one job runs at a
+time and writes a real temp file on completion, /queue deletes pending ids, /interrupt with a
+prompt id cancels the running job, and a history delete forgets only the in-memory entry — files
+outlive it, exactly as in ComfyUI v0.46.0. Identical prompt+seed inputs re-emit the cached
+output filename without writing the file again unless the documented --force-output-rerun
+runtime is modeled, and /view answers 404 for a filename whose file is gone. The adapter must
+submit the pinned graph
 byte-for-byte except for the prompt text and noise seed, reject unauthenticated, mismatched and
 malformed requests before any inference is queued, admit one render at a time, bound the whole
 round trip — streamed reads included — by one deadline, cancel its owned job and remove its owned
@@ -67,6 +70,12 @@ class FakeComfyUI:
         self.fail_history_read = False  # GET /history/<id> answers HTTP 503 once the job completes
         self.drop_acknowledgement = False  # receive /prompt, then disconnect without answering
         self.reject_prompts = False  # POST /prompt answers HTTP 400 like ComfyUI's rejection
+        # ComfyUI v0.46.0 re-emits a cached output filename for identical prompt+seed inputs even
+        # after the history entry or the file itself is gone. The documented runtime configuration
+        # starts it with --force-output-rerun, which re-runs the output node and writes the file
+        # again; without the flag an identical retry would fetch a filename whose file was removed.
+        self.force_output_rerun = True
+        self.output_cache = {}  # (prompt text, seed) -> filename of the last emitted output
         self.view_delay = 0.0
         self.trickle_view = False
         self.hold_jobs = threading.Event()  # clear to keep jobs out of the running slot
@@ -131,10 +140,16 @@ class FakeComfyUI:
                     self.history[job["prompt_id"]] = {"status": {"completed": True, "status_str": "error"},
                                                       "outputs": {}}
                 else:
-                    self.counter += 1
-                    filename = f"ComfyUI_temp_{self.counter:05d}_.png"
-                    with open(os.path.join(self.temp_dir, filename), "wb") as handle:
-                        handle.write(scene_png())
+                    signature = json.dumps([job["graph"].get("4", {}).get("inputs", {}).get("text"),
+                                            job["graph"].get("6", {}).get("inputs", {}).get("noise_seed")],
+                                           sort_keys=True)
+                    filename = self.output_cache.get(signature)
+                    if filename is None or self.force_output_rerun:
+                        self.counter += 1
+                        filename = f"ComfyUI_temp_{self.counter:05d}_.png"
+                        with open(os.path.join(self.temp_dir, filename), "wb") as handle:
+                            handle.write(scene_png())
+                        self.output_cache[signature] = filename  # the cache outlives history deletes
                     self.history[job["prompt_id"]] = {
                         "status": {"completed": True, "status_str": "success"},
                         "outputs": {"12": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}]}}}
@@ -163,7 +178,8 @@ class FakeComfyUI:
                         if outer.jobs_pending or outer.jobs_running:
                             outer.overlapped = True
                         outer.jobs_pending.append({"prompt_id": body.get("prompt_id"),
-                                                   "cancel": threading.Event()})
+                                                   "cancel": threading.Event(),
+                                                   "graph": body.get("prompt") or {}})
                     if outer.submission_hang:
                         time.sleep(30)  # the acknowledgement never arrives; the job exists
                         return
@@ -218,8 +234,12 @@ class FakeComfyUI:
                 if self.path.startswith("/view"):
                     time.sleep(outer.view_delay)
                     query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                    with open(os.path.join(outer.temp_dir, query["filename"][0]), "rb") as handle:
-                        payload = handle.read()
+                    try:
+                        payload = open(os.path.join(outer.temp_dir, query["filename"][0]),
+                                       "rb").read()
+                    except FileNotFoundError:
+                        self.send_error(404)  # the real runtime 404s a cached-but-removed file
+                        return
                     if outer.trickle_headers:
                         return self._slow_headers(payload, "image/png")
                     if outer.trickle_view:  # valid bytes, but the stream outlasts any small budget
@@ -662,6 +682,42 @@ class RendererContractTests(unittest.TestCase):
         self.comfyui.reject_prompts = False
         status, _, _, _ = self.render_request(timeout=30)
         self.assertEqual(status, 200)  # a healthy request renders without any recovery window
+
+    def test_identical_inputs_render_again_under_the_documented_cache_policy(self):
+        self.reparse(timeout=2.0)
+        self.assertEqual(self.render_request(timeout=30)[0], 200)
+        self.comfyui.force_output_rerun = False  # the runtime started without the mandated flag
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 502)  # the cached filename now points at the removed file
+        self.assertEqual(self.renderer.Handler.abandoned, {})  # the failure owns nothing
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+        self.comfyui.force_output_rerun = True  # the documented --force-output-rerun runtime
+        self.assertEqual(self.render_request(timeout=30)[0], 200)  # the output node re-runs
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+        self.assertFalse(self.comfyui.overlapped)
+
+    def test_a_retry_after_a_completed_but_timed_out_render_uses_identical_inputs(self):
+        self.comfyui.job_duration = 0.18  # the job finishes, but only after the last poll fits
+        self.reparse(timeout=0.2)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 504)  # a completion past the budget is cancelled, not served
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])  # the finished render's file was removed
+        self.comfyui.job_duration = 0.15
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 200)  # the identical retry renders again instead of looping 502
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+        self.assertFalse(self.comfyui.overlapped)
 
     def test_a_finished_late_submission_is_reconciled_whenever_it_appears(self):
         self.comfyui.enqueue_delay = 1.2  # enqueues long after the adapter gave up the acknowledgement

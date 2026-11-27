@@ -396,7 +396,12 @@ prompt version, seed and checkpoint revision — never credentials.
 
 The renderer is a thin authenticated adapter in front of the pinned INT8 ComfyUI runtime. The runtime is ComfyUI
 v0.46.0 with Triton serving `http://127.0.0.1:8188` on the GPU host, supervised by the `vocab-illustration-int8` user
-service in the `vocab-image-flux3-int8` Conda environment of the operator's SSD Miniforge installation. The adapter
+service in the `vocab-image-flux3-int8` Conda environment of the operator's SSD Miniforge installation. The service
+must start ComfyUI with `--force-output-rerun`: the adapter removes each render's temporary output after the round
+trip, and without that flag ComfyUI's node-output cache would re-emit the removed filename for a repeated
+prompt+seed pair instead of rendering again, so an identical-input retry (the worker's revision path reuses both)
+would keep failing with a missing-file error while the runtime was healthy. The flag re-runs the output node and
+re-materializes the file while upstream nodes stay cached. The adapter
 submits the repository-owned pinned graph `ops/illustration-workflow.json` — the tested INT8 pilot graph,
 SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a` — to loopback ComfyUI with only the
 request's prompt text and noise seed substituted. The graph pins the INT8 loaders, the 768 × 576 latent, the 16-step
@@ -477,7 +482,8 @@ The preview records missing, failed, queued, processing and ready counts with ze
 missing or failed illustrations and coalesces repeated runs.
 
 **Required development GPU sample before broad backfill.** Completed 2026-11-27 in development against the pinned
-INT8 runtime: ComfyUI v0.46.0 + Triton (`vocab-illustration-int8` user service, loopback `127.0.0.1:8188`) on the
+INT8 runtime: ComfyUI v0.46.0 + Triton (`vocab-illustration-int8` user service, loopback `127.0.0.1:8188`,
+started with `--force-output-rerun` so removed temp outputs render again on identical inputs) on the
 GPU host, with the adapter from this repository run beside it as the transient `vocab-illustration-adapter-dev`
 user unit (copy kept in the pilot root; `systemctl --user stop vocab-illustration-adapter-dev` ends it) bound to the
 private LAN address and terminating private HTTPS itself (private CA, leaf certificate with the address as SAN).
