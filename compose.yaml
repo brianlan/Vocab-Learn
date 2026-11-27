@@ -78,12 +78,18 @@ services:
     mem_limit: 768m
   worker:
     <<: *app
-    command: ["python", "manage.py", "runworker"]
+    command: ["sh", "-c", "cat /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/renderer-ca.crt > /tmp/worker-trust.pem 2>/dev/null || cp /etc/ssl/certs/ca-certificates.crt /tmp/worker-trust.pem; export SSL_CERT_FILE=/tmp/worker-trust.pem; exec python manage.py runworker"]
     restart: unless-stopped
     depends_on:
       migrate:
         condition: service_completed_successfully
     mem_limit: 1g
+    volumes:
+      - app_data:/data
+      - audio_tmp:/audio
+      # Optional private CA for TLS-verified self-hosted providers (such as the illustration
+      # renderer); unset leaves the container trust store untouched.
+      - ${RENDERER_CA_FILE:-./var/renderer-ca.optional.crt}:/usr/local/share/ca-certificates/renderer-ca.crt:ro
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped

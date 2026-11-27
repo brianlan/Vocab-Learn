@@ -772,15 +772,15 @@ class RendererScriptTests(TestCase):
     def test_startup_refuses_without_a_worker_credential(self):
         module = self.load()
         with self.assertRaises(SystemExit):
-            module.require_worker_credential(module.build_parser().parse_args(["--comfyui", "http://127.0.0.1:8188"]))
+            module.require_worker_credential(module.build_parser().parse_args(
+                ["--comfyui", "http://127.0.0.1:8188", "--temp-dir", "/tmp/x"]))
         module.require_worker_credential(module.build_parser().parse_args(
-            ["--comfyui", "http://127.0.0.1:8188", "--api-key", "secret"]))  # configured: no refusal
+            ["--comfyui", "http://127.0.0.1:8188", "--temp-dir", "/tmp/x", "--api-key", "secret"]))  # configured: no refusal
 
     def test_the_renderer_authenticates_and_validates_the_model(self):
         module = self.load()
         module.Handler.arguments = argparse.Namespace(api_key="secret",
-            model="black-forest-labs/flux-3-image-klein", revision="3b767")
-        module.Handler.pipeline = object()
+            model="black-forest-labs/flux-3-image-klein", revision="3b767", timeout=120)
         def post(authorization, body):
             connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
             headers = {"Authorization": authorization} if authorization is not None else {}

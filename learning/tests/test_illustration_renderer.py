@@ -1,17 +1,26 @@
 """Contract tests for the INT8 ComfyUI adapter in ops/illustration-renderer.py (issue #29).
 
-A fake loopback ComfyUI stands in for the real runtime: the adapter must submit the pinned graph
-byte-for-byte except for the prompt text and noise seed, forward the seed, return a bounded WebP
-with the checkpoint revision, reject unauthenticated, mismatched and malformed requests before any
-inference is queued, admit one render at a time, bound the wait, and delete the temporary output.
+A fake loopback ComfyUI stands in for the real runtime and models the upstream's distinct
+lifetimes: /prompt enqueues under the caller-supplied id, one job runs at a time and writes a real
+temp file on completion, /queue deletes pending ids, /interrupt with a prompt id cancels the
+running job, and a history delete forgets only the in-memory entry — files outlive it, exactly as
+in ComfyUI v0.46.0. The adapter must submit the pinned graph byte-for-byte except for the prompt
+text and noise seed, reject unauthenticated, mismatched and malformed requests before any
+inference is queued, admit one render at a time within the request budget, bound the whole round
+trip by one deadline, cancel its owned job and remove its owned files on every exit path, and
+retry a cleanup that could not complete.
 """
+import contextlib
 import importlib.util
 import io
 import json
+import os
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,79 +45,160 @@ def scene_png(width=768, height=576):
 
 
 class FakeComfyUI:
-    """A loopback ComfyUI stand-in that records every request and can fail, hang or delay."""
+    """A loopback ComfyUI stand-in with real job, history and temp-file lifetimes."""
 
-    def __init__(self, *, fail=False, hang=False, history_polls_before_done=0):
-        self.requests, self.deleted = [], []
-        self.fail, self.hang = fail, hang
-        self.polls_before_done = history_polls_before_done
-        self.rendered = threading.Event()
-        self.in_flight = 0
-        self.overlapped = False
+    def __init__(self, job_duration=0.15):
+        self.temp_dir = tempfile.mkdtemp(prefix="fake-comfy-temp-")
+        self.job_duration = job_duration
+        self.submission_delay = 0.0
+        self.submission_hang = False  # enqueue the job, then never answer (lost acknowledgement)
+        self.history_delay = 0.0
+        self.view_delay = 0.0
+        self.hold_jobs = threading.Event()  # clear to keep jobs out of the running slot
+        self.hold_jobs.set()
+        self.hang_cancellation = False
+        self.fail_jobs = False  # completed jobs report an error instead of writing a file
+        self.overlapped = False  # set when a graph is submitted while another job is queued or running
+        self.jobs_pending, self.jobs_running = [], []
+        self.history = {}
+        self.counter = 0
+        self.requests = []
         self.lock = threading.Lock()
-        self._done = threading.Event()
+        self.stopping = threading.Event()
+        self.thread = None
 
     def start(self):
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.server = server
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def stop(self):
+        self.stopping.set()
+        self.hold_jobs.set()
+        self.thread.join(timeout=5)
+        self.server.shutdown()
+        self.server.server_close()
+
+    def settle(self):
+        """Wait until no job is pending or running."""
+        for _ in range(200):
+            with self.lock:
+                if not self.jobs_pending and not self.jobs_running:
+                    return
+            time.sleep(0.05)
+
+    def temp_files(self):
+        return sorted(os.listdir(self.temp_dir))
+
+    def _run(self):
+        while not self.stopping.is_set():
+            job = None
+            with self.lock:
+                if self.jobs_pending and self.hold_jobs.is_set():
+                    job = self.jobs_pending.pop(0)
+                    self.jobs_running.append(job)
+            if job is None:
+                time.sleep(0.01)
+                continue
+            cancelled = job["cancel"].wait(self.job_duration)
+            with self.lock:
+                self.jobs_running.remove(job)
+                if cancelled or self.fail_jobs:
+                    self.history[job["prompt_id"]] = {"status": {"completed": True, "status_str": "error"},
+                                                      "outputs": {}}
+                else:
+                    self.counter += 1
+                    filename = f"ComfyUI_temp_{self.counter:05d}_.png"
+                    with open(os.path.join(self.temp_dir, filename), "wb") as handle:
+                        handle.write(scene_png())
+                    self.history[job["prompt_id"]] = {
+                        "status": {"completed": True, "status_str": "success"},
+                        "outputs": {"12": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}]}}}
+
+    def _handler(self):
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def _record(self):
-                with outer.lock:
-                    outer.requests.append({"path": self.path, "body": getattr(self, "_body", None)})
-
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", "0"))
-                self._body = json.loads(self.rfile.read(length)) if length else {}
-                self._record()
+                body = json.loads(self.rfile.read(length)) if length else {}
+                self._record(body)
                 if self.path == "/prompt":
                     with outer.lock:
-                        outer.in_flight += 1
-                        if outer.in_flight > 1:
+                        if outer.jobs_pending or outer.jobs_running:
                             outer.overlapped = True
-                    time.sleep(0.3)  # hold the submission open to expose concurrent admissions
+                        outer.jobs_pending.append({"prompt_id": body.get("prompt_id"),
+                                                   "cancel": threading.Event()})
+                    if outer.submission_hang:
+                        time.sleep(30)  # the acknowledgement never arrives; the job exists
+                        return
+                    time.sleep(outer.submission_delay)
+                    return self._json({"prompt_id": body.get("prompt_id")})
+                if self.path == "/queue":
+                    if outer.hang_cancellation:
+                        time.sleep(30)
+                    for prompt_id in body.get("delete", []):
+                        with outer.lock:
+                            outer.jobs_pending = [job for job in outer.jobs_pending
+                                                  if job["prompt_id"] != prompt_id]
+                    return self._empty()
+                if self.path == "/interrupt":
+                    if outer.hang_cancellation:
+                        time.sleep(30)
                     with outer.lock:
-                        outer.in_flight -= 1
-                    outer.rendered.set()
-                    return self._json({"prompt_id": "job-1"})
+                        for job in outer.jobs_running:
+                            if job["prompt_id"] == body.get("prompt_id"):
+                                job["cancel"].set()
+                    return self._empty()
                 if self.path == "/history":
-                    outer.deleted.append(self._body.get("delete"))
-                    self.send_response(200)  # the real runtime answers the delete with an empty 200
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
+                    if outer.hang_cancellation:
+                        time.sleep(30)
+                    with outer.lock:
+                        for prompt_id in body.get("delete", []):
+                            outer.history.pop(prompt_id, None)  # the real delete forgets only this
+                    return self._empty()
                 self.send_error(404)
 
             def do_GET(self):
-                self._record()
+                self._record(None)
                 if self.path.startswith("/history/"):
-                    if outer.hang:
-                        return self._json({})  # in flight: ComfyUI returns no entry yet
-                    if not outer._done.is_set():
-                        if outer.polls_before_done > 0:
-                            outer.polls_before_done -= 1
-                            return self._json({})
-                        outer._done.set()
-                    if outer.fail:
-                        return self._json({"job-1": {"status": {"completed": True, "status_str": "error"}}})
-                    return self._json({"job-1": {
-                        "status": {"completed": True, "status_str": "success"},
-                        "outputs": {"12": {"images": [{"filename": "scene_00001_.png",
-                                                       "subfolder": "", "type": "temp"}]}}}})
+                    time.sleep(outer.history_delay)
+                    prompt_id = self.path.rsplit("/", 1)[1]
+                    with outer.lock:
+                        entry = outer.history.get(prompt_id)
+                    return self._json({prompt_id: entry} if entry else {})
+                if self.path.startswith("/queue"):
+                    with outer.lock:
+                        payload = {"queue_running": [[0, job["prompt_id"]] for job in outer.jobs_running],
+                                   "queue_pending": [[0, job["prompt_id"]] for job in outer.jobs_pending]}
+                    return self._json(payload)
                 if self.path.startswith("/view"):
-                    return self._raw(scene_png())
+                    time.sleep(outer.view_delay)
+                    query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    with open(os.path.join(outer.temp_dir, query["filename"][0]), "rb") as handle:
+                        return self._raw(handle.read())
                 self.send_error(404)
 
+            def _record(self, body):
+                with outer.lock:
+                    outer.requests.append({"path": self.path, "body": body})
+
             def _json(self, payload):
-                body = json.dumps(payload).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._send(200, "application/json", json.dumps(payload).encode())
+
+            def _empty(self):
+                self._send(200, "application/json", b"")
 
             def _raw(self, payload):
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
+                self._send(200, "image/png", payload)
+
+            def _send(self, status, content_type, payload):
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
@@ -116,14 +206,7 @@ class FakeComfyUI:
             def log_message(self, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        return f"http://127.0.0.1:{self.server.server_address[1]}"
-
-    def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
+        return Handler
 
 
 class RendererContractTests(unittest.TestCase):
@@ -131,13 +214,11 @@ class RendererContractTests(unittest.TestCase):
 
     def setUp(self):
         self.renderer = renderer_module()
+        self.renderer.CLEANUP_SECONDS = 0.8  # bounded cleanup window, kept small for the tests
         self.comfyui = FakeComfyUI()
         self.upstream = self.comfyui.start()
-        self.arguments = self.renderer.build_parser().parse_args(
-            ["--api-key", "scene-key", "--comfyui", self.upstream, "--revision", "int8-test@cafe",
-             "--host", "127.0.0.1", "--port", "0", "--timeout", "2"])
-        self.renderer.require_worker_credential(self.arguments)
-        self.renderer.Handler.arguments = self.arguments
+        self.arguments = self.reparse()
+        self.renderer.Handler.abandoned = set()
         self.renderer.Handler.workflow = self.renderer.load_workflow(OPS / "illustration-workflow.json")
         self.server = self.renderer.ThreadingHTTPServer(("127.0.0.1", 0), self.renderer.Handler)
         self.server.daemon_threads = True
@@ -149,38 +230,56 @@ class RendererContractTests(unittest.TestCase):
         self.server.server_close()
         self.comfyui.stop()
 
-    def render_request(self, body=None, authorization="Bearer scene-key", timeout=30):
-        payload = json.dumps(body or {"model": "black-forest-labs/flux-3-image-klein",
-                                      "prompt": "A test scene.", "seed": 424242}).encode()
+    def reparse(self, timeout=2.0, comfyui=None):
+        arguments = self.renderer.build_parser().parse_args(
+            ["--api-key", "scene-key", "--comfyui", comfyui or self.upstream, "--temp-dir", self.comfyui.temp_dir,
+             "--revision", "int8-test@cafe", "--host", "127.0.0.1", "--port", "0",
+             "--timeout", str(timeout)])
+        self.renderer.Handler.arguments = arguments
+        return arguments
+
+    def render_request(self, body=None, authorization="Bearer scene-key", timeout=30, raw=None):
+        payload = raw if raw is not None else json.dumps(
+            {"model": "black-forest-labs/flux-3-image-klein", "prompt": "A test scene.", "seed": 424242}
+            if body is None else body).encode()
         headers = {"Content-Type": "application/json"}
         if authorization is not None:
             headers["Authorization"] = authorization
         request = urllib.request.Request(self.endpoint, data=payload, method="POST", headers=headers)
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.status, dict(response.headers), response.read()
+                return response.status, dict(response.headers), response.read(), time.monotonic() - started
         except urllib.error.HTTPError as error:
-            return error.code, dict(error.headers), error.read()
+            return error.code, dict(error.headers), error.read(), time.monotonic() - started
 
-    def upstream_paths(self):
+    def upstream_requests(self):
         return [request["path"].split("?")[0] for request in self.comfyui.requests]
 
+    def assert_no_inference(self):
+        self.assertEqual(self.upstream_requests(), [])
+
     def test_submits_the_pinned_graph_with_only_prompt_and_seed_substituted(self):
-        status, headers, image = self.render_request(
+        status, _, _, _ = self.render_request(
             body={"model": "black-forest-labs/flux-3-image-klein",
                   "prompt": "A hand-painted kitchen scene.", "seed": 987654})
         self.assertEqual(status, 200)
-        [submitted] = [request["body"]["prompt"] for request in self.comfyui.requests
-                       if request["path"] == "/prompt"]
+        [submitted] = [request["body"] for request in self.comfyui.requests if request["path"] == "/prompt"]
         pinned = json.loads((OPS / "illustration-workflow.json").read_text())["prompt"]
-        self.assertEqual(submitted["4"]["inputs"]["text"], "A hand-painted kitchen scene.")
-        self.assertEqual(submitted["6"]["inputs"]["noise_seed"], 987654)
-        del submitted["4"], submitted["6"]
+        self.assertEqual(submitted["prompt"]["4"]["inputs"]["text"], "A hand-painted kitchen scene.")
+        self.assertEqual(submitted["prompt"]["6"]["inputs"]["noise_seed"], 987654)
+        self.assertTrue(all(part in submitted["prompt_id"] for part in submitted["prompt_id"].split("-")))
+        del submitted["prompt"]["4"], submitted["prompt"]["6"]
         del pinned["4"], pinned["6"]
-        self.assertEqual(submitted, pinned)  # loaders, latent size, sigmas: all pinned, byte for byte
+        self.assertEqual(submitted["prompt"], pinned)  # loaders, latent size, sigmas: all pinned
+        graph_id = submitted["prompt_id"]
+        self.comfyui.settle()  # the job the adapter owned by this id is gone from queue and history
+        with self.comfyui.lock:
+            self.assertNotIn(graph_id, self.comfyui.history)
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
 
     def test_success_returns_a_decodable_bounded_webp_with_the_revision(self):
-        status, headers, image = self.render_request()
+        status, headers, image, _ = self.render_request()
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "image/webp")
         self.assertEqual(headers["X-Illustration-Revision"], "int8-test@cafe")
@@ -189,27 +288,41 @@ class RendererContractTests(unittest.TestCase):
             self.assertEqual(decoded.format, "WEBP")
             self.assertEqual(decoded.size, (512, 384))
 
+    def test_a_successful_render_removes_its_temp_file_and_history_entry(self):
+        self.render_request()
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])  # the real temporary file is gone
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+
     def test_authentication_is_required_before_any_inference_is_queued(self):
         for authorization in (None, "Bearer wrong", "bearer scene-key"):
             with self.subTest(authorization=authorization):
-                status, _, _ = self.render_request(authorization=authorization)
+                status, _, _, _ = self.render_request(authorization=authorization)
                 self.assertEqual(status, 401)
-                self.assertEqual(self.comfyui.requests, [])
+        self.assert_no_inference()
 
     def test_a_model_mismatch_is_rejected_before_any_inference_is_queued(self):
-        status, _, _ = self.render_request(body={"model": "someone-else", "prompt": "x", "seed": 1})
+        status, _, _, _ = self.render_request(body={"model": "someone-else", "prompt": "x", "seed": 1})
         self.assertEqual(status, 400)
-        self.assertEqual(self.comfyui.requests, [])
+        self.assert_no_inference()
 
     def test_malformed_requests_are_rejected_before_any_inference_is_queued(self):
-        for body in ({"model": "black-forest-labs/flux-3-image-klein", "prompt": "   ", "seed": 1},
-                     {"model": "black-forest-labs/flux-3-image-klein", "prompt": "x", "seed": 2**32},
-                     {"model": "black-forest-labs/flux-3-image-klein", "prompt": "x"},
-                     {"model": "black-forest-labs/flux-3-image-klein", "prompt": "x", "seed": "7"}):
-            with self.subTest(body=body):
-                status, _, _ = self.render_request(body=body)
+        model = "black-forest-labs/flux-3-image-klein"
+        documents = [json.dumps(body).encode() for body in (
+            {}, {"model": model}, {model: model},
+            {"model": model, "prompt": "   ", "seed": 1},
+            {"model": model, "prompt": "x", "seed": 2**32},
+            {"model": model, "prompt": "x", "seed": True},
+            {"model": model, "prompt": "x", "seed": "7"},
+            {"model": model, "prompt": "x"})] + [b"[]", b"null", b""]
+        for payload in documents:
+            with self.subTest(payload=payload):
+                status, _, _, _ = self.render_request(raw=payload)
                 self.assertEqual(status, 400)
-        self.assertEqual(self.comfyui.requests, [])
+        self.assert_no_inference()
+        self.assertEqual(self.comfyui.temp_files(), [])  # nothing was ever written
 
     def test_an_oversized_body_is_rejected(self):
         request = urllib.request.Request(self.endpoint, data=b"x" * (65 * 1024), method="POST",
@@ -219,7 +332,7 @@ class RendererContractTests(unittest.TestCase):
             self.fail("the oversized body must be rejected")
         except urllib.error.HTTPError as error:
             self.assertEqual(error.code, 413)
-        self.assertEqual(self.comfyui.requests, [])
+        self.assert_no_inference()
 
     def test_renders_are_admitted_one_at_a_time(self):
         results = []
@@ -233,39 +346,125 @@ class RendererContractTests(unittest.TestCase):
         for thread in threads:
             thread.join()
         self.assertEqual(sorted(results), [200, 200, 200])
-        self.assertFalse(self.comfyui.overlapped)  # no second graph was ever submitted mid-render
+        self.assertFalse(self.comfyui.overlapped)  # no graph was ever submitted beside another
 
-    def test_a_timed_out_render_is_rejected_and_cleaned_up(self):
-        self.comfyui.hang = True
-        status, _, _ = self.render_request(timeout=30)
+    def test_admission_and_the_round_trip_stay_within_the_request_budget(self):
+        self.comfyui.job_duration = 1.2
+        self.reparse(timeout=0.6)
+        results = {}
+
+        def first_request():
+            results["A"] = self.render_request(timeout=30)[0]
+
+        first = threading.Thread(target=first_request)
+        first.start()
+        time.sleep(0.3)  # the first request holds the renderer
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 504)  # bounded admission: the queued wait consumed the budget
+        self.assertLess(elapsed, 1.6)  # arrival + budget + bounded cleanup, never unbounded queuing
+        first.join()
+        self.assertEqual(results["A"], 504)  # the slow first render hit its own budget
+        self.comfyui.settle()
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request()
+        self.assertEqual(status, 200)  # a subsequent request succeeds once the renderer is healthy
+        self.assertEqual(self.comfyui.temp_files(), [])
+
+    def test_a_timed_out_running_render_is_interrupted_and_cleaned_up(self):
+        self.comfyui.job_duration = 3.0
+        self.reparse(timeout=0.6)
+        started = time.monotonic()
+        status, _, _, _ = self.render_request(timeout=30)
         self.assertEqual(status, 504)
-        self.assertIn(["job-1"], self.comfyui.deleted)  # the submitted graph's output is deleted
+        self.assertLess(time.monotonic() - started, 2.5)  # bounded cancellation, not a hang
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])  # the owned file was never published or is removed
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+
+    def test_a_timed_out_pending_render_is_dequeued(self):
+        self.comfyui.hold_jobs.clear()  # nothing runs; the job would wait in the queue forever
+        self.reparse(timeout=0.5)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 504)
+        self.comfyui.settle()
+        with self.comfyui.lock:
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+            self.assertEqual(self.comfyui.history, {})
+        self.assertEqual(self.comfyui.temp_files(), [])
+        self.comfyui.hold_jobs.set()
+
+    def test_a_lost_submission_acknowledgement_is_still_cancelled(self):
+        self.comfyui.submission_hang = True  # the job is enqueued, but the adapter never learns the id back
+        self.reparse(timeout=0.6)
+        status, _, _, elapsed = self.render_request(timeout=30)
+        self.assertEqual(status, 504)
+        self.assertLess(elapsed, 2.0)
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
+            self.assertFalse(self.comfyui.jobs_pending + self.comfyui.jobs_running)
+
+    def test_a_late_completion_is_not_served_past_the_deadline(self):
+        self.comfyui.job_duration = 0.05
+        self.comfyui.history_delay = 0.6  # the result arrives only after the budget has expired
+        self.reparse(timeout=0.3)
+        status, _, _, _ = self.render_request(timeout=30)
+        self.assertEqual(status, 504)
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])  # the completed-but-late render is cleaned up
 
     def test_a_failed_render_is_rejected_and_cleaned_up(self):
-        self.comfyui.fail = True
-        status, _, _ = self.render_request(timeout=30)
+        self.comfyui.fail_jobs = True
+        status, _, _, _ = self.render_request(timeout=30)
         self.assertEqual(status, 502)
-        self.assertIn(["job-1"], self.comfyui.deleted)
-
-    def test_a_successful_render_cleans_up_its_temporary_output(self):
-        self.render_request()
-        self.assertIn(["job-1"], self.comfyui.deleted)
+        self.comfyui.settle()
+        self.assertEqual(self.comfyui.temp_files(), [])
+        with self.comfyui.lock:
+            self.assertEqual(self.comfyui.history, {})
 
     def test_an_unreachable_comfyui_reports_a_clean_failure(self):
-        self.arguments.comfyui = "http://127.0.0.1:1"  # nothing listens there
-        self.renderer.Handler.arguments = self.arguments
-        status, _, _ = self.render_request(timeout=30)
+        self.reparse(comfyui="http://127.0.0.1:1")  # nothing listens there
+        status, _, _, _ = self.render_request(timeout=30)
         self.assertEqual(status, 502)
-        self.renderer.Handler.arguments = self.arguments  # restore for tearDown symmetry
+
+    def test_a_cleanup_that_cannot_complete_is_retried_by_the_next_request(self):
+        self.comfyui.job_duration = 3.0
+        self.comfyui.hang_cancellation = True
+        self.reparse(timeout=0.5)
+        status, _, _, _ = self.render_request(timeout=30)  # timeout; the cancellation calls stall
+        self.assertEqual(status, 504)
+        self.assertTrue(self.renderer.Handler.abandoned)  # the unfinished cleanup is not forgotten
+        self.comfyui.hang_cancellation = False
+        self.comfyui.settle()  # the abandoned job eventually finishes and writes its file
+        abandoned_files = self.comfyui.temp_files()
+        self.assertEqual(len(abandoned_files), 1)
+        self.comfyui.job_duration = 0.15  # the next healthy render is quick again
+        self.reparse(timeout=2.0)
+        status, _, _, _ = self.render_request(timeout=30)  # the next healthy render
+        self.assertEqual(status, 200)
+        self.assertEqual(self.comfyui.temp_files(), [])  # the abandoned file is removed with the new one
 
     def test_the_renderer_refuses_to_listen_without_a_credential(self):
-        with self.assertRaises(SystemExit):
-            self.renderer.require_worker_credential(self.renderer.build_parser().parse_args([]))
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self.renderer.require_worker_credential(self.renderer.build_parser().parse_args(
+                    ["--temp-dir", "/tmp/x"]))
+
+    def test_the_renderer_requires_a_temp_directory(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self.renderer.build_parser().parse_args(["--api-key", "k"])
 
     def test_a_workflow_missing_the_pinned_nodes_is_refused(self):
-        import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json") as handle:
             json.dump({"prompt": {"4": {"inputs": {}}}}, handle)
             handle.flush()
             with self.assertRaises(SystemExit):
                 self.renderer.load_workflow(handle.name)
+
+
+if __name__ == "__main__":
+    unittest.main()

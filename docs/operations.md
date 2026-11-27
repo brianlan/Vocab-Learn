@@ -400,18 +400,34 @@ service in the `vocab-image-flux3-int8` Conda environment of the operator's SSD 
 submits the repository-owned pinned graph `ops/illustration-workflow.json` — the tested INT8 pilot graph,
 SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a` — to loopback ComfyUI with only the
 request's prompt text and noise seed substituted. The graph pins the INT8 loaders, the 768 × 576 latent, the 16-step
-Euler schedule and every other inference input. The adapter admits one render at a time, bounds the wait with
-`--timeout`, deletes its temporary inference output after every attempt, and returns a 512 × 384 WebP at quality 76
-together with the INT8 checkpoint identity. Bind the adapter to an interface the worker container can reach — a
-private LAN address, or loopback plus a TLS-terminating proxy that forwards to it. The renderer refuses to start
-without `--api-key` and authenticates every request:
+Euler schedule and every other inference input. Each accepted graph carries a caller-supplied prompt id, so the
+adapter owns its inference work end to end: it admits one render at a time within the request budget, bounds the
+whole round trip by one deadline, and on every exit path (success, failure, timeout, lost acknowledgement) cancels
+its queued or running job, waits out the terminal state, removes the render's temporary files from ComfyUI's temp
+directory (they are not auto-cleaned and a history delete only forgets the in-memory entry), erases the history
+entry, and retries a cleanup that could not complete before admitting the next render. It returns a 512 × 384 WebP
+at quality 76 together with the INT8 checkpoint identity. The renderer refuses to start without `--api-key` and
+`--temp-dir` and authenticates every request. For private HTTPS it can terminate TLS itself:
 
 ```sh
+# once, on the GPU host: a private CA and a leaf certificate valid for the private LAN address
+cd <renderer root>
+openssl req -x509 -newkey rsa:2048 -nodes -keyout renderer-ca.key -out renderer-ca.crt -days 825 \
+    -subj "/CN=Vocab Renderer Dev CA"
+openssl req -newkey rsa:2048 -nodes -keyout renderer.key -out renderer.csr -subj "/CN=<gpu-host private IP>"
+printf "subjectAltName=IP:<gpu-host private IP>\nextendedKeyUsage=serverAuth\n" > san.ext
+openssl x509 -req -in renderer.csr -CA renderer-ca.crt -CAkey renderer-ca.key -CAcreateserial \
+    -out renderer.crt -days 825 -extfile san.ext && rm san.ext renderer.csr
+chmod 600 renderer-ca.key renderer.key
+
+# on the GPU host, under a supervisor (here a transient systemd user unit)
 ~/miniforge/envs/vocab-image-flux3-int8/bin/python ops/illustration-renderer.py \
     --model black-forest-labs/flux-3-image-klein \
     --comfyui http://127.0.0.1:8188 \
+    --temp-dir <ComfyUI base-directory>/temp \
     --revision int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d \
-    --api-key <worker credential> --host <gpu-host private IP> --port 8790
+    --api-key <worker credential> --host <gpu-host private IP> --port 8443 \
+    --tls-certfile renderer.crt --tls-keyfile renderer.key
 ```
 
 Checkpoint provenance: base `black-forest-labs/flux-3-image-klein` revision
@@ -420,10 +436,14 @@ Checkpoint provenance: base `black-forest-labs/flux-3-image-klein` revision
 `qwen3vl-4b-3b767ff-local-int8-convrot.safetensors` under `models/text_encoders/`, and pilot VAE
 `flux2-vae-3b767ff.safetensors` under `models/vae/` on the GPU host.
 
-Set `ILLUSTRATION_ENDPOINT` (for example `https://<gpu-host>/illustrations/render` behind the TLS proxy, or
-`http://<gpu-host-private-IP>:8790/render` with `ALLOW_INSECURE_PROVIDER_HTTP=1` — a development-only opt-in for
-plain HTTP inside the private network), `ILLUSTRATION_MODEL` (default `black-forest-labs/flux-3-image-klein`) and
-`ILLUSTRATION_API_KEY` in the application environment; an empty endpoint disables queueing and dispatch. When a
+Set `ILLUSTRATION_ENDPOINT` (for example `https://<gpu-host-private-IP>:8443/render` for the adapter's own TLS
+endpoint; `http://…:8790/render` with `ALLOW_INSECURE_PROVIDER_HTTP=1` remains a development-only opt-in for plain
+HTTP and does not satisfy the private-HTTPS requirement), `ILLUSTRATION_MODEL` (default
+`black-forest-labs/flux-3-image-klein`) and `ILLUSTRATION_API_KEY` in the application environment; an empty endpoint
+disables queueing and dispatch. The worker verifies the renderer certificate with normal TLS trust: copy
+`renderer-ca.crt` to the application host (a private, ignored directory is fine), point `RENDERER_CA_FILE` at it,
+and the worker builds its trust bundle from the system store plus that CA at startup — no application code change,
+and external provider verification keeps working. `ALLOW_INSECURE_PROVIDER_HTTP` stays `0` in production. When a
 proxy is injected into the containers (for example by the Docker client), add the renderer address to
 `NO_PROXY_DESTINATIONS` so private renderer traffic bypasses it. A model mismatch returns a clear configuration
 error. The worker gives illustrations one dedicated execution slot (separate
@@ -445,20 +465,25 @@ missing or failed illustrations and coalesces repeated runs.
 INT8 runtime: ComfyUI v0.46.0 + Triton (`vocab-illustration-int8` user service, loopback `127.0.0.1:8188`) on the
 GPU host, with the adapter from this repository run beside it as the transient `vocab-illustration-adapter-dev`
 user unit (copy kept in the pilot root; `systemctl --user stop vocab-illustration-adapter-dev` ends it) bound to the
-private LAN address. The development worker dispatched over plain HTTP with `ALLOW_INSECURE_PROVIDER_HTTP=1` and the
-renderer host added to `NO_PROXY_DESTINATIONS`:
+private LAN address and terminating private HTTPS itself (private CA, leaf certificate with the address as SAN).
+The recorded dispatch below ran through the verified HTTPS endpoint with normal certificate and hostname
+verification (`ALLOW_INSECURE_PROVIDER_HTTP=0`, the CA trusted via `RENDERER_CA_FILE`), the renderer address added
+to `NO_PROXY_DESTINATIONS` to bypass the injected container proxy:
 
-- Renderer host, bind address, checkpoint path and revision: GPU host `10.133.109.47`, adapter `0.0.0.0:8790`,
-  loopback ComfyUI `127.0.0.1:8188`; pinned graph `ops/illustration-workflow.json`
+- Renderer host, bind address, checkpoint path and revision: GPU host `10.133.109.47`, adapter `https://0.0.0.0:8443`
+  (private CA + IP-SAN leaf in the pilot root; CA copy trusted by the worker), loopback ComfyUI `127.0.0.1:8188`,
+  temp directory `<ComfyUI base-directory>/temp`; pinned graph `ops/illustration-workflow.json`
   (SHA-256 `0eadfe4e129f769641ea4eb6b4e94948f03d4fb8638ca08a9d96faf36d65f27a`, verified against the pilot copy);
   the INT8 ConvRot denoiser, text encoder and pilot VAE per the checkpoint identities above; revision
   `int8-convrot@3b767ff9b5261d71645e2ec49d87d298d955238d`.
 - Worker dispatch evidence and file sizes: one development learner with twelve ready pairs (four per language pair)
   was previewed (`--dry-run --limit 12`: missing 12, failed 0) and then queued (`--limit 12`); all 12 reached
-  `done` with per-revision seeds and the checkpoint revision recorded. Stored WebPs measured 25–44 KiB (432 KiB
-  total). Owner retrieval returned 200 `image/webp`, another learner 404 and an anonymous request 302. Warm
-  worker-to-renderer re-renders of six saved pairs (two per language pair, same prompts and seeds) measured a
-  2.32 s median (2.31–2.44 s), consistent with the pilot's 2.39 s loopback median.
+  `done` with per-revision seeds, the checkpoint revision and the verified HTTPS endpoint recorded in provenance.
+  Stored WebPs measured 25–44 KiB (432 KiB total). Owner retrieval returned 200 `image/webp`, another learner 404
+  and an anonymous request 302. Warm worker-to-renderer re-renders of six saved pairs (two per language pair, same
+  prompts and seeds) measured a 2.36 s median (2.34–2.44 s) over the verified HTTPS endpoint, consistent with the
+  pilot's 2.39 s loopback median. After the run ComfyUI's temp directory held no leftovers — the adapter had
+  cancelled and cleaned up every owned job and file.
 - Scene-fidelity/lettering review across the three language pairs: six stored images reviewed (two per pair). The
   pond daybreak glimmer, pan washing at the sink, blue-umbrella hand-off, cat stretching on the sunny windowsill
   and blowing out the birthday candles all read clearly in the pilot gouache style with no lettering or captions;
