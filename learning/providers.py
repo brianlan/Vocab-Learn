@@ -2,10 +2,11 @@
 import asyncio
 import base64
 import json
+import math
 import os
 import re
-import math
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -473,6 +474,10 @@ def illustration_profile():
         raise StageError("ILLUSTRATION", "Configure a full renderer URL without embedded credentials or query parameters.", "configuration") from None
     if url.scheme != "https" and not (url.scheme == "http" and os.getenv("ALLOW_INSECURE_PROVIDER_HTTP") == "1"):
         raise StageError("ILLUSTRATION", "Renderer endpoints require HTTPS; enable internal HTTP explicitly for development.", "configuration") from None
+    try:
+        url.port
+    except ValueError:
+        raise StageError("ILLUSTRATION", "Renderer URL has an invalid port.", "configuration") from None
     key = os.getenv("ILLUSTRATION_API_KEY", "").strip()
     if not key:
         raise StageError("ILLUSTRATION", "Renderer credentials are missing. Ask the deployer to configure this task.", "configuration") from None
@@ -486,14 +491,21 @@ def illustration_profile():
 
 
 async def _render(p, body):
+    """Stream the response: error statuses are rejected before their bodies are read, and a
+    successful body stops at the 128 KiB bound instead of buffering an unbounded response."""
     async with httpx.AsyncClient(timeout=httpx.Timeout(p.timeout), follow_redirects=False) as client:
-        response = await client.post(p.endpoint, json=body, headers={"Authorization": "Bearer " + p.key})
-        if response.status_code >= 300:
-            category = "configuration" if response.status_code in (400, 401, 403, 404) else "provider"
-            raise StageError(p.task, f"{TASK_LABELS[p.task]} returned HTTP {response.status_code}. Retry or ask the deployer to check the renderer and model.", category)
-        content, checkpoint = response.content, response.headers.get("X-Illustration-Revision", "")
-    if len(content) > ILLUSTRATION_MAX_BYTES:
-        raise StageError(p.task, "The renderer response exceeded the 128 KiB image limit.")
+        async with client.stream("POST", p.endpoint, json=body, headers={"Authorization": "Bearer " + p.key}) as response:
+            if response.status_code >= 300:
+                category = "configuration" if response.status_code in (400, 401, 403, 404) else "provider"
+                raise StageError(p.task, f"{TASK_LABELS[p.task]} returned HTTP {response.status_code}. Retry or ask the deployer to check the renderer and model.", category)
+            chunks, size = [], 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > ILLUSTRATION_MAX_BYTES:
+                    raise StageError(p.task, "The renderer response exceeded the 128 KiB image limit.")
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            checkpoint = response.headers.get("X-Illustration-Revision", "")
     if len(content) < 16 or content[:4] != b"RIFF" or content[8:12] != b"WEBP":
         raise StageError(p.task, "The renderer did not return a complete WebP image. Retry explicitly.")
     return content, checkpoint[:100]
@@ -511,6 +523,27 @@ def render_illustration(p, prompt, seed):
         raise StageError(p.task, f"{TASK_LABELS[p.task]} could not connect. You can retry the fixed input.", "transport") from None
     except (ValueError, TypeError, AttributeError):
         raise StageError(p.task, "The renderer returned an unreadable response.") from None
+
+
+def decode_webp(image, budget):
+    """Complete successful decode through the existing FFmpeg toolchain: a truncated or corrupt
+    body that still carries RIFF/WEBP markers can never reach publication."""
+    source = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
+    try:
+        source.write(image)
+        source.close()
+        metadata = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,width,height", "-of", "json", source.name],
+            capture_output=True, timeout=max(0.05, budget), check=True).stdout)
+        stream = metadata["streams"][0]
+        if stream.get("codec_name") != "webp" or not stream.get("width") or not stream.get("height"):
+            raise ValueError
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", source.name, "-f", "null", "-"],
+            capture_output=True, timeout=max(0.05, budget), check=True)
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError, IndexError):
+        raise StageError("ILLUSTRATION", "The renderer did not return a complete WebP image. Retry explicitly.") from None
+    finally:
+        os.unlink(source.name)
 
 
 def speech_voice(language):

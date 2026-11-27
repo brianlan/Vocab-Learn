@@ -1,10 +1,15 @@
 """Issue #26: one durable illustration per Example Pair revision, private retrieval and retention."""
+import argparse
+import http.client
+import importlib.util
 import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
@@ -19,43 +24,75 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from learning import authoring, illustrations, providers, review, work
-from learning.models import Card, Deck, ExampleIllustration, SpeechClip
+from learning.models import Attempt, Card, Deck, ExampleIllustration, SpeechClip
 from learning.providers import StageError
-from .test_learning import PAIR, VOCAB
+from .test_learning import GENERIC, PAIR, VOCAB, audio_bytes
 
 
-def webp_bytes(payload=b"scene"):
-    body = b"RIFF" + (12+len(payload)).to_bytes(4, "little") + b"WEBP" + payload
-    assert len(body) <= providers.ILLUSTRATION_MAX_BYTES
-    return body
+WEBP_CACHE = {}
+
+
+def marker_webp(payload=b"scene"):
+    """Header-valid but undecodable bytes: only for paths that never decode by design."""
+    return b"RIFF" + (12+len(payload)).to_bytes(4, "little") + b"WEBP" + payload
+
+
+def webp_image():
+    """A real 512×384 WebP rendered once by the local FFmpeg toolchain; no committed fixture."""
+    if "image" not in WEBP_CACHE:
+        WEBP_CACHE["image"] = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi",
+            "-i", "color=c=steelblue:s=512x384", "-frames:v", "1", "-c:v", "libwebp",
+            "-f", "webp", "pipe:1"], capture_output=True, check=True).stdout
+    return WEBP_CACHE["image"]
 
 
 @contextmanager
-def fake_renderer(content=None, status=200, revision="3b767"):
-    """A local fake renderer that records each request; serves WebP bytes by default."""
+def fake_renderer(content=None, status=200, revision="3b767", slow=False):
+    """A local fake renderer that records each request; serves WebP bytes by default. With `slow`,
+    the body streams in small chunks and `state["consumed"]` records what the client accepted."""
     requests = []
+    state = {}
     class Handler(BaseHTTPRequestHandler):
         def do_POST(inner):
             length = int(inner.headers.get("Content-Length", "0"))
             requests.append({"path": inner.path, "authorization": inner.headers.get("Authorization"),
                              "body": json.loads(inner.rfile.read(length)) if length else {}})
-            body = content if content is not None else webp_bytes()
+            body = content if content is not None else webp_image()
             inner.send_response(status)
             inner.send_header("Content-Type", "image/webp")
             inner.send_header("Content-Length", str(len(body)))
             inner.send_header("X-Illustration-Revision", revision)
             inner.end_headers()
-            inner.wfile.write(body)
+            if slow:
+                consumed = 0
+                for offset in range(0, len(body), 16*1024):
+                    try:
+                        inner.wfile.write(body[offset:offset+16*1024])
+                        inner.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        break
+                    consumed += min(16*1024, len(body)-offset)
+                    time.sleep(0.01)
+                state["consumed"] = consumed
+            else:
+                inner.wfile.write(body)
         def log_message(inner, *args): pass
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield requests, server.server_port
+        yield requests, server.server_port, state
     finally:
         server.shutdown(); server.server_close()
         thread.join(timeout=5)
+
+
+def wait_consumed(state, timeout=5):
+    limit = time.monotonic()+timeout
+    while "consumed" not in state and time.monotonic() < limit:
+        time.sleep(0.05)
+    return state.get("consumed", 0)
 
 
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
@@ -182,7 +219,7 @@ class IllustrationTests(TestCase):
 
     def test_adapter_targets_the_configured_url_model_and_bearer(self):
         card = self.ready(self.vocabulary())
-        with fake_renderer() as (requests, port):
+        with fake_renderer() as (requests, port, state):
             row = self.run_live_render(port)
         self.assertEqual(row.state, "done")
         request = requests[0]
@@ -199,18 +236,18 @@ class IllustrationTests(TestCase):
             "prompt_version", "seed", "checkpoint"})  # secret-free provenance
         self.assertEqual(row.file, f"{row.pk}.{row.claim.hex}.webp")
         path = self.folder/row.file
-        self.assertEqual(path.read_bytes(), webp_bytes())
+        self.assertEqual(path.read_bytes(), webp_image())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(illustrations.available_illustration(row.pair).pk, row.pk)
         self.client.force_login(self.user)
         response = self.client.get(reverse("illustration_image", args=[row.pair_id]))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "image/webp")
-        self.assertEqual(b"".join(response.streaming_content), webp_bytes())
+        self.assertEqual(b"".join(response.streaming_content), webp_image())
 
     def test_another_learner_and_missing_images_are_denied(self):
         card = self.ready(self.vocabulary())
-        row = self.run_render(lambda *a: (webp_bytes(), ""))
+        row = self.run_render(lambda *a: (webp_image(), ""))
         self.client.force_login(self.other)
         self.assertEqual(self.client.get(reverse("illustration_image", args=[row.pair_id])).status_code, 404)
         self.client.force_login(self.user)
@@ -228,15 +265,49 @@ class IllustrationTests(TestCase):
                          ("failed", "invalid_output", True))
         self.assertFalse(not_webp.file)
         self.assertEqual(list(self.folder.glob("*.webp*")), [])  # nothing was ever written
-        service = self.run_live(webp_bytes(), status=500)
+        service = self.run_live(b"RIFFWEBP" + b"x" * (4 * 1024 * 1024), status=500, slow=True)
         self.assertEqual((service.state, service.error_category, service.retryable), ("failed", "provider", True))
-        rejected = self.run_live(webp_bytes(), status=400)
+        rejected = self.run_live(b"RIFFWEBP" + b"x" * (4 * 1024 * 1024), status=400)
         self.assertEqual((rejected.state, rejected.error_category, rejected.retryable),
                          ("failed", "configuration", False))  # a renderer/model mismatch stays explicit
 
-    def run_live(self, content, status=200):
-        with fake_renderer(content=content, status=status) as (_, port):
+    def run_live(self, content, status=200, slow=False):
+        with fake_renderer(content=content, status=status, slow=slow) as (_, port, state):
             return self.run_live_render(port)
+
+    def test_the_adapter_stops_reading_past_the_128_kib_bound(self):
+        card = self.ready(self.vocabulary())
+        oversized = b"RIFFWEBP" + b"x" * (16 * 1024 * 1024)
+        with fake_renderer(content=oversized, slow=True) as (_, port, state):
+            row = self.run_live_render(port)
+        self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "invalid_output", True))
+        self.assertFalse(row.file)
+        self.assertLess(wait_consumed(state), len(oversized))  # the unread tail was never consumed
+
+    def test_error_statuses_are_rejected_before_their_bodies_are_read(self):
+        card = self.ready(self.vocabulary())
+        body = b"x" * (4 * 1024 * 1024)
+        with fake_renderer(content=body, status=500, slow=True) as (_, port, state):
+            row = self.run_live_render(port)
+        self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "provider", True))
+        self.assertLess(wait_consumed(state), len(body))  # the error body was not buffered
+
+    def test_a_corrupt_webp_is_rejected_before_publication(self):
+        card = self.ready(self.vocabulary())
+        good = self.run_render(lambda *a: (webp_image(), "3b767"))
+        self.assertEqual(good.state, "done")  # a real, completely decodable image publishes
+        broken = self.ready(self.vocabulary(word="broken"))
+        corrupt = self.run_render(lambda *a: (webp_image()[:-8], ""))
+        self.assertEqual((corrupt.state, corrupt.error_category, corrupt.retryable),
+                         ("failed", "invalid_output", True))
+        self.assertFalse(corrupt.file)
+        self.assertTrue(list(self.folder.glob("*.webp")))  # only the good claim-published name exists
+
+    def test_an_invalid_port_is_a_configuration_error(self):
+        with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": "https://isolated.invalid:not-a-port/render"}):
+            with self.assertRaises(StageError) as ctx:
+                providers.illustration_profile()
+        self.assertEqual(ctx.exception.category, "configuration")
 
     def test_expired_execution_budget_fails_before_dispatch(self):
         card = self.ready(self.vocabulary())
@@ -255,7 +326,7 @@ class IllustrationTests(TestCase):
         card = self.ready(self.vocabulary())
         pk, claim = self.processing()
         ExampleIllustration.objects.filter(pk=pk).update(claim=uuid.uuid4())  # an explicit retry rotated the claim
-        illustrations.publish_illustration(pk, claim, webp_bytes(), "")
+        illustrations.publish_illustration(pk, claim, webp_image(), "")
         row = ExampleIllustration.objects.get(pk=pk)
         self.assertEqual((row.state, row.file), ("processing", ""))
         self.assertFalse(list(self.folder.glob(f"{pk}.{claim.hex}.webp")))
@@ -264,14 +335,14 @@ class IllustrationTests(TestCase):
         card = self.ready(self.vocabulary())
         pk, claim = self.processing()
         ExampleIllustration.objects.filter(pk=pk).update(deadline=timezone.now()-timedelta(seconds=1))
-        illustrations.publish_illustration(pk, claim, webp_bytes(b"late"), "")  # the budget expired during rendering
+        illustrations.publish_illustration(pk, claim, marker_webp(b"late"), "")  # direct publish: never decoded
         row = ExampleIllustration.objects.get(pk=pk)
         self.assertNotEqual(row.state, "done")
         self.assertFalse((self.folder/f"{pk}.{claim.hex}.webp").exists())
         lost = self.ready(self.vocabulary(word="lost"))
         pk, claim = self.processing()
         Card.objects.filter(pk=lost.pk).update(active_pair=None)  # the last reference disappears mid-call
-        illustrations.publish_illustration(pk, claim, webp_bytes(b"orphan"), "")
+        illustrations.publish_illustration(pk, claim, marker_webp(b"orphan"), "")
         row = ExampleIllustration.objects.get(pk=pk)
         self.assertNotEqual(row.state, "done")
         self.assertIsNone(illustrations.available_illustration(lost.active_pair))
@@ -287,7 +358,7 @@ class IllustrationTests(TestCase):
                 raise OSError
             return original(fd)
         with patch("os.fsync", side_effect=flaky):
-            row = self.run_render(lambda *a: (webp_bytes(), ""))
+            row = self.run_render(lambda *a: (webp_image(), ""))
         self.assertEqual(row.state, "failed")
         self.assertEqual(row.error_category, "worker")
         self.assertEqual(len(calls), 2)
@@ -301,6 +372,29 @@ class IllustrationTests(TestCase):
         self.assertEqual(work.claim_work()[0], "assessment")  # assessment capacity stays healthy
         self.assertEqual(ExampleIllustration.objects.filter(state="processing").count(), 1)
         self.assertEqual(SpeechClip.objects.filter(state="processing").count(), 1)
+
+    def test_a_disabled_endpoint_never_dispatches_the_queued_backlog(self):
+        card = self.ready(self.vocabulary())
+        row = self.row(card)
+        with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": ""}):
+            self.assertFalse(illustrations.illustration_enabled())
+            self.assertIsNone(illustrations.claim_illustration())  # no claim, no dispatch
+        row = ExampleIllustration.objects.get(pk=row.pk)
+        self.assertEqual(row.state, "queued")
+        self.assertIsNone(row.started_at)
+        self.assertIsNotNone(illustrations.claim_illustration())  # re-enabled: preserved work serves
+
+    def test_a_failed_retry_yields_to_newly_saved_revisions(self):
+        broken = self.ready(self.vocabulary(word="broken"))
+        ExampleIllustration.objects.filter(pk=self.row(broken).pk).update(
+            state="failed", error="boom", error_category="provider", retryable=True)
+        call_command("queue_example_illustrations", self.user.username, stdout=self.output)
+        retried = self.row(broken)
+        self.assertEqual((retried.state, retried.backfill), ("queued", True))
+        later = self.ready(self.vocabulary(word="later"))  # a fresh revision saved after the retry
+        self.assertEqual(self.row(later).backfill, False)
+        self.assertEqual(illustrations.claim_illustration()[0], self.row(later).pk)  # fresh work first
+        self.assertEqual(illustrations.claim_illustration()[0], retried.pk)
 
     def test_configured_profile_requires_https_credentials_and_positive_budget(self):
         with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": "", "ILLUSTRATION_API_KEY": "",
@@ -344,8 +438,8 @@ class IllustrationTests(TestCase):
         call_command("queue_example_illustrations", self.user.username, limit=1, stdout=self.output)
         self.assertEqual(ExampleIllustration.objects.filter(backfill=True).count(), 1)  # the limit bounded the enqueue
         call_command("queue_example_illustrations", self.user.username, stdout=self.output)
-        backfilled = ExampleIllustration.objects.filter(backfill=True).get()
-        self.assertEqual(backfilled.pair_id, missing.active_pair_id)
+        backfilled = ExampleIllustration.objects.get(pair=missing.active_pair)
+        self.assertTrue(backfilled.backfill)
         self.assertEqual((self.row(broken).state, self.row(broken).execution), ("queued", 2))  # failed retried
         self.assertEqual(self.row(done).state, "queued")  # queued work untouched
         before = sorted(ExampleIllustration.objects.values_list("pk", flat=True))
@@ -382,7 +476,7 @@ class IllustrationTests(TestCase):
         for row in (pinned, abandoned_row, archived_row):
             name = f"{row.pk}.{row.claim.hex}.webp"
             ExampleIllustration.objects.filter(pk=row.pk).update(file=name)
-            (self.folder/name).write_bytes(webp_bytes())
+            (self.folder/name).write_bytes(webp_image())
         orphan = self.folder/"stray.webp"; orphan.write_bytes(b"nobody")
         stale = orphan.stat().st_mtime-90000
         os.utime(orphan, (stale, stale))
@@ -412,7 +506,7 @@ class IllustrationTests(TestCase):
 
     def test_cleanup_respects_the_retention_boundary_and_a_returning_reference(self):
         card = self.ready(self.vocabulary())
-        row = self.run_render(lambda *a: (webp_bytes(), ""))
+        row = self.run_render(lambda *a: (webp_image(), ""))
         Card.objects.filter(pk=card.pk).update(active_pair=None)  # abandon the revision
         illustrations.cleanup_illustrations()  # the grace starts now, whatever the image's earlier history
         self.assertTrue(ExampleIllustration.objects.filter(pk=row.pk).exists())
@@ -455,36 +549,226 @@ class IllustrationWorkerTests(TransactionTestCase):
         return user, deck, card
 
     def test_worker_renders_the_illustration_through_a_fake_renderer(self):
-        requests = []
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(inner):
-                requests.append(json.loads(inner.rfile.read(int(inner.headers["Content-Length"]))))
-                inner.send_response(200)
-                inner.send_header("Content-Type", "image/webp")
-                inner.send_header("Content-Length", str(len(webp_bytes(b"worker-image"))))
-                inner.send_header("X-Illustration-Revision", "3b767")
-                inner.end_headers()
-                inner.wfile.write(webp_bytes(b"worker-image"))
-            def log_message(inner, *args): pass
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler); server.daemon_threads = True
-        threading.Thread(target=server.serve_forever, daemon=True).start()
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, folder, True)
-        self.addCleanup(server.shutdown)
-        try:
-            with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": f"http://127.0.0.1:{server.server_port}/render",
-                                         "ILLUSTRATION_MODEL": "black-forest-labs/flux-3-image-klein",
-                                         "ILLUSTRATION_API_KEY": "test-only", "ALLOW_INSECURE_PROVIDER_HTTP": "1"}), \
-                    override_settings(ILLUSTRATIONS_DIR=folder):
-                _, _, card = self.prepared_card()  # the save-time enqueue needs the configured endpoint
-                run_worker(once=True, concurrency=1)
-        finally:
-            connections.close_all()
+        with fake_renderer() as (requests, port, state), \
+                patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": f"http://127.0.0.1:{port}/render",
+                                        "ILLUSTRATION_MODEL": "black-forest-labs/flux-3-image-klein",
+                                        "ILLUSTRATION_API_KEY": "test-only",
+                                        "ALLOW_INSECURE_PROVIDER_HTTP": "1"}), \
+                override_settings(ILLUSTRATIONS_DIR=folder):
+            _, _, card = self.prepared_card()  # the save-time enqueue needs the configured endpoint
+            run_worker(once=True, concurrency=1)
+        connections.close_all()
         row = card.active_pair.illustration
         self.assertEqual(row.state, "done")
-        self.assertEqual((folder/row.file).read_bytes(), webp_bytes(b"worker-image"))
+        self.assertEqual((folder/row.file).read_bytes(), webp_image())
         self.assertEqual(row.provenance["checkpoint"], "3b767")
         self.assertEqual(row.provenance["model"], "black-forest-labs/flux-3-image-klein")
         self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0]["model"], "black-forest-labs/flux-3-image-klein")
-        self.assertIn("prompt", requests[0])
+        self.assertEqual(requests[0]["body"]["model"], "black-forest-labs/flux-3-image-klein")
+        self.assertIn("prompt", requests[0]["body"])
+
+    # --- Supervisor capacity: R1 regressions --------------------------------------------------
+
+    def test_a_stalled_render_leaves_assessment_capacity_healthy(self):
+        stop = threading.Event(); stalled = threading.Event(); kinds = []
+        judge = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"units": [{"id": 1, "outcome": "complete", "reason": "Complete fixture"}]})}}]}).encode()
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(inner):
+                length = int(inner.headers.get("Content-Length", "0"))
+                body = json.loads(inner.rfile.read(length)) if length else {}
+                kind = "render" if "prompt" in body else "assessment"
+                kinds.append(kind)
+                if kind == "render":  # hold the request open silently, then answer completely
+                    stalled.set()
+                    while not stop.wait(0.04):
+                        pass
+                payload = webp_image() if kind == "render" else judge
+                inner.send_response(200)
+                inner.send_header("Content-Type", "image/webp" if kind == "render" else "application/json")
+                inner.send_header("Content-Length", str(len(payload)))
+                inner.end_headers()
+                inner.wfile.write(payload)
+            def log_message(inner, *args): pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler); server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        folder = Path(tempfile.mkdtemp()); audio = folder/"audio"; audio.mkdir()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.addCleanup(stop.set); self.addCleanup(server.shutdown)
+        observed = []
+        def watch():
+            try:
+                if not stalled.wait(30):
+                    return
+                connections.close_all()
+                p = review.next_question(card.deck.owner, spoken_deck)
+                a = review.submit(p, "speak", 1, "missing")
+                (audio/a.audio_name).write_bytes(audio_bytes())
+                a.save()
+                limit = time.monotonic()+40
+                while time.monotonic() < limit:
+                    connections.close_all()
+                    attempt = Attempt.objects.get(pk=a.pk)
+                    row = ExampleIllustration.objects.get(pair=card.active_pair)
+                    if attempt.state == "assessed" and row.state == "processing":
+                        observed.append((attempt.state, row.state))
+                        return
+                    time.sleep(0.1)
+            finally:
+                stop.set()
+                connections.close_all()
+        watcher = threading.Thread(target=watch, daemon=True)
+        with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": f"http://127.0.0.1:{server.server_port}/render",
+                                     "ILLUSTRATION_API_KEY": "test-only", "ALLOW_INSECURE_PROVIDER_HTTP": "1",
+                                     "AUDIO_ASSESS_ENDPOINT": f"http://127.0.0.1:{server.server_port}/judge",
+                                     "AUDIO_ASSESS_API_KEY": "test-only"}), \
+                override_settings(ILLUSTRATIONS_DIR=folder/"render", AUDIO_DIR=audio):
+            _, _, card = self.prepared_card()
+            card.active_pair.speech_clips.all().delete()  # keep this test about capacity only
+            spoken_deck = Deck.objects.create(owner=card.deck.owner, name="Healthy")
+            authoring.save_card(spoken_deck, "generic", GENERIC)
+            (folder/"render").mkdir()
+            watcher.start()
+            try:
+                run_worker(once=True, concurrency=1)
+            finally:
+                watcher.join(timeout=10)
+        connections.close_all()
+        self.assertEqual(observed, [("assessed", "processing")])  # assessment completed around the stalled render
+        self.assertIn("render", kinds); self.assertIn("assessment", kinds)
+        row = ExampleIllustration.objects.get(pair=card.active_pair)
+        self.assertEqual(row.state, "done")  # the released render then published normally
+        self.assertEqual((folder/"render"/row.file).read_bytes(), webp_image())
+
+    def test_speech_is_served_alongside_a_held_render_and_assessment(self):
+        stop = threading.Event(); render_stalled = threading.Event(); judge_stalled = threading.Event()
+        kinds = []
+        judge = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"units": [{"id": 1, "outcome": "complete", "reason": "Complete fixture"}]})}}]}).encode()
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(inner):
+                length = int(inner.headers.get("Content-Length", "0"))
+                body = json.loads(inner.rfile.read(length)) if length else {}
+                kind = "render" if "prompt" in body else "speech" if "voice_setting" in body else "assessment"
+                kinds.append(kind)
+                if kind == "render":
+                    render_stalled.set()
+                    while not stop.wait(0.04):
+                        pass
+                elif kind == "assessment":
+                    judge_stalled.set()
+                    while not stop.wait(0.04):
+                        pass
+                payload = webp_image() if kind == "render" else json.dumps(
+                    {"data": {"audio": b"released-clip".hex(), "status": 2},
+                     "base_resp": {"status_code": 0}}).encode() if kind == "speech" else judge
+                inner.send_response(200)
+                inner.send_header("Content-Type", "image/webp" if kind == "render" else "application/json")
+                inner.send_header("Content-Length", str(len(payload)))
+                if kind == "render":
+                    inner.send_header("X-Illustration-Revision", "3b767")
+                inner.end_headers()
+                inner.wfile.write(payload)
+            def log_message(inner, *args): pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler); server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        folder = Path(tempfile.mkdtemp()); audio = folder/"audio"; audio.mkdir()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.addCleanup(stop.set); self.addCleanup(server.shutdown)
+        observed = []
+        def watch():
+            try:
+                if not (render_stalled.wait(30) and judge_stalled.wait(5)):
+                    return
+                connections.close_all()
+                work.enqueue_speech(late_card.active_pair)  # speech arrives late, both slots occupied
+                limit = time.monotonic()+40
+                while time.monotonic() < limit:
+                    connections.close_all()
+                    clip = SpeechClip.objects.get(pair=late_card.active_pair, side="target")
+                    attempt = Attempt.objects.filter(state="processing").first()
+                    if clip.state == "done" and attempt is not None:
+                        observed.append((clip.state, attempt.state))
+                        return
+                    time.sleep(0.1)
+            finally:
+                stop.set()
+                connections.close_all()
+        watcher = threading.Thread(target=watch, daemon=True)
+        with patch.dict(os.environ, {"ILLUSTRATION_ENDPOINT": f"http://127.0.0.1:{server.server_port}/render",
+                                     "ILLUSTRATION_API_KEY": "test-only", "ALLOW_INSECURE_PROVIDER_HTTP": "1",
+                                     "SPEECH_ENDPOINT": f"http://127.0.0.1:{server.server_port}/t2a_v2",
+                                     "SPEECH_API_KEY": "test-only",
+                                     "AUDIO_ASSESS_ENDPOINT": f"http://127.0.0.1:{server.server_port}/judge",
+                                     "AUDIO_ASSESS_API_KEY": "test-only"}), \
+                override_settings(ILLUSTRATIONS_DIR=folder/"render", AUDIO_DIR=audio, TTS_DIR=folder/"tts"):
+            _, _, card = self.prepared_card()
+            card.active_pair.speech_clips.all().delete()  # speech arrives late through the watcher
+            spoken_deck = Deck.objects.create(owner=card.deck.owner, name="Held")
+            authoring.save_card(spoken_deck, "generic", GENERIC)
+            p = review.next_question(card.deck.owner, spoken_deck)
+            held = review.submit(p, "speak", 1, "missing")
+            (audio/held.audio_name).write_bytes(audio_bytes()); held.save()
+            late_card = card
+            (folder/"render").mkdir(); (folder/"tts").mkdir()
+            watcher.start()
+            try:
+                run_worker(once=True, concurrency=1)
+            finally:
+                watcher.join(timeout=10)
+        connections.close_all()
+        self.assertEqual(observed, [("done", "processing")])  # speech completed around the held pair
+        self.assertIn("speech", kinds)
+        self.assertEqual(SpeechClip.objects.get(pair=card.active_pair, side="target").state, "done")
+        self.assertEqual(ExampleIllustration.objects.get(pair=card.active_pair).state, "done")
+
+
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class RendererScriptTests(TestCase):
+    """The operator-run renderer authenticates every request and validates the model identifier."""
+
+    def load(self):
+        spec = importlib.util.spec_from_file_location(
+            "illustration_renderer", Path(__file__).resolve().parents[2]/"ops"/"illustration-renderer.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_startup_refuses_without_a_worker_credential(self):
+        module = self.load()
+        with self.assertRaises(SystemExit):
+            module.require_worker_credential(module.build_parser().parse_args(["--checkpoint", "/models/x"]))
+        module.require_worker_credential(module.build_parser().parse_args(
+            ["--checkpoint", "/models/x", "--api-key", "secret"]))  # configured: no refusal
+
+    def test_the_renderer_authenticates_and_validates_the_model(self):
+        module = self.load()
+        module.Handler.arguments = argparse.Namespace(api_key="secret",
+            model="black-forest-labs/flux-3-image-klein", revision="3b767")
+        module.Handler.pipeline = object()
+        def post(authorization, body):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            headers = {"Authorization": authorization} if authorization is not None else {}
+            connection.request("POST", "/render", body=json.dumps(body).encode(), headers=headers)
+            response = connection.getresponse()
+            payload, status = response.read(), response.status
+            connection.close()
+            return status, payload
+        with patch.object(module, "render", return_value=webp_image()):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+            server.daemon_threads = True
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                self.assertEqual(post(None, {"model": "x", "prompt": "s", "seed": 1})[0], 401)
+                self.assertEqual(post("Bearer wrong", {"model": "x", "prompt": "s", "seed": 1})[0], 401)
+                status, _ = post("Bearer secret", {"model": "other/model", "prompt": "s", "seed": 1})
+                self.assertEqual(status, 400)  # a model mismatch is a clear configuration error
+                status, payload = post("Bearer secret",
+                                       {"model": "black-forest-labs/flux-3-image-klein", "prompt": "scene", "seed": 1})
+                self.assertEqual((status, payload), (200, webp_image()))
+            finally:
+                server.shutdown(); server.server_close()
+                thread.join(timeout=5)

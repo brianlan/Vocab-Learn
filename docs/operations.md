@@ -396,22 +396,27 @@ prompt version, seed and checkpoint revision — never credentials.
 
 Start the supervised renderer on the GPU host with the isolated `vocab-image-flux3` Conda interpreter; it loads the
 operator-configured compatible checkpoint from local disk, keeps prompt upsampling disabled, renders one image at a
-time at 768 × 576 with 16 steps and returns a 512 × 384 WebP at quality 76 together with the checkpoint revision:
+time at 768 × 576 with 16 steps and returns a 512 × 384 WebP at quality 76 together with the checkpoint revision.
+Bind it to an interface the worker container can reach — a private LAN address, or loopback plus a TLS-terminating
+proxy that forwards to the renderer. The renderer refuses to start without `--api-key` and authenticates every
+request:
 
 ```sh
 ~/miniforge/envs/vocab-image-flux3/bin/python ops/illustration-renderer.py \
     --model black-forest-labs/flux-3-image-klein \
     --checkpoint /models/flux3-image-klein \
     --revision 3b767ff9b5261d71645e2ec49d87d298d955238d \
-    --api-key <worker credential> --host 127.0.0.1 --port 8790
+    --api-key <worker credential> --host <gpu-host private IP> --port 8790
 ```
 
-Set `ILLUSTRATION_ENDPOINT` (for example `http://<gpu-host>:8790/render`), `ILLUSTRATION_MODEL`
-(default `black-forest-labs/flux-3-image-klein`) and `ILLUSTRATION_API_KEY` in the application environment; an empty
-endpoint disables queueing and dispatch. A model mismatch returns a clear configuration error. The worker gives
-illustrations one dedicated execution slot (separate from speech), prefers newly saved revisions over backfill, and
-reclaims images whose revision loses its last reference after 24 hours of inactivity under the same rules as speech;
-a returning reference resets the grace, and example text and frozen history are never touched.
+Set `ILLUSTRATION_ENDPOINT` (for example `https://<gpu-host>/illustrations/render` behind the TLS proxy, or
+`http://<gpu-host-private-IP>:8790/render` with `ALLOW_INSECURE_PROVIDER_HTTP=1` — a development-only opt-in for
+plain HTTP inside the private network), `ILLUSTRATION_MODEL` (default `black-forest-labs/flux-3-image-klein`) and
+`ILLUSTRATION_API_KEY` in the application environment; an empty endpoint disables queueing and dispatch. A model
+mismatch returns a clear configuration error. The worker gives illustrations one dedicated execution slot (separate
+from speech), prefers newly saved revisions over backfill, and reclaims images whose revision loses its last
+reference after 24 hours of inactivity under the same rules as speech; a returning reference resets the grace, and
+example text and frozen history are never touched.
 
 To preview and then queue missing or failed illustrations for a learner's active Ready pairs (bounded by `--limit`):
 
@@ -421,9 +426,17 @@ docker compose exec web python manage.py queue_example_illustrations alice --lim
 ```
 
 The preview records missing, failed, queued, processing and ready counts with zero writes. Queueing affects only
-missing or failed illustrations and coalesces repeated runs. Before broad backfill, exercise the configured renderer
-from the development worker and inspect a small representative sample across English–Chinese, English–Spanish and
-Spanish–Chinese pairs for scene fidelity and visible lettering; record that review in the release handoff.
+missing or failed illustrations and coalesces repeated runs.
+
+**Required development GPU sample before broad backfill.** This machine has no GPU, `vocab-image-flux3` environment
+or FLUX.3 Klein checkpoint, so the shipped renderer has not been exercised yet. An authorized operator must run the
+command above with the pinned revision, exercise the configured renderer from the development worker, and inspect
+representative English–Chinese, English–Spanish and Spanish–Chinese pairs for scene fidelity and visible lettering.
+Record the configuration, commands and sample outcomes here before any broad backfill:
+
+- Renderer host, bind address, checkpoint path and revision: _pending operator run_
+- Worker dispatch evidence and file sizes: _pending operator run_
+- Scene-fidelity/lettering review across the three language pairs: _pending operator run_
 
 ## Persistence, audio expiry, and upgrade
 

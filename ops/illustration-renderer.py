@@ -68,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length > MAX_BODY_BYTES:
             return self.reply(413, "The request body is too large.")
-        if self.arguments.api_key and self.headers.get("Authorization") != "Bearer " + self.arguments.api_key:
+        if self.headers.get("Authorization") != "Bearer " + self.arguments.api_key:
             return self.reply(401, "Renderer credentials are missing or wrong.")
         try:
             body = json.loads(self.rfile.read(length))
@@ -104,8 +104,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def require_worker_credential(arguments):
+    """The renderer authenticates every request; an absent key must never disable that."""
+    if not arguments.api_key:
+        raise SystemExit("--api-key is required: the renderer refuses to listen without a worker credential.")
+
+
 def main():
     arguments = build_parser().parse_args()
+    require_worker_credential(arguments)
     Handler.arguments = arguments
     print(f"Loading checkpoint {arguments.checkpoint} ...", flush=True)
     Handler.pipeline = load_pipeline(arguments)

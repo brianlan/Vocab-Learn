@@ -51,9 +51,10 @@ class Command(BaseCommand):
                 enqueued += 1
             elif row.state == "failed":
                 row.state, row.claim, row.error, row.error_category = "queued", uuid.uuid4(), "", ""
+                row.backfill = True  # an operator retry yields to newly saved revisions
                 row.execution += 1
                 row.requested_at = timezone.now()
-                row.save(update_fields=["state", "claim", "error", "error_category", "execution", "requested_at"])
+                row.save(update_fields=["state", "claim", "error", "error_category", "backfill", "execution", "requested_at"])
                 enqueued += 1
         if options["dry_run"]:
             self.stdout.write(f"Preview for {user.username}: missing {missing}, failed {failed}, "

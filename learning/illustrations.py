@@ -67,8 +67,11 @@ def expire_illustration():
 
 @transaction.atomic
 def claim_illustration():
-    """Atomic claim mirroring claim_speech; new revisions are served before queued backfill."""
+    """Atomic claim mirroring claim_speech; new revisions are served before queued backfill. A
+    disabled endpoint never dispatches: queued work is preserved intact for re-enabling."""
     expire_illustration()
+    if not illustration_enabled():
+        return None
     row = ExampleIllustration.objects.filter(state="queued").order_by("backfill", "requested_at", "pk").first()
     if not row:
         return None
@@ -97,6 +100,7 @@ def process_illustration(row_id, claim):
         return
     image, checkpoint = providers.render_illustration(
         providers.replace(p, timeout=min(p.timeout, remaining(row.deadline))), prompt, seed)
+    providers.decode_webp(image, min(20, remaining(row.deadline)))
     publish_illustration(row_id, claim, image, checkpoint)
 
 

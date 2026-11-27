@@ -95,9 +95,10 @@ def run_worker(once=False, concurrency=None):
                         flush=True)
                 last_cleanup = time.monotonic()
             slots = concurrency or settings.WORKER_CONCURRENCY
-            # Speech synthesis and image rendering each own one dedicated slot; a stalled clip or
-            # render never takes an assessment or preparation slot, and only one runs at a time.
-            while sum(item[0] != "speech" for item in active) < slots:
+            # Assessments and preparation share the main slots; speech and illustration each own
+            # one dedicated slot, so a stalled render or synthesis never delays an assessment and
+            # neither media kind is blocked by the other's or a main execution.
+            while sum(item[0] in ("assessment", "generation") for item in active) < slots:
                 job = claim_work()
                 if not job:
                     break
@@ -106,7 +107,7 @@ def run_worker(once=False, concurrency=None):
                 process = context.Process(target=execute, args=(*job[:3], paths))
                 process.start()
                 active.append((*job, process))
-            if sum(item[0] == "speech" for item in active) < 1 and len(active) < slots+1:
+            if sum(item[0] == "speech" for item in active) < 1:
                 clip = claim_speech()
                 if clip:
                     connections.close_all()
@@ -114,7 +115,7 @@ def run_worker(once=False, concurrency=None):
                     process = context.Process(target=execute, args=("speech", *clip[:2], paths))
                     process.start()
                     active.append(("speech", *clip, process))
-            if sum(item[0] == "illustration" for item in active) < 1 and len(active) < slots+2:
+            if sum(item[0] == "illustration" for item in active) < 1:
                 row = claim_illustration()
                 if row:
                     connections.close_all()
