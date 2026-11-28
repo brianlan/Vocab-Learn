@@ -383,16 +383,26 @@ to retry it with the current profile.
 
 ### Vocabulary example illustrations
 
-Every saved Example Pair revision (initial preparation, a source edit re-run, automatic rotation, a learner regeneration
-and an operator correction) durably queues exactly one illustration. Both sentences of the pair share the same ready
-image. Rendering is disabled until `ILLUSTRATION_ENDPOINT` is set; a disabled or unavailable configuration never blocks
-pair saving, assessment or sentence speech. The renderer is a private, self-hosted FLUX.3 Image Klein service: the
-application sends the configured model identifier, a versioned soft-gouache prompt built from one validated sentence
-(English when present, otherwise the Spanish sentence of Spanish–Chinese pairs) and a stable per-revision seed with the
-API key as a Bearer credential. Responses are validated WebP images capped at 128 KiB, stored as private (`0600`)
-files under `ILLUSTRATIONS_DIR` (default `/data/illustrations` in the `app_data` volume, inside the cold backup) and
-served only to the owning learner through an authenticated route. Recorded provenance carries the model, endpoint,
-prompt version, seed and checkpoint revision — never credentials.
+When `ILLUSTRATION_ENDPOINT` is set, each saved Example Pair revision durably queues one illustration. That includes
+initial preparation, a source edit re-run, automatic rotation, learner regeneration and operator correction. Both
+sentences share the same ready image. Pair saving, assessment and sentence speech run independently of illustration
+availability. The caption writer receives the target expression and both saved sentences
+in language-named fields. It writes an English scene caption focused on visible evidence of the expression. The
+worker appends the fixed wordless gouache style and sends the result to the private FLUX.3 Image Klein renderer with
+the configured model and a stable per-revision seed. Both provider calls, image validation and publication share the
+illustration deadline (`ILLUSTRATION_TIMEOUT_SECONDS`, default 300 seconds). A failed caption ends the illustration
+execution. The backfill command can retry it with the current configuration.
+
+Generated images are validated WebPs capped at 128 KiB and stored as private (`0600`) files under `ILLUSTRATIONS_DIR`
+(default `/data/illustrations` in the `app_data` volume, inside the cold backup). The authenticated route serves each
+file only to the owning learner. New renders record the caption model, `illustration-v2` prompt version, renderer
+model, endpoint, timeout, seed and checkpoint revision. Ready files are reused with their saved provenance.
+
+The caption writer defaults to `ILLUSTRATION_CAPTION_ENDPOINT=https://api.minimax.cn/v1/chat/completions` and
+`ILLUSTRATION_CAPTION_MODEL=MiniMax-M3.1-Flash`. It uses MiniMax-compatible Chat Completions with max reasoning,
+separate reasoning output and a 4,096-token completion limit. `ILLUSTRATION_CAPTION_API_KEY` takes precedence over
+the shared `MINIMAX_API_KEY`. The shared key is available only to the built-in MiniMax HTTPS origin. A different
+origin requires its own `ILLUSTRATION_CAPTION_API_KEY`.
 
 The renderer is a thin authenticated adapter in front of the pinned INT8 ComfyUI runtime. The runtime is ComfyUI
 v0.46.0 with Triton serving `http://127.0.0.1:8188` on the GPU host, supervised by the `vocab-illustration-int8` user
@@ -510,6 +520,19 @@ to `NO_PROXY_DESTINATIONS` to bypass the injected container proxy:
   and blowing out the birthday candles all read clearly in the pilot gouache style with no lettering or captions;
   the baila kitchen scene conveyed the kitchen and a mid-motion standing figure but not a lone dancer — recorded
   for future prompt tuning, no change in this repository.
+
+**Grounded caption development sample (2026-11-28).** An isolated development database held six validated synthetic
+Ready pairs, two per supported language combination. The `queue_example_illustrations qa-learner --dry-run --limit 6`
+preview reported six missing. The queue command and development worker processed all six with MiniMax-M3.1-Flash
+and the pinned INT8 renderer over verified HTTPS. The repeat preview reported six ready. Each 512 × 384 WebP was
+16–37 KiB, with 140 KiB stored in total. Captioning took a median 4.27 seconds in this sample. The files carried
+`illustration-v2`, the caption model and INT8 checkpoint, and the owner could retrieve them through the application.
+
+The captions described the physical cues in all six pairs. The flour falling through the sieve, the cashier
+handing the umbrella to the customer, the cobwebbed loom beside the active sewing machine and the red bow being
+loosened read clearly in the images. The former floodwater level and the cyclist's evasive turn were hard to make
+out. The flour-sifting scene looked photographic, and the bakery jars had faint label-like marks without legible
+lettering.
 
 ## Persistence, audio expiry, and upgrade
 
