@@ -35,7 +35,7 @@ CAPTION = "Two people face each other across a table. One has stopped speaking a
 RENDER_PROMPT = (f"{CAPTION} Soft gouache on warm ivory paper, matte colors, soft edges and a light brush texture. "
                  "A wordless scene with plain, unlettered surfaces.")
 CAPTION_RESPONSE = json.dumps({"choices": [{"finish_reason": "stop", "message": {
-    "content": f" {CAPTION}\n", "reasoning_content": "Private reasoning"}}]}).encode()
+    "role": "assistant", "content": f" {CAPTION}\n", "reasoning_content": "Private reasoning"}}]}).encode()
 
 
 def marker_webp(payload=b"scene"):
@@ -120,7 +120,9 @@ class IllustrationTests(TestCase):
             "ILLUSTRATION_CAPTION_API_KEY": "caption-only",
             "ALLOW_INSECURE_PROVIDER_HTTP": "1"})
         self.environ.start(); self.addCleanup(self.environ.stop)
-        self.caption = self.enterContext(patch.object(providers, "illustration_caption", return_value=CAPTION))
+        self.caption_patch = patch.object(providers, "illustration_caption", return_value=CAPTION)
+        self.caption = self.caption_patch.start()
+        self.addCleanup(self.caption_patch.stop)
         self.user = get_user_model().objects.create_user("illustrator", password="test-password")
         self.other = get_user_model().objects.create_user("other", password="test-password")
         self.deck = Deck.objects.create(owner=self.user, name="Illustrated")
@@ -384,6 +386,18 @@ class IllustrationTests(TestCase):
         row = self.run_render(lambda *args: self.fail("The renderer must wait for an accepted caption."))
         self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "provider", True))
         self.assertFalse(row.file)
+
+    def test_invalid_caption_roles_fail_before_dispatching_flux(self):
+        self.ready(self.vocabulary())
+        self.caption_patch.stop()
+        for role_field in ({}, {"role": "user"}, {"role": "system"}, {"role": "tool"}):
+            with self.subTest(role_field=role_field), transaction.atomic():
+                response = {"choices": [{"finish_reason": "stop", "message": {"content": CAPTION, **role_field}}]}
+                with patch.object(providers, "request", return_value=response):
+                    row = self.run_render(lambda *args: self.fail("The renderer received a non-assistant caption."))
+                self.assertEqual((row.state, row.error_category, row.retryable), ("failed", "invalid_output", True))
+                self.assertFalse(row.file)
+                self.assertEqual(list(self.folder.iterdir()), [])
 
     @override_settings(ILLUSTRATION_TIMEOUT_SECONDS=30)
     def test_caption_and_render_consume_the_same_deadline(self):

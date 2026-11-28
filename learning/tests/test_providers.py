@@ -48,12 +48,13 @@ class ProviderTests(ProviderBase):
     def test_illustration_caption_rejects_incomplete_or_unusable_answers(self):
         profile = self.profile("ILLUSTRATION_CAPTION", "minimax")
         for choice in (
-            {"finish_reason": "length", "message": {"content": "A blue umbrella"}},
-            {"finish_reason": "stop", "message": {"content": "A scene.", "refusal": "Refused"}},
-            {"finish_reason": "stop", "message": {"content": "A scene.", "tool_calls": [{}]}},
-            {"finish_reason": "stop", "message": {"content": " ", "reasoning_content": "Private reasoning"}},
-            {"finish_reason": "stop", "message": {"content": "<think>Private reasoning</think> A scene."}},
-            {"finish_reason": "stop", "message": {"content": [{"text": "A scene."}]}},
+            {"finish_reason": "length", "message": {"role": "assistant", "content": "A blue umbrella"}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "A scene.", "refusal": "Refused"}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "A scene.", "tool_calls": [{}]}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": " ",
+                                                  "reasoning_content": "Private reasoning"}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "<think>Private reasoning</think> A scene."}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": [{"text": "A scene."}]}},
             {},
         ):
             with self.subTest(choice=choice), patch.object(p, "request", return_value={"choices": [choice]}):

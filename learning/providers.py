@@ -277,6 +277,8 @@ def illustration_caption(p, system, payload):
                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
     })
     try:
+        if data["choices"][0]["message"].get("role") != "assistant":
+            raise ValueError
         content = _chat_content(data)
         if not content or content.startswith("```") or re.search(r"</?think\b", content, re.IGNORECASE):
             raise ValueError
