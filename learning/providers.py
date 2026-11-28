@@ -16,7 +16,8 @@ from .audio_prompts import VERSION as AUDIO_PROMPT_VERSION, assessment_prompt
 
 TASK_LABELS = {"AUDIO_ASSESS": "Audio assessment", "GENERATOR": "Example preparation",
                "DEFINITION": "Vocabulary completion", "EXAMPLE_REVIEWER": "Example review",
-               "SPEECH": "Speech synthesis", "ILLUSTRATION": "Illustration renderer"}
+               "SPEECH": "Speech synthesis", "ILLUSTRATION": "Illustration renderer",
+               "ILLUSTRATION_CAPTION": "Illustration caption writer"}
 ILLUSTRATION_DEFAULT_MODEL = "black-forest-labs/flux-3-image-klein"
 ILLUSTRATION_MAX_BYTES = 128*1024  # A 512×384 WebP at quality 76 measures 9–25 KiB; 128 KiB is a hard bound.
 ILLUSTRATION_PIXELS = 512*384  # Pre-decode pixel cap: encoded size alone cannot bound decoder memory.
@@ -80,6 +81,7 @@ class Profile:
 
 def profile(task):
     audio = task == "AUDIO_ASSESS"
+    caption = task == "ILLUSTRATION_CAPTION"
     # Compose sets optional overrides to explicit empty strings; only the selected provider's defaults may replace them.
     provider = (os.getenv("AUDIO_ASSESS_PROVIDER") or "qwen").strip().lower() if audio else ""
     if audio and provider not in AUDIO_PROVIDERS:
@@ -96,9 +98,7 @@ def profile(task):
         "SPEECH": "https://api.minimax.cn/v1/t2a_v2"}.get(task,
         audio_defaults[api_mode] if audio else "https://api.minimax.cn/v1/chat/completions")
     endpoint = os.getenv(task + "_ENDPOINT", default_endpoint).strip()
-    # Compose sets optional overrides to explicit empty strings; only audio's selected provider may
-    # replace them with defaults. Other tasks keep base behavior: an empty endpoint fails validation.
-    if audio and not endpoint:
+    if (audio or caption) and not endpoint:
         endpoint = default_endpoint
     try:
         url = urlsplit(endpoint)
@@ -109,15 +109,19 @@ def profile(task):
     if url.scheme != "https" and not (url.scheme == "http" and os.getenv("ALLOW_INSECURE_PROVIDER_HTTP") == "1"):
         raise StageError(task, "Provider endpoints require HTTPS; enable internal HTTP explicitly for development.", "configuration")
     try:
-        default_origin = (url.scheme, url.hostname, url.port or 443) == ("https", "api.minimax.cn", 443)
+        port = url.port
     except ValueError:
         raise StageError(task, "Provider URL has an invalid port.", "configuration") from None
+    default_origin = (url.scheme, url.hostname) == ("https", "api.minimax.cn") and port in (None, 443)
     protocol = provider if audio else os.getenv(task + "_PROTOCOL",
         {"GENERATOR": "zhipu", "EXAMPLE_REVIEWER": "minimax", "SPEECH": "minimax"}.get(task, "openai"))
     native_default = default_origin and (protocol == "minimax" or not audio)
     key = os.getenv(task + "_API_KEY", "") or (os.getenv("MINIMAX_API_KEY", "") if native_default else "")
     if not key:
         raise StageError(task, "Provider credentials are missing. Ask the deployer to configure this task.", "configuration")
+    if caption:
+        model = os.getenv("ILLUSTRATION_CAPTION_MODEL", "").strip() or "MiniMax-M3.1-Flash"
+        return Profile(task, endpoint, model, key, timeout=120, tokens=4096, protocol="minimax", effort="max")
     if protocol not in DIALECTS:
         raise StageError(task, "Unsupported provider protocol.", "configuration")
     thinking = os.getenv(task + "_THINKING", THINKING_DEFAULTS.get(task, "")).strip().lower()
@@ -231,6 +235,14 @@ def json_answer(task, content):
         raise StageError(task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
 
 
+def _chat_content(data):
+    choice = data["choices"][0]
+    message = choice["message"]
+    if choice.get("finish_reason") != "stop" or message.get("refusal") or message.get("tool_calls"):
+        raise ValueError
+    return message["content"].strip()
+
+
 def chat(p, system, payload, audio=None):
     text = json.dumps(payload, ensure_ascii=False)
     body = {"model": p.model, "stream": False, DIALECTS[p.protocol]["budget"]: p.tokens,
@@ -252,13 +264,27 @@ def chat(p, system, payload, audio=None):
             body["service_tier"] = "default"
     data = request(p, json=body)
     try:
-        choice = data["choices"][0]
-        message = choice["message"]
-        if choice.get("finish_reason") != "stop" or message.get("refusal") or message.get("tool_calls"):
-            raise ValueError
-        return json_answer(p.task, message["content"].strip())
+        return json_answer(p.task, _chat_content(data))
     except (KeyError, IndexError, ValueError, AttributeError, TypeError):
         raise StageError(p.task, "The model did not return a complete valid JSON answer. Retry the fixed input.") from None
+
+
+def illustration_caption(p, system, payload):
+    data = request(p, json={
+        "model": p.model, "stream": False, "max_completion_tokens": p.tokens,
+        "reasoning_effort": p.effort, "reasoning_split": True,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+    })
+    try:
+        if data["choices"][0]["message"].get("role") != "assistant":
+            raise ValueError
+        content = _chat_content(data)
+        if not content or content.startswith("```") or re.search(r"</?think\b", content, re.IGNORECASE):
+            raise ValueError
+        return content
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+        raise StageError(p.task, "The model did not return a complete scene caption. Retry explicitly.") from None
 
 
 def responses_audio_part(p, audio):

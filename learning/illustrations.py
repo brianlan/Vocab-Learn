@@ -1,4 +1,4 @@
-"""One shared illustration per Example Pair revision, rendered by the private FLUX.3 renderer."""
+"""One shared illustration per Example Pair revision, captioned before rendering."""
 import hashlib
 import os
 import time
@@ -13,11 +13,20 @@ from . import providers
 from .models import ExampleIllustration
 from .work import speech_referenced
 
-PROMPT_VERSION = "illustration-v1"
-# The agreed soft gouache style: the complete scene of one validated sentence, never any lettering.
-STYLE = ("Soft gouache storybook illustration of the complete scene described by this sentence, with "
-         "gentle textures, muted colors and warm light. Depict every participant, action and setting "
-         "detail the sentence describes. Use no text, letters, numbers, captions or borders anywhere.")
+PROMPT_VERSION = "illustration-v2"
+CAPTION_INSTRUCTION = """Write one English scene caption for a single illustration of the supplied bilingual example pair. Use both sentences and the target expression to choose the meaning the illustration should convey.
+
+Choose the instant at which a viewer can most clearly see evidence of that meaning. Start with what is visible in the frame and describe the main physical cue in plain present tense. Make that cue large and clear enough to recognize in a small illustration.
+
+Find the specific behavior, changed condition, or omission that makes the target expression evident in the sentences. Make its visible evidence the focus of the frame. If another event happened earlier, show it only through a passive trace in the surroundings. For an activity that has stopped, show recognizable signs of disuse prominently alongside the subject's current behavior.
+
+If the meaning involves a change or difference in intensity, describe the visible state at the chosen instant. Let earlier conditions be inferred from physical traces. If people interact, give the initiator and recipient distinct positions and describe their visible gestures, posture, gaze, or expressions so their roles are clear.
+
+Preserve the important people, objects, setting, and time implied by the pair. Include people only when the pair implies their presence. Use the surroundings, lighting, and visible behavior to convey time and secondary context. Add an object only when it helps show the main action or state. Keep visible surfaces unlettered.
+
+Return only the visible scene caption in 2–4 sentences."""
+STYLE_SUFFIX = ("Soft gouache on warm ivory paper, matte colors, soft edges and a light brush texture. "
+                "A wordless scene with plain, unlettered surfaces.")
 
 
 def illustration_enabled():
@@ -25,23 +34,15 @@ def illustration_enabled():
     return bool(os.getenv("ILLUSTRATION_ENDPOINT", "").strip())
 
 
-def scene_sentence(pair):
-    """English when present, otherwise the Spanish sentence of Spanish–Chinese pairs."""
+def caption_payload(pair):
     card = pair.card
-    if card.target_language == "English":
-        return pair.target_sentence, "English"
-    if card.native_language == "English":
-        return pair.native_sentence, "English"
-    return pair.target_sentence, card.target_language
-
-
-def illustration_prompt(pair):
-    sentence, language = scene_sentence(pair)
-    return f"{STYLE}\n\nScene sentence ({language}): {sentence.strip()}"
+    return {"target_expression": card.word,
+            f"{card.target_language.lower()}_sentence": pair.target_sentence,
+            f"{card.native_language.lower()}_sentence": pair.native_sentence}
 
 
 def revision_seed(pair):
-    """A stable seed per revision: every execution of the same pair renders the same scene."""
+    """Keep the renderer seed stable across executions of the same revision."""
     return int.from_bytes(hashlib.sha256(f"illustration:{pair.pk}".encode()).digest()[:4], "big")
 
 
@@ -84,23 +85,34 @@ def claim_illustration():
     return (row.pk, claim, deadline) if claimed else None
 
 
+def _skip_unreferenced(active, pair):
+    if speech_referenced(pair):
+        return False
+    active.update(state="skipped", claim=uuid.uuid4(), error="The example is no longer referenced.")
+    return True
+
+
 def process_illustration(row_id, claim):
-    row = ExampleIllustration.objects.select_related("pair__card").get(pk=row_id)
-    if row.state != "processing" or row.claim != claim:
+    active = ExampleIllustration.objects.filter(pk=row_id, claim=claim, state="processing")
+    row = active.select_related("pair__card").first()
+    if row is None or _skip_unreferenced(active, row.pair):
         return
-    if not speech_referenced(row.pair):
-        row.state, row.claim, row.error = "skipped", uuid.uuid4(), "The example is no longer referenced."
-        row.save(update_fields=["state", "claim", "error"])
-        return
-    p = providers.illustration_profile()
-    prompt, seed = illustration_prompt(row.pair), revision_seed(row.pair)
+    renderer = providers.illustration_profile()
+    writer = providers.profile("ILLUSTRATION_CAPTION")
+    seed = revision_seed(row.pair)
     # Record model, seed and prompt version at dispatch; each successful file keeps its provenance.
-    if not ExampleIllustration.objects.filter(pk=row_id, claim=claim, state="processing").update(
-            provenance={"task": p.task, "endpoint": p.endpoint, "model": p.model, "timeout": p.timeout,
-                        "prompt_version": PROMPT_VERSION, "seed": seed}):
+    if not active.update(provenance={"task": renderer.task, "endpoint": renderer.endpoint,
+            "model": renderer.model, "timeout": renderer.timeout, "caption_model": writer.model,
+            "prompt_version": PROMPT_VERSION, "seed": seed}):
+        return
+    caption = providers.illustration_caption(
+        providers.replace(writer, timeout=min(writer.timeout, remaining(row.deadline))),
+        CAPTION_INSTRUCTION, caption_payload(row.pair))
+    if _skip_unreferenced(active, row.pair) or not active.exists():
         return
     image, checkpoint = providers.render_illustration(
-        providers.replace(p, timeout=min(p.timeout, remaining(row.deadline))), prompt, seed)
+        providers.replace(renderer, timeout=min(renderer.timeout, remaining(row.deadline))),
+        f"{caption} {STYLE_SUFFIX}", seed)
     providers.decode_webp(image, min(20, remaining(row.deadline)))
     publish_illustration(row_id, claim, image, checkpoint)
 

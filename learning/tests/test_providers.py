@@ -25,6 +25,45 @@ class ProviderBase(TestCase):
 
 class ProviderTests(ProviderBase):
 
+    def test_illustration_caption_credentials_are_scoped_to_the_minimax_origin(self):
+        task = "ILLUSTRATION_CAPTION"
+        with patch.dict(os.environ, {"MINIMAX_API_KEY": "shared-key"}, clear=True):
+            default = p.profile(task)
+            self.assertEqual((default.endpoint, default.model, default.key),
+                ("https://api.minimax.cn/v1/chat/completions", "MiniMax-M3.1-Flash", "shared-key"))
+            with patch.dict(os.environ, {"ILLUSTRATION_CAPTION_ENDPOINT": "", "ILLUSTRATION_CAPTION_MODEL": ""}):
+                self.assertEqual(p.profile(task), default)
+            with patch.dict(os.environ, {"ILLUSTRATION_CAPTION_ENDPOINT": "https://API.MINIMAX.CN:443/chat",
+                                         "ILLUSTRATION_CAPTION_API_KEY": "caption-key"}):
+                self.assertEqual(p.profile(task).key, "caption-key")
+                self.assertEqual(p.profile("DEFINITION").key, "shared-key")
+            for endpoint in ("https://api.minimax.cn.evil.test/chat", "https://api.minimax.cn:444/chat",
+                             "https://api.minimax.cn:0/chat", "http://api.minimax.cn/chat"):
+                with self.subTest(endpoint=endpoint), patch.dict(os.environ, {
+                        "ILLUSTRATION_CAPTION_ENDPOINT": endpoint, "ALLOW_INSECURE_PROVIDER_HTTP": "1"}):
+                    with self.assertRaises(p.StageError) as error:
+                        p.profile(task)
+                    self.assertEqual(error.exception.category, "configuration")
+
+    def test_illustration_caption_rejects_incomplete_or_unusable_answers(self):
+        profile = self.profile("ILLUSTRATION_CAPTION", "minimax")
+        for choice in (
+            {"finish_reason": "length", "message": {"role": "assistant", "content": "A blue umbrella"}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "A scene.", "refusal": "Refused"}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "A scene.", "tool_calls": [{}]}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": " ",
+                                                  "reasoning_content": "Private reasoning"}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": "<think>Private reasoning</think> A scene."}},
+            {"finish_reason": "stop", "message": {"role": "assistant", "content": [{"text": "A scene."}]}},
+            {},
+        ):
+            with self.subTest(choice=choice), patch.object(p, "request", return_value={"choices": [choice]}):
+                with self.assertRaises(p.StageError) as error:
+                    p.illustration_caption(profile, "Write a caption.", {})
+                self.assertEqual((error.exception.stage, error.exception.category),
+                                 ("ILLUSTRATION_CAPTION", "invalid_output"))
+                self.assertNotIn("Private reasoning", str(error.exception))
+
     def test_independent_profiles_and_no_cross_origin_key_fallback(self):
         with patch.dict(os.environ,{"MINIMAX_API_KEY":"placeholder-only","GENERATOR_API_KEY":"generator-only","AUDIO_ASSESS_API_KEY":"audio-only"},clear=True):
             before = p.profile("GENERATOR").metadata()
